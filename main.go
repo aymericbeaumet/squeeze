@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -13,14 +14,23 @@ import (
 )
 
 func main() {
+	pAll := flag.Bool("all", false, "if true do not stop after the first match")
+	pURL := flag.Bool("url", false, "if true do try to match urls")
+	flag.Parse()
+
 	reader := bufio.NewReader(os.Stdin)
 	scanner := bufio.NewScanner(reader)
 
 	for scanner.Scan() {
-		if s, err := squeezeURL(scanner.Text()); err != nil {
-			log.Fatal(err)
+		if *pURL {
+			if s, err := squeezeURL(scanner.Text()); err == nil {
+				fmt.Println(s)
+				if !*pAll {
+					return
+				}
+			}
 		} else {
-			fmt.Println(s)
+			log.Fatal(errors.New("specify at least one of: --url"))
 		}
 	}
 
