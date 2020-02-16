@@ -23,7 +23,7 @@ https://github.com
 
 - Extract several URLs:
 
-```
+```shell
 squeeze --all --url << EOF
 this is a url: https://github.com
 this is not: github.com
