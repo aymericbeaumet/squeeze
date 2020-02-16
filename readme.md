@@ -4,8 +4,11 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-data from text. It is meant to be orthogonal to tools like xargs(1) and
-open(1).
+information from text (raw, JSON, HTML, YAML, etc).
+
+It has proven to be particularly useful to optimize a work environment. It is
+meant to be orthogonal to tools like xargs(1) and open(1). See
+[integrations](#integrations) for some practical uses.
 
 ## Install
 
@@ -19,7 +22,6 @@ go install github.com/aymericbeaumet/squeeze
 
 ```shell
 echo 'lorem https://github.com ipsum' | squeeze -1 --url
-
 # https://github.com
 ```
 
@@ -28,28 +30,30 @@ echo 'lorem https://github.com ipsum' | squeeze -1 --url
 ```shell
 squeeze --url << EOF
 this is a url: https://github.com
-this is not: github.com
-this is markdown [link](https://wikipedia.com)
+this is not: github.com, but this is: https://aymericbeaumet.com
+this is markdown: [link](https://wikipedia.com)
 EOF
-
 # https://github.com
+# https://aymericbeaumet.com
 # https://wikipedia.com
 ```
 
 ## Integrations
 
-### Vim
+### vim/nvim
 
-- Open the first URL extracted from a selection in visual mode:
+- Press _Enter_ in visual mode to extract the first URL from the current
+  selection and open it:
 
 ```vim
 " ~/.vimrc
 vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
 ```
 
-### Tmux
+### tmux
 
-- Open the first URL extracted from selection in copy mode:
+- Press _Enter_ in copy mode to extract the first URL from the current
+  selection and open it:
 
 ```tmux
 # ~/.tmux.conf
