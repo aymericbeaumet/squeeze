@@ -46,6 +46,14 @@ func TestSqueezeURLs(t *testing.T) {
 			"[some markdown link](https://en.wikipedia.org/wiki/Markdown)",
 			[]string{"https://en.wikipedia.org/wiki/Markdown"},
 		},
+		{
+			`<html><body><a href="http://localhost"></a><a href="https://localhost"></a></body></html>`,
+			[]string{"http://localhost", "https://localhost"},
+		},
+		{
+			`{ "a": "http://github.com", "b": "https://github.com" }`,
+			[]string{"http://github.com", "https://github.com"},
+		},
 	}
 
 	for _, table := range tables {
