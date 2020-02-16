@@ -3,8 +3,8 @@
 [![travis](https://img.shields.io/travis/aymericbeaumet/squeeze?style=flat-square&logo=travis)](https://travis-ci.org/aymericbeaumet/squeeze)
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
-[squeeze](https://github.com/aymericbeaumet/squeeze) enables out to filter out
-urls from texts. It is meant to be orthogonal to tools like xargs(1) and
+[squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
+data from text. It is meant to be orthogonal to tools like xargs(1) and
 open(1).
 
 ## Install
@@ -18,42 +18,40 @@ go install github.com/aymericbeaumet/squeeze
 - Extract a single URL:
 
 ```shell
-echo 'lorem https://github.com ipsum' | squeeze --url
+echo 'lorem https://github.com ipsum' | squeeze -1 --url
 
-# output
-https://github.com
+# https://github.com
 ```
 
-- Extract several URLs:
+- Extract all the URLs:
 
 ```shell
-squeeze --all --url << EOF
+squeeze --url << EOF
 this is a url: https://github.com
 this is not: github.com
 this is markdown [link](https://wikipedia.com)
 EOF
 
-# output
-https://github.com
-https://wikipedia.com
+# https://github.com
+# https://wikipedia.com
 ```
 
 ## Integrations
 
 ### Vim
 
-- Open the first URL from your visual mode selection:
+- Open the first URL extracted from a selection in visual mode:
 
 ```vim
 " ~/.vimrc
-vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze --url \| xargs open<CR><CR>
+vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
 ```
 
 ### Tmux
 
-- Open the first URL from your copy mode selection:
+- Open the first URL extracted from selection in copy mode:
 
 ```tmux
 # ~/.tmux.conf
-bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze --url | xargs open"
+bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
 ```
