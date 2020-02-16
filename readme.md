@@ -44,8 +44,8 @@ https://wikipedia.com
 
 - Open the first URL from your visual mode selection:
 
-```vimrc
-# ~/.vimrc
+```vim
+" ~/.vimrc
 vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze --url \| xargs open<CR><CR>
 ```
 
