@@ -14,7 +14,7 @@ import (
 )
 
 func main() {
-	pAll := flag.Bool("all", false, "if true do not stop after the first match")
+	pOne := flag.Bool("1", false, "if true stop after one result")
 	pURL := flag.Bool("url", false, "if true do try to match urls")
 	flag.Parse()
 
@@ -22,10 +22,13 @@ func main() {
 	scanner := bufio.NewScanner(reader)
 
 	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
 		if *pURL {
-			if s, err := squeezeURL(scanner.Text()); err == nil {
-				fmt.Println(s)
-				if !*pAll {
+			urls := findURLs(line)
+			for _, u := range urls {
+				fmt.Println(u)
+				if *pOne {
 					return
 				}
 			}
@@ -39,40 +42,52 @@ func main() {
 	}
 }
 
-var urlScheme = regexp.MustCompile("^[a-z](?:[a-z0-9+.-])*$")
+var urlSchemeRegexp = regexp.MustCompile("^[a-z](?:[a-z0-9+.-])*$")
 var urlColonSlashSlash = "://"
 
-func squeezeURL(s string) (string, error) {
-	i := strings.Index(s, urlColonSlashSlash)
-	if i == -1 {
-		return "", errors.New("cannot identify the :// pattern")
-	}
+func findURLs(s string) []string {
+	urls := []string{}
 
-	start := -1
-	for j := 1; i-j >= 0; j++ {
-		ss := s[(i - j):i]
-		if urlScheme.MatchString(ss) {
-			start = i - j
-		} else {
+	for from := 0; from < len(s); {
+		u, next := findURL(s[from:])
+		if len(u) > 0 {
+			urls = append(urls, u)
+		}
+		if next == -1 {
 			break
 		}
+		from += next
 	}
-	if start == -1 {
-		return "", errors.New("cannot find a scheme")
+
+	return urls
+}
+
+func findURL(s string) (string, int) {
+	colonIdx := strings.Index(s, urlColonSlashSlash)
+	if colonIdx == -1 {
+		return "", -1
+	}
+
+	schemeIndex := -1
+	for i := 1; colonIdx-i >= 0; i++ {
+		scheme := s[(colonIdx - i):colonIdx]
+		if !urlSchemeRegexp.MatchString(scheme) {
+			break
+		}
+		schemeIndex = colonIdx - i
+	}
+	if schemeIndex == -1 {
+		return "", schemeIndex + len(urlColonSlashSlash) + 1
 	}
 
 	var u string
-	for j := i + len(urlColonSlashSlash) + 1; j <= len(s); j++ {
-		ss := s[start:j]
-		if govalidator.IsURL(ss) {
-			u = ss
-		} else {
+	for i := colonIdx + len(urlColonSlashSlash); i < len(s); i++ {
+		ss := s[schemeIndex : i+1]
+		if strings.ContainsRune("()[]", rune(s[i])) || !govalidator.IsURL(ss) {
 			break
 		}
+		u = ss
 	}
 
-	if len(u) == 0 {
-		return "", errors.New("unable to extract url")
-	}
-	return u, nil
+	return u, schemeIndex + len(u) + 1
 }
