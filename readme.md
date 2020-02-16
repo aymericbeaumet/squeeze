@@ -1,5 +1,8 @@
 # squeeze
 
+[![travis](https://img.shields.io/travis/aymericbeaumet/squeeze?style=flat-square&logo=travis)](https://travis-ci.org/aymericbeaumet/squeeze)
+[![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
+
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables out to filter out
 urls from texts. It is meant to be orthogonal to tools like xargs(1) and
 open(1).
