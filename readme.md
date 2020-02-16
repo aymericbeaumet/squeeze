@@ -40,11 +40,20 @@ https://wikipedia.com
 
 ## Integrations
 
+### Vim
+
+- Open the first URL from your visual mode selection:
+
+```vimrc
+# ~/.vimrc
+vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze --url \| xargs open<CR><CR>
+```
+
 ### Tmux
 
-- Open the first URL you currently have in your selection:
+- Open the first URL from your copy mode selection:
 
-```
+```tmux
 # ~/.tmux.conf
 bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze --url | xargs open"
 ```
