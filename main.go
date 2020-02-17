@@ -82,6 +82,10 @@ func findURL(s string) (string, int) {
 
 	var u string
 	for i := colonIdx + len(urlColonSlashSlash); i < len(s); i++ {
+		// some characters cannot be in last position
+		if strings.ContainsRune("-.", rune(s[i])) {
+			continue
+		}
 		if strings.ContainsRune("()[]", rune(s[i])) || !govalidator.IsURL("http://"+s[colonIdx+len(urlColonSlashSlash):i+1]) {
 			break
 		}

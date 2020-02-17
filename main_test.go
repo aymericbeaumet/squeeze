@@ -47,6 +47,10 @@ func TestSqueezeURLs(t *testing.T) {
 			[]string{"https://en.wikipedia.org/wiki/Markdown"},
 		},
 		{
+			"[http://localhost]",
+			[]string{"http://localhost"},
+		},
+		{
 			`<html><body><a href="http://localhost"></a><a href="https://localhost"></a></body></html>`,
 			[]string{"http://localhost", "https://localhost"},
 		},
@@ -57,6 +61,10 @@ func TestSqueezeURLs(t *testing.T) {
 		{
 			`{ "a": "git://github.com", "b": "ssh://github.com" }`,
 			[]string{"git://github.com", "ssh://github.com"},
+		},
+		{
+			"http://foo.bar.com.s3-website-us-east-1.amazonaws.com",
+			[]string{"http://foo.bar.com.s3-website-us-east-1.amazonaws.com"},
 		},
 	}
 
