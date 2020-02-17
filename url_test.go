@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestSqueezeURLs(t *testing.T) {
+func TestCollectURL(t *testing.T) {
 	tables := []struct {
 		in  string
 		out []string
@@ -69,7 +69,7 @@ func TestSqueezeURLs(t *testing.T) {
 	}
 
 	for _, table := range tables {
-		out := findURLs(table.in)
+		out := collect(table.in, collectURL)
 		if !reflect.DeepEqual(out, table.out) {
 			t.Errorf("expected %#v but got %#v\n", table.out, out)
 		}

@@ -7,10 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
-
-	"github.com/asaskevich/govalidator"
 )
 
 func main() {
@@ -25,7 +22,7 @@ func main() {
 		line := strings.TrimSpace(scanner.Text())
 
 		if *pURL {
-			urls := findURLs(line)
+			urls := collect(line, collectURL)
 			for _, u := range urls {
 				fmt.Println(u)
 				if *pOne {
@@ -42,16 +39,13 @@ func main() {
 	}
 }
 
-var urlSchemeRegexp = regexp.MustCompile("^[a-z](?:[a-z0-9+.-])*$")
-var urlColonSlashSlash = "://"
-
-func findURLs(s string) []string {
-	urls := []string{}
+func collect(s string, collect func(string) (string, int)) []string {
+	results := []string{}
 
 	for from := 0; from < len(s); {
-		u, next := findURL(s[from:])
-		if len(u) > 0 {
-			urls = append(urls, u)
+		result, next := collect(s[from:])
+		if len(result) > 0 {
+			results = append(results, result)
 		}
 		if next == -1 {
 			break
@@ -59,38 +53,5 @@ func findURLs(s string) []string {
 		from += next
 	}
 
-	return urls
-}
-
-func findURL(s string) (string, int) {
-	colonIdx := strings.Index(s, urlColonSlashSlash)
-	if colonIdx == -1 {
-		return "", -1
-	}
-
-	schemeIndex := -1
-	for i := 1; colonIdx-i >= 0; i++ {
-		scheme := s[(colonIdx - i):colonIdx]
-		if !urlSchemeRegexp.MatchString(scheme) {
-			break
-		}
-		schemeIndex = colonIdx - i
-	}
-	if schemeIndex == -1 {
-		return "", schemeIndex + len(urlColonSlashSlash) + 1
-	}
-
-	var u string
-	for i := colonIdx + len(urlColonSlashSlash); i < len(s); i++ {
-		// some characters cannot be in last position
-		if strings.ContainsRune("-.", rune(s[i])) {
-			continue
-		}
-		if strings.ContainsRune("()[]", rune(s[i])) || !govalidator.IsURL("http://"+s[colonIdx+len(urlColonSlashSlash):i+1]) {
-			break
-		}
-		u = s[schemeIndex : i+1]
-	}
-
-	return u, schemeIndex + len(u) + 1
+	return results
 }
