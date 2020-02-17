@@ -54,6 +54,10 @@ func TestSqueezeURLs(t *testing.T) {
 			`{ "a": "http://github.com", "b": "https://github.com" }`,
 			[]string{"http://github.com", "https://github.com"},
 		},
+		{
+			`{ "a": "git://github.com", "b": "ssh://github.com" }`,
+			[]string{"git://github.com", "ssh://github.com"},
+		},
 	}
 
 	for _, table := range tables {
