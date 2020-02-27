@@ -54,7 +54,12 @@ fn advance_authority(input: &str) -> Option<usize> {
 }
 
 fn advance_user_info(input: &str) -> Option<usize> {
-    None
+    let arobase_idx = input.find('@')?;
+    if is_user_info(&input[..arobase_idx]) {
+        Some(arobase_idx + 1)
+    } else {
+        None
+    }
 }
 
 fn advance_hostname(input: &str) -> Option<usize> {
@@ -78,15 +83,54 @@ fn advance_fragment(input: &str) -> Option<usize> {
 }
 
 // https://tools.ietf.org/html/rfc3986#section-3.1
-fn is_scheme(input: &str) -> bool {
-    input.chars().enumerate().all(|(i, c)| match i {
+fn is_scheme(s: &str) -> bool {
+    s.chars().enumerate().all(|(i, c)| match i {
         0 => is_alpha(c),
         _ => is_alpha(c) || is_digit(c) || c == '+' || c == '-' || c == '.',
     })
 }
 
+// https://tools.ietf.org/html/rfc3986#section-3.2.1
+fn is_user_info(s: &str) -> bool {
+    let chars: Vec<_> = s.chars().collect();
+
+    let mut i = 0;
+    let l = chars.len();
+    while i < l {
+        if i + 2 < l && is_pct_encoded(&chars[i..i + 2]) {
+            i += 2;
+            continue;
+        }
+        if is_unreserved(chars[i]) || is_sub_delims(chars[i]) || chars[i] == ':' {
+            i += 1;
+            continue;
+        }
+        return false;
+    }
+
+    true
+}
+
+fn is_pct_encoded(chars: &[char]) -> bool {
+    chars.len() == 3 && chars[0] == '%' && is_hexa(chars[1]) && is_hexa(chars[2])
+}
+
+// https://tools.ietf.org/html/rfc3986#section-2.3
+fn is_unreserved(c: char) -> bool {
+    is_alpha(c) || is_digit(c) || c == '-' || c == '.' || c == '_' || c == '~'
+}
+
+// https://tools.ietf.org/html/rfc3986#section-2.2
+fn is_sub_delims(c: char) -> bool {
+    ['!', '$', '&', '\'', '(', ')', '*', '+', ',', ';', '='].contains(&c)
+}
+
 fn is_alpha(c: char) -> bool {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+fn is_hexa(c: char) -> bool {
+    is_digit(c) && (c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F')
 }
 
 fn is_digit(c: char) -> bool {
