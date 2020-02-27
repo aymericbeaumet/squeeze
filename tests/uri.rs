@@ -1,7 +1,7 @@
 use squeeze;
 
 #[test]
-fn it_extracts_valid_urls() {
+fn it_should_extract_valid_uris() {
     assert_eq!(
         Some("http://localhost"),
         squeeze::squeeze_uri("-> http://localhost <-")
@@ -18,4 +18,10 @@ fn it_extracts_valid_urls() {
         Some("http://foobar:@localhost:8080"),
         squeeze::squeeze_uri("-> http://foobar:@localhost:8080 <-")
     );
+}
+
+#[test]
+fn it_should_not_extract_invalid_uris() {
+    assert_eq!(None, squeeze::squeeze_uri("-> : <-"));
+    assert_eq!(None, squeeze::squeeze_uri("-> http: <-"));
 }
