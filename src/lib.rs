@@ -11,13 +11,15 @@ pub fn squeeze_uri(input: &str) -> Option<&str> {
     Some(&input[scheme_idx..idx])
 }
 
+// https://tools.ietf.org/html/rfc3986#section-3.1
 fn find_scheme(input: &str) -> Option<usize> {
     let mut scheme_index = None;
 
-    for (i, _) in input.bytes().enumerate().rev() {
-        if is_scheme(&input[i..]) {
-            scheme_index = Some(i)
-        } else {
+    for (i, c) in input.bytes().enumerate().rev() {
+        let c = c as char;
+        if is_alpha(c) {
+            scheme_index = Some(i);
+        } else if !(is_digit(c) || c == '+' || c == '-' || c == '.') {
             break;
         }
     }
@@ -84,14 +86,6 @@ fn advance_query(input: &str) -> Option<usize> {
 
 fn advance_fragment(input: &str) -> Option<usize> {
     None
-}
-
-// https://tools.ietf.org/html/rfc3986#section-3.1
-fn is_scheme(s: &str) -> bool {
-    s.chars().enumerate().all(|(i, c)| match i {
-        0 => is_alpha(c),
-        _ => is_alpha(c) || is_digit(c) || c == '+' || c == '-' || c == '.',
-    })
 }
 
 // https://tools.ietf.org/html/rfc3986#section-3.2.1
