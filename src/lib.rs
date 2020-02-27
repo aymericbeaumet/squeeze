@@ -1,4 +1,4 @@
-// https://tools.ietf.org/html/rfc3986#section-3
+// https://tools.ietf.org/html/rfc3986#appendix-A
 pub fn squeeze_uri(s: &str) -> Option<&str> {
     let input = s.as_bytes();
 
@@ -6,6 +6,9 @@ pub fn squeeze_uri(s: &str) -> Option<&str> {
     let scheme_idx = find_scheme(&input[..colon_idx])?;
 
     let mut idx = colon_idx + 1;
+    if idx >= s.len() {
+        return None;
+    }
     idx += advance_hier_part(&input[idx..])?;
     idx += advance_query(&input[idx..]).unwrap_or(0);
     idx += advance_fragment(&input[idx..]).unwrap_or(0);

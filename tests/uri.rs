@@ -64,6 +64,10 @@ fn it_should_extract_valid_uris() {
 
 #[test]
 fn it_should_not_extract_invalid_uris() {
+    assert_eq!(None, squeeze::squeeze_uri(""));
+    assert_eq!(None, squeeze::squeeze_uri(":"));
+    assert_eq!(None, squeeze::squeeze_uri("http:"));
     assert_eq!(None, squeeze::squeeze_uri("-> : <-"));
     assert_eq!(None, squeeze::squeeze_uri("-> http: <-"));
+    assert_eq!(None, squeeze::squeeze_uri("               "));
 }
