@@ -45,6 +45,7 @@ fn advance_slash_slash(input: &str) -> Option<usize> {
     }
 }
 
+// https://tools.ietf.org/html/rfc3986#section-3.2
 fn advance_authority(input: &str) -> Option<usize> {
     let mut idx = 0;
     idx += advance_user_info(&input[idx..]).unwrap_or(0);
@@ -71,7 +72,10 @@ fn advance_hostname(input: &str) -> Option<usize> {
 }
 
 fn advance_port(input: &str) -> Option<usize> {
-    None
+    if !input.starts_with(":") {
+        return None;
+    }
+    Some(1 + input.chars().skip(1).take_while(|&c| is_digit(c)).count())
 }
 
 fn advance_query(input: &str) -> Option<usize> {
