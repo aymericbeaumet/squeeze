@@ -105,6 +105,27 @@ fn advance_query(input: &[u8]) -> Option<usize> {
     Some(idx)
 }
 
+// https://tools.ietf.org/html/rfc3986#section-3.5
+fn advance_fragment(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    if input[idx] != b'#' {
+        return None;
+    }
+    idx += 1;
+    while idx < input.len() {
+        if let Some(i) = advance_pchar(&input[idx..]) {
+            idx += i;
+            continue;
+        }
+        let c = input[idx];
+        if c == b'/' || c == b'?' {
+            idx += 1;
+            continue;
+        }
+    }
+    Some(idx)
+}
+
 fn advance_pchar(input: &[u8]) -> Option<usize> {
     if let Some(idx) = advance_pct_encoded(input) {
         return Some(idx);
@@ -113,10 +134,6 @@ fn advance_pchar(input: &[u8]) -> Option<usize> {
     if is_unreserved(c) || is_sub_delim(c) || c == b':' || c == b'@' {
         return Some(1);
     }
-    None
-}
-
-fn advance_fragment(input: &[u8]) -> Option<usize> {
     None
 }
 
