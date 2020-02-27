@@ -101,6 +101,7 @@ fn advance_query(input: &[u8]) -> Option<usize> {
             idx += 1;
             continue;
         }
+        break;
     }
     Some(idx)
 }
@@ -122,6 +123,7 @@ fn advance_fragment(input: &[u8]) -> Option<usize> {
             idx += 1;
             continue;
         }
+        break;
     }
     Some(idx)
 }
