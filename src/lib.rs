@@ -36,11 +36,13 @@ fn find_scheme(input: &[u8]) -> Option<usize> {
 }
 
 fn advance_hier_part(input: &[u8]) -> Option<usize> {
-    let mut idx = 0;
-
-    idx += advance_slash_slash(&input[idx..])?;
-    idx += advance_authority(&input[idx..])?;
-    idx += advance_path_abempty(&input[idx..]);
+    if let Some(idx) = Some(0)
+        .and_then(|idx| Some(idx + advance_slash_slash(&input[idx..])?))
+        .and_then(|idx| Some(idx + advance_authority(&input[idx..])?))
+        .map(|idx| idx + advance_path_abempty(&input[idx..]))
+    {
+        return Some(idx);
+    }
 
     // / path-absolute
 
@@ -48,7 +50,7 @@ fn advance_hier_part(input: &[u8]) -> Option<usize> {
 
     // / path-empty
 
-    Some(idx)
+    None
 }
 
 fn advance_slash_slash(input: &[u8]) -> Option<usize> {
@@ -57,6 +59,14 @@ fn advance_slash_slash(input: &[u8]) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn advance_authority(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    idx += advance_user_info(&input[idx..]).unwrap_or(0);
+    idx += advance_hostname(&input[idx..])?;
+    idx += advance_port(&input[idx..]).unwrap_or(0);
+    Some(idx)
 }
 
 fn advance_path_abempty(input: &[u8]) -> usize {
@@ -81,15 +91,6 @@ fn advance_segment(input: &[u8]) -> usize {
         }
     }
     idx
-}
-
-// https://tools.ietf.org/html/rfc3986#section-3.2
-fn advance_authority(input: &[u8]) -> Option<usize> {
-    let mut idx = 0;
-    idx += advance_user_info(&input[idx..]).unwrap_or(0);
-    idx += advance_hostname(&input[idx..])?;
-    idx += advance_port(&input[idx..]).unwrap_or(0);
-    Some(idx)
 }
 
 fn advance_user_info(input: &[u8]) -> Option<usize> {
@@ -213,12 +214,10 @@ fn is_segment(input: &[u8]) -> bool {
     true
 }
 
-// https://tools.ietf.org/html/rfc3986#section-2.3
 fn is_unreserved(c: u8) -> bool {
     is_alpha(c) || is_digit(c) || c == b'-' || c == b'.' || c == b'_' || c == b'~'
 }
 
-// https://tools.ietf.org/html/rfc3986#section-2.2
 fn is_sub_delim(c: u8) -> bool {
     [
         b'!', b'$', b'&', b'\'', b'(', b')', b'*', b'+', b',', b';', b'=',
