@@ -86,11 +86,33 @@ fn advance_port(input: &[u8]) -> Option<usize> {
 
 // https://tools.ietf.org/html/rfc3986#section-3.4
 fn advance_query(input: &[u8]) -> Option<usize> {
-    None
+    let mut idx = 0;
+    if input[idx] != b'?' {
+        return None;
+    }
+    idx += 1;
+    while idx < input.len() {
+        if let Some(i) = advance_pchar(&input[idx..]) {
+            idx += i;
+            continue;
+        }
+        let c = input[idx];
+        if c == b'/' || c == b'?' {
+            idx += 1;
+            continue;
+        }
+    }
+    Some(idx)
 }
 
 fn advance_pchar(input: &[u8]) -> Option<usize> {
-    //unreserved / pct - encoded / sub - delims / ":" / "@"
+    if let Some(idx) = advance_pct_encoded(input) {
+        return Some(idx);
+    }
+    let c = input[0];
+    if is_unreserved(c) || is_sub_delim(c) || c == b':' || c == b'@' {
+        return Some(1);
+    }
     None
 }
 
@@ -106,7 +128,8 @@ fn is_user_info(input: &[u8]) -> bool {
             idx += i;
             continue;
         }
-        if is_unreserved(input[idx]) || is_sub_delims(input[idx]) || input[idx] == b':' {
+        let c = input[idx];
+        if is_unreserved(c) || is_sub_delim(c) || c == b':' {
             idx += 1;
             continue;
         }
@@ -130,7 +153,7 @@ fn is_unreserved(c: u8) -> bool {
 }
 
 // https://tools.ietf.org/html/rfc3986#section-2.2
-fn is_sub_delims(c: u8) -> bool {
+fn is_sub_delim(c: u8) -> bool {
     [
         b'!', b'$', b'&', b'\'', b'(', b')', b'*', b'+', b',', b';', b'=',
     ]

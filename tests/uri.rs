@@ -18,6 +18,14 @@ fn it_should_extract_valid_uris() {
         Some("http://foobar:@localhost:8080"),
         squeeze::squeeze_uri("-> http://foobar:@localhost:8080 <-")
     );
+    assert_eq!(
+        Some("http://foobar:@localhost:8080?"),
+        squeeze::squeeze_uri("-> http://foobar:@localhost:8080? <-")
+    );
+    assert_eq!(
+        Some("http://foobar:@localhost:8080?a=b"),
+        squeeze::squeeze_uri("-> http://foobar:@localhost:8080?a=b <-")
+    );
 }
 
 #[test]
