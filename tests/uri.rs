@@ -24,6 +24,11 @@ fn it_should_extract_valid_uris() {
         Some("http://foobar:@localhost:8080"),
         squeeze::squeeze_uri("-> http://foobar:@localhost:8080 <-")
     );
+    // path
+    assert_eq!(
+        Some("http://localhost/lorem"),
+        squeeze::squeeze_uri("-> http://localhost/lorem <-")
+    );
     // query
     assert_eq!(
         Some("http://foobar:@localhost:8080?"),
@@ -50,6 +55,11 @@ fn it_should_extract_valid_uris() {
         Some("http://foobar:@localhost:8080?a=b#c=d"),
         squeeze::squeeze_uri("-> http://foobar:@localhost:8080?a=b#c=d <-")
     );
+    // mailto
+    //assert_eq!(
+    //Some("mailto:fred@example.com"),
+    //squeeze::squeeze_uri("-> <mailto:fred@example.com> <-")
+    //);
 }
 
 #[test]

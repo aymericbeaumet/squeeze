@@ -34,8 +34,17 @@ fn find_scheme(input: &[u8]) -> Option<usize> {
 
 fn advance_hier_part(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
+
     idx += advance_slash_slash(&input[idx..])?;
     idx += advance_authority(&input[idx..])?;
+    idx += advance_path_abempty(&input[idx..]);
+
+    // / path-absolute
+
+    // / path-rootless
+
+    // / path-empty
+
     Some(idx)
 }
 
@@ -45,6 +54,30 @@ fn advance_slash_slash(input: &[u8]) -> Option<usize> {
     } else {
         None
     }
+}
+
+fn advance_path_abempty(input: &[u8]) -> usize {
+    let mut idx = 0;
+    while idx < input.len() {
+        if input[idx] != b'/' {
+            break;
+        }
+        idx += 1;
+        idx += advance_segment(&input[idx..]);
+    }
+    idx
+}
+
+fn advance_segment(input: &[u8]) -> usize {
+    let mut idx = 0;
+    while idx < input.len() {
+        if let Some(i) = advance_pchar(&input[idx..]) {
+            idx += i;
+        } else {
+            break;
+        }
+    }
+    idx
 }
 
 // https://tools.ietf.org/html/rfc3986#section-3.2
@@ -139,6 +172,14 @@ fn advance_pchar(input: &[u8]) -> Option<usize> {
     None
 }
 
+fn advance_pct_encoded(input: &[u8]) -> Option<usize> {
+    if input.len() >= 3 && input[0] == b'%' && is_hexa(input[1]) && is_hexa(input[2]) {
+        Some(3)
+    } else {
+        None
+    }
+}
+
 // https://tools.ietf.org/html/rfc3986#section-3.2.1
 fn is_user_info(input: &[u8]) -> bool {
     let mut idx = 0;
@@ -154,16 +195,19 @@ fn is_user_info(input: &[u8]) -> bool {
         }
         return false;
     }
-
     true
 }
 
-fn advance_pct_encoded(input: &[u8]) -> Option<usize> {
-    if input.len() >= 3 && input[0] == b'%' && is_hexa(input[1]) && is_hexa(input[2]) {
-        Some(3)
-    } else {
-        None
+fn is_segment(input: &[u8]) -> bool {
+    let mut idx = 0;
+    while idx < input.len() {
+        if let Some(i) = advance_pchar(&input[idx..]) {
+            idx += i;
+            continue;
+        }
+        return false;
     }
+    true
 }
 
 // https://tools.ietf.org/html/rfc3986#section-2.3
@@ -180,7 +224,7 @@ fn is_sub_delim(c: u8) -> bool {
 }
 
 fn is_alpha(c: u8) -> bool {
-    return (c >= b'a' && c <= b'z') || (c >= b'A' && c <= b'Z');
+    (c >= b'a' && c <= b'z') || (c >= b'A' && c <= b'Z')
 }
 
 fn is_hexa(c: u8) -> bool {
@@ -188,5 +232,5 @@ fn is_hexa(c: u8) -> bool {
 }
 
 fn is_digit(c: u8) -> bool {
-    return c >= b'0' && c <= b'9';
+    c >= b'0' && c <= b'9'
 }
