@@ -56,18 +56,15 @@ fn it_should_extract_valid_uris() {
         squeeze::squeeze_uri("-> http://foobar:@localhost:8080?a=b#c=d <-")
     );
     // mailto
-    //assert_eq!(
-    //Some("mailto:fred@example.com"),
-    //squeeze::squeeze_uri("-> <mailto:fred@example.com> <-")
-    //);
+    assert_eq!(
+        Some("mailto:fred@example.com"),
+        squeeze::squeeze_uri("-> <mailto:fred@example.com> <-")
+    );
 }
 
 #[test]
 fn it_should_not_extract_invalid_uris() {
     assert_eq!(None, squeeze::squeeze_uri(""));
+    assert_eq!(None, squeeze::squeeze_uri(" "));
     assert_eq!(None, squeeze::squeeze_uri(":"));
-    assert_eq!(None, squeeze::squeeze_uri("http:"));
-    assert_eq!(None, squeeze::squeeze_uri("-> : <-"));
-    assert_eq!(None, squeeze::squeeze_uri("-> http: <-"));
-    assert_eq!(None, squeeze::squeeze_uri("               "));
 }

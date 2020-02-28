@@ -2,7 +2,7 @@
 pub fn squeeze_uri(s: &str) -> Option<&str> {
     let input = s.as_bytes();
 
-    let colon_idx = find_colon(input)?;
+    let colon_idx = input.iter().position(|&b| b == b':')?;
     let scheme_idx = find_scheme(&input[..colon_idx])?;
 
     let mut idx = colon_idx + 1;
@@ -16,51 +16,69 @@ pub fn squeeze_uri(s: &str) -> Option<&str> {
     Some(&s[scheme_idx..idx])
 }
 
-fn find_colon(input: &[u8]) -> Option<usize> {
-    input.iter().position(|&b| b == b':')
-}
-
-// https://tools.ietf.org/html/rfc3986#section-3.1
+// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
 fn find_scheme(input: &[u8]) -> Option<usize> {
-    let mut scheme_index = None;
-
+    let mut scheme_idx = None;
     for (i, &c) in input.iter().enumerate().rev() {
         if is_alpha(c) {
-            scheme_index = Some(i);
-        } else if !(is_digit(c) || c == b'+' || c == b'-' || c == b'.') {
+            scheme_idx = Some(i);
+        } else if is_digit(c) || [b'+', b'-', b'.'].contains(&c) {
+            // noop
+        } else {
             break;
         }
     }
-
-    scheme_index
+    scheme_idx
 }
 
 fn advance_hier_part(input: &[u8]) -> Option<usize> {
-    if let Some(idx) = Some(0)
-        .and_then(|idx| Some(idx + advance_slash_slash(&input[idx..])?))
+    // "//" authority path-abempty
+    if let Some(idx) = advance_slash_slash(input)
         .and_then(|idx| Some(idx + advance_authority(&input[idx..])?))
         .map(|idx| idx + advance_path_abempty(&input[idx..]))
     {
         return Some(idx);
     }
 
-    // / path-absolute
+    // "/" [ segment-nz path-abempty ]
+    if let Some(idx) = advance_slash(input).map(|idx| {
+        idx + advance_segment_nz(&input[idx..])
+            .map(|idx| idx + advance_path_abempty(&input[idx..]))
+            .unwrap_or(0)
+    }) {
+        return Some(idx);
+    }
 
-    // / path-rootless
+    // segment-nz path-abempty
+    if let Some(idx) =
+        advance_segment_nz(input).map(|idx| idx + advance_path_abempty(&input[idx..]))
+    {
+        return Some(idx);
+    }
 
-    // / path-empty
-
-    None
+    // 0<pchar>
+    Some(0)
 }
 
+// "/"
+fn advance_slash(input: &[u8]) -> Option<usize> {
+    if input.len() >= 1 && input[0] == b'/' {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+// "//"
 fn advance_slash_slash(input: &[u8]) -> Option<usize> {
-    if input[0] == b'/' && input[1] == b'/' {
+    if input.len() >= 2 && input[0] == b'/' && input[1] == b'/' {
         Some(2)
     } else {
         None
     }
 }
 
+// [ userinfo "@" ] host [ ":" port ]
 fn advance_authority(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
     idx += advance_user_info(&input[idx..]).unwrap_or(0);
@@ -69,28 +87,36 @@ fn advance_authority(input: &[u8]) -> Option<usize> {
     Some(idx)
 }
 
+// *( "/" segment )
 fn advance_path_abempty(input: &[u8]) -> usize {
     let mut idx = 0;
     while idx < input.len() {
-        if input[idx] != b'/' {
-            break;
-        }
-        idx += 1;
-        idx += advance_segment(&input[idx..]);
+        idx += match advance_slash(&input[idx..]).map(|idx| idx + advance_segment(&input[idx..])) {
+            Some(n) => n,
+            None => break,
+        };
     }
     idx
 }
 
+// *pchar
 fn advance_segment(input: &[u8]) -> usize {
     let mut idx = 0;
     while idx < input.len() {
-        if let Some(i) = advance_pchar(&input[idx..]) {
-            idx += i;
-        } else {
-            break;
-        }
+        idx += match advance_pchar(&input[idx..]) {
+            Some(n) => n,
+            None => break,
+        };
     }
     idx
+}
+
+// 1*pchar
+fn advance_segment_nz(input: &[u8]) -> Option<usize> {
+    match advance_segment(input) {
+        0 => None,
+        n => Some(n),
+    }
 }
 
 fn advance_user_info(input: &[u8]) -> Option<usize> {
@@ -184,7 +210,6 @@ fn advance_pct_encoded(input: &[u8]) -> Option<usize> {
     }
 }
 
-// https://tools.ietf.org/html/rfc3986#section-3.2.1
 fn is_user_info(input: &[u8]) -> bool {
     let mut idx = 0;
     while idx < input.len() {
