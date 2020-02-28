@@ -23,6 +23,17 @@ fn it_should_extract_valid_uris() {
         "http://foobar:@localhost:8080?a=b#c=d",
         // meh
         "http://:@localhost:/?#",
+        // ipv4 support
+        "http://127.0.0.1",
+        "http://192.0.2.235",
+        // ipv6 support
+        //"http://[::]",
+        //"http://[::1]",
+        //"http://[2001:db8::1]",
+        //"http://[2001:0db8::0001]",
+        //"http://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]",
+        //"http://[::ffff:192.0.2.128]",
+        //"http://[::ffff:c000:0280]",
         // various examples from the rfc
         //("file:///etc/hosts", "file:///etc/hosts"),
         "http://localhost/",
