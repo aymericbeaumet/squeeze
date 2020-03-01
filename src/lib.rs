@@ -1,4 +1,5 @@
 // https://tools.ietf.org/html/rfc3986#appendix-A
+// scheme ":" hier-part [ "?" query ] [ "#" fragment ]
 pub fn squeeze_uri(s: &str) -> Option<&str> {
     let input = s.as_bytes();
 
@@ -10,12 +11,8 @@ pub fn squeeze_uri(s: &str) -> Option<&str> {
         return None;
     }
     idx += look_hier_part(&input[idx..])?;
-    idx += look_question_mark(&input[idx..])
-        .map(|j| j + look_query(&input[idx + j..]))
-        .unwrap_or(0);
-    idx += look_sharp(&input[idx..])
-        .map(|j| j + look_fragment(&input[idx + j..]))
-        .unwrap_or(0);
+    idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
+    idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
     Some(&s[scheme_idx..idx])
 }
@@ -75,7 +72,6 @@ fn look_authority(input: &[u8]) -> Option<usize> {
     Some(idx)
 }
 
-// ":" port
 fn look_colon_port(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
     idx += look_colon(&input[idx..])?;
@@ -127,47 +123,47 @@ fn look_userinfo_at(input: &[u8]) -> Option<usize> {
 
 // IP-literal / IPv4address / reg-name
 fn look_host(input: &[u8]) -> Option<usize> {
-    if let Some(idx) = look_ip_literal(input) {
-        return Some(idx);
-    }
-
-    if let Some(idx) = look_ipv4_address(input) {
-        return Some(idx);
-    }
-
-    if let Some(idx) = look_reg_name(input) {
-        return Some(idx);
-    }
-
-    None
+    look_ip_literal(input)
+        .or_else(|| look_ipv4_address(input))
+        .or_else(|| look_reg_name(input))
 }
 
 // "[" ( IPv6address / IPvFuture  ) "]"
 fn look_ip_literal(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
     idx += look_left_bracket(&input[idx..])?;
-    if let Some(i) = look_ipv6_address(&input[idx..]) {
-        idx += i;
-    } else if let Some(i) = look_ipvfuture(&input[idx..]) {
-        idx += i;
-    } else {
-        return None;
-    }
+    idx += look_ipv6address(&input[idx..]).or_else(|| look_ipvfuture(&input[idx..]))?;
     idx += look_right_bracket(&input[idx..])?;
     Some(idx)
 }
 
-// IPv6address   =                            6( h16 ":" ) ls32
-//               /                       "::" 5( h16 ":" ) ls32
-//               / [               h16 ] "::" 4( h16 ":" ) ls32
-//               / [ *1( h16 ":" ) h16 ] "::" 3( h16 ":" ) ls32
-//               / [ *2( h16 ":" ) h16 ] "::" 2( h16 ":" ) ls32
-//               / [ *3( h16 ":" ) h16 ] "::"    h16 ":"   ls32
-//               / [ *4( h16 ":" ) h16 ] "::"              ls32
-//               / [ *5( h16 ":" ) h16 ] "::"              h16
-//               / [ *6( h16 ":" ) h16 ] "::"
-fn look_ipv6_address(input: &[u8]) -> Option<usize> {
-    None
+// https://tools.ietf.org/html/rfc4291#section-2.2
+fn look_ipv6address(input: &[u8]) -> Option<usize> {
+    let mut last_is_colon = false;
+    let mut double_colon_found = false;
+    let mut idx = 0;
+    while idx < input.len() {
+        if let Some(i) = look_colon(&input[idx..]) {
+            idx += i;
+        } else if let Some(i) = look_ipv4_address(&input[idx..]) {
+            idx += i;
+        } else if let Some(i) = look_h16(&input[idx..]) {
+            idx += i;
+        } else {
+            break;
+        }
+    }
+    return Some(idx);
+}
+
+// 1*4HEXDIG
+fn look_h16(input: &[u8]) -> Option<usize> {
+    let idx = input.iter().take_while(|&&b| is_hexdig(b)).take(4).count();
+    if idx >= 1 {
+        Some(idx)
+    } else {
+        None
+    }
 }
 
 // TODO
@@ -233,6 +229,13 @@ fn look_port(input: &[u8]) -> usize {
     input.iter().take_while(|&&c| is_digit(c)).count()
 }
 
+fn look_question_mark_query(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    idx += look_question_mark(&input[idx..])?;
+    idx += look_query(&input[idx..]);
+    Some(idx)
+}
+
 // *( pchar / "/" / "?" )
 fn look_query(input: &[u8]) -> usize {
     let mut idx = 0;
@@ -248,6 +251,13 @@ fn look_query(input: &[u8]) -> usize {
         break;
     }
     idx
+}
+
+fn look_sharp_fragment(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    idx += look_sharp(&input[idx..])?;
+    idx += look_fragment(&input[idx..]);
+    Some(idx)
 }
 
 // *( pchar / "/" / "?" )
@@ -269,14 +279,17 @@ fn look_fragment(input: &[u8]) -> usize {
 
 // unreserved / pct-encoded / sub-delims / ":" / "@"
 fn look_pchar(input: &[u8]) -> Option<usize> {
-    if let Some(idx) = look_pct_encoded(input) {
-        return Some(idx);
-    }
-    let c = input[0];
-    if is_unreserved(c) || is_sub_delim(c) || [b':', b'@'].contains(&c) {
-        return Some(1);
-    }
-    None
+    look_pct_encoded(input).or_else(|| {
+        if input.len() >= 1
+            && (is_unreserved(input[0])
+                || is_sub_delim(input[0])
+                || [b':', b'@'].contains(&input[0]))
+        {
+            Some(1)
+        } else {
+            None
+        }
+    })
 }
 
 // "%" HEXDIG HEXDIG
@@ -414,7 +427,7 @@ fn is_dquote(c: u8) -> bool {
 
 // HEXDIG
 fn is_hexdig(c: u8) -> bool {
-    is_digit(c) && (c >= b'a' && c <= b'f' || c >= b'A' && c <= b'F')
+    is_digit(c) || (c >= b'a' && c <= b'f' || c >= b'A' && c <= b'F')
 }
 
 // LF
