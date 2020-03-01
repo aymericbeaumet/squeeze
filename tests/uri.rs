@@ -53,19 +53,29 @@ fn it_should_mirror_valid_uris() {
         "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
     ] {
         // input
-        assert_eq!(input, squeeze::squeeze_uri(input).unwrap());
+        assert_eq!(Some(input), squeeze::squeeze_uri(&input), "{}", input,);
         // input surrounded by spaces
         let spaces = format!(" {} ", input);
-        assert_eq!(input, squeeze::squeeze_uri(&spaces).unwrap());
+        assert_eq!(Some(input), squeeze::squeeze_uri(&spaces), "{}", spaces);
         // input surrounded by < >
         let surrounded = format!("<{}>", input);
-        assert_eq!(input, squeeze::squeeze_uri(&surrounded).unwrap());
+        assert_eq!(
+            Some(input),
+            squeeze::squeeze_uri(&surrounded),
+            "{}",
+            surrounded
+        );
         // input surrounded by [ ]
         let square_brackets = format!("[{}]", input);
-        assert_eq!(input, squeeze::squeeze_uri(&square_brackets).unwrap());
+        assert_eq!(
+            Some(input),
+            squeeze::squeeze_uri(&square_brackets),
+            "{}",
+            square_brackets
+        );
         // input in html link
         let html = format!("<a href=\"{}\">link</a>", input);
-        assert_eq!(input, squeeze::squeeze_uri(&html).unwrap());
+        assert_eq!(Some(input), squeeze::squeeze_uri(&html), "{}", html);
         // TODO: input in markdown link
         //let markdown = format!("[link]({})", input);
         //assert_eq!(input, squeeze::squeeze_uri(&markdown).unwrap());
@@ -76,14 +86,43 @@ fn it_should_mirror_valid_uris() {
 }
 
 #[test]
-fn it_should_ignore_invalid_uris() {
+fn it_should_skip_invalid_uris() {
     for input in vec![
-        "", " ", ":", ":/", "::",
+        "", " ", ":", ":/", "://", "::",
         "-:",
+        // meh
+        //"http://test@",
         // ipv6
         //"http://[:::]",
         //"http://[::1::]",
+        //"http://[:1:]",
+        //"http://[1:2:3:4:5:6:7:8:9]",
+        //"http://[1:2:3:4:5:6:7:127.0.0.1]",
+        //"http://[1:2:3:4:5:6::7:8]",
+        //"http://[1:2:3:4:5:6::127.0.0.1]",
+        //"http://[1:127.0.0.1::]",
     ] {
-        assert_eq!(None, squeeze::squeeze_uri(input));
+        assert_eq!(None, squeeze::squeeze_uri(input), "{}", input);
+    }
+}
+
+#[test]
+fn it_should_skip_invalid_ipv6s() {
+    for input in vec![
+        ":::",
+        "::1::",
+        ":1:",
+        "1:2:3:4:5:6:7:8:9",
+        //"1:2:3:4:5:6:7:127.0.0.1",
+        "1:2:3:4:5:6::7:8",
+        "1:2:3:4:5:6::127.0.0.1",
+        "1:127.0.0.1::",
+    ] {
+        assert_eq!(
+            None,
+            squeeze::look_ipv6address(input.as_bytes()),
+            "{}",
+            input
+        );
     }
 }

@@ -138,22 +138,50 @@ fn look_ip_literal(input: &[u8]) -> Option<usize> {
 }
 
 // https://tools.ietf.org/html/rfc4291#section-2.2
-fn look_ipv6address(input: &[u8]) -> Option<usize> {
+pub fn look_ipv6address(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+
+    let mut bytes_count = 0;
     let mut last_is_colon = false;
     let mut double_colon_found = false;
-    let mut idx = 0;
+
     while idx < input.len() {
-        if let Some(i) = look_colon(&input[idx..]) {
+        last_is_colon = false;
+        while let Some(i) = look_colon(&input[idx..]) {
+            if last_is_colon {
+                if double_colon_found {
+                    return None;
+                }
+                double_colon_found = true;
+                bytes_count += 2;
+            }
+            last_is_colon = true;
             idx += i;
-        } else if let Some(i) = look_ipv4_address(&input[idx..]) {
-            idx += i;
-        } else if let Some(i) = look_h16(&input[idx..]) {
-            idx += i;
-        } else {
-            break;
         }
+
+        if last_is_colon || idx == 0 {
+            if bytes_count == 12 || double_colon_found {
+                if let Some(i) = look_ipv4_address(&input[idx..]) {
+                    bytes_count += 4;
+                    idx += i;
+                    break;
+                }
+            }
+            if let Some(i) = look_h16(&input[idx..]) {
+                bytes_count += 2;
+                idx += i;
+                continue;
+            }
+        }
+
+        break;
     }
-    return Some(idx);
+
+    return if bytes_count == 16 || (double_colon_found && bytes_count <= 12) {
+        Some(idx)
+    } else {
+        None
+    };
 }
 
 // 1*4HEXDIG
