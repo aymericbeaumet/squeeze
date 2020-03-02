@@ -76,12 +76,12 @@ fn it_should_mirror_valid_uris() {
         // input in html link
         let html = format!("<a href=\"{}\">link</a>", input);
         assert_eq!(Some(input), squeeze::squeeze_uri(&html), "{}", html);
+        // input surrounded by { }
+        let curly_brackets = format!("{{{}}}", input);
+        assert_eq!(input, squeeze::squeeze_uri(&curly_brackets).unwrap());
         // TODO: input in markdown link
         //let markdown = format!("[link]({})", input);
         //assert_eq!(input, squeeze::squeeze_uri(&markdown).unwrap());
-        // TODO: input surrounded by { }
-        //let curly_brackets = format!("{}", input);
-        //assert_eq!(input, squeeze::squeeze_uri(&curly_brackets).unwrap());
     }
 }
 
