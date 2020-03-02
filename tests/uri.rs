@@ -42,7 +42,7 @@ fn it_should_mirror_valid_uris() {
         //("file:///etc/hosts", "file:///etc/hosts"),
         "http://localhost/",
         "mailto:fred@example.com",
-        //"foo://info.example.com?fred",
+        "foo://info.example.com?fred",
         //"ftp://ftp.is.co.za/rfc/rfc1808.txt",
         //"http://www.ietf.org/rfc/rfc2396.txt",
         "ldap://[2001:db8::7]/c=GB?objectClass?one",
@@ -88,19 +88,9 @@ fn it_should_mirror_valid_uris() {
 #[test]
 fn it_should_skip_invalid_uris() {
     for input in vec![
-        "", " ", ":", ":/", "://", "::",
-        "-:",
+        "", " ", ":", ":/", "://", "::", "-:",
         // meh
         //"http://test@",
-        // ipv6
-        //"http://[:::]",
-        //"http://[::1::]",
-        //"http://[:1:]",
-        //"http://[1:2:3:4:5:6:7:8:9]",
-        //"http://[1:2:3:4:5:6:7:127.0.0.1]",
-        //"http://[1:2:3:4:5:6::7:8]",
-        //"http://[1:2:3:4:5:6::127.0.0.1]",
-        //"http://[1:127.0.0.1::]",
     ] {
         assert_eq!(None, squeeze::squeeze_uri(input), "{}", input);
     }

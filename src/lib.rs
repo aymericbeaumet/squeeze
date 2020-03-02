@@ -125,7 +125,7 @@ fn look_userinfo_at(input: &[u8]) -> Option<usize> {
 fn look_host(input: &[u8]) -> Option<usize> {
     look_ip_literal(input)
         .or_else(|| look_ipv4_address(input))
-        .or_else(|| look_reg_name(input))
+        .or_else(|| look_hostname(input))
 }
 
 // "[" ( IPv6address / IPvFuture  ) "]"
@@ -142,11 +142,10 @@ pub fn look_ipv6address(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
 
     let mut bytes_count = 0;
-    let mut last_is_colon = false;
     let mut double_colon_found = false;
 
     while idx < input.len() {
-        last_is_colon = false;
+        let mut last_is_colon = false;
         while let Some(i) = look_colon(&input[idx..]) {
             if last_is_colon {
                 if double_colon_found {
@@ -196,7 +195,7 @@ fn look_h16(input: &[u8]) -> Option<usize> {
 
 // TODO
 // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
-fn look_ipvfuture(input: &[u8]) -> Option<usize> {
+fn look_ipvfuture(_input: &[u8]) -> Option<usize> {
     None
 }
 
@@ -242,11 +241,42 @@ fn look_dec_octet(input: &[u8]) -> Option<usize> {
     None
 }
 
-// TODO
-// *( unreserved / pct-encoded / sub-delims )
-fn look_reg_name(input: &[u8]) -> Option<usize> {
-    if input.starts_with(&[b'l', b'o', b'c', b'a', b'l', b'h', b'o', b's', b't']) {
-        Some("localhost".len())
+// https://en.wikipedia.org/wiki/Hostname#Restrictions_on_valid_hostnames
+fn look_hostname(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    while idx < input.len() && idx < 253 {
+        if idx > 0 {
+            if let Some(i) = look_dot(&input[idx..]) {
+                idx += i;
+            } else {
+                break;
+            }
+        }
+        if let Some(i) = look_label(&input[idx..]) {
+            idx += i;
+        } else {
+            break;
+        }
+    }
+    Some(idx)
+}
+
+fn look_label(input: &[u8]) -> Option<usize> {
+    let mut idx = 0;
+    if idx < input.len() && is_alpha(input[idx]) {
+        idx += 1;
+    } else {
+        return None;
+    }
+    while idx < input.len() && idx < 62 && (is_alpha(input[idx]) || input[idx] == b'-') {
+        idx += 1;
+    }
+    Some(idx)
+}
+
+fn look_dot(input: &[u8]) -> Option<usize> {
+    if input.len() >= 1 && input[0] == b'.' {
+        Some(1)
     } else {
         None
     }
@@ -429,11 +459,6 @@ fn is_alpha(c: u8) -> bool {
     (c >= b'a' && c <= b'z') || (c >= b'A' && c <= b'Z')
 }
 
-// CR
-fn is_cr(c: u8) -> bool {
-    c == b'\r'
-}
-
 // DIGIT
 fn is_digit(c: u8) -> bool {
     c >= b'0' && c <= b'9'
@@ -448,22 +473,7 @@ fn is_digit_0_to_5(c: u8) -> bool {
     c >= b'0' && c <= b'5'
 }
 
-// DQUOTE
-fn is_dquote(c: u8) -> bool {
-    c == b'"'
-}
-
 // HEXDIG
 fn is_hexdig(c: u8) -> bool {
     is_digit(c) || (c >= b'a' && c <= b'f' || c >= b'A' && c <= b'F')
-}
-
-// LF
-fn is_lf(c: u8) -> bool {
-    c == b'\n'
-}
-
-// SP
-fn is_sp(c: u8) -> bool {
-    c == b' '
 }
