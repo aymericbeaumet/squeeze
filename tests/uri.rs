@@ -39,7 +39,7 @@ fn it_should_mirror_valid_uris() {
         "http://[::ffff:192.0.2.128]",
         "http://[::ffff:c000:0280]",
         // rfc examples
-        //("file:///etc/hosts", "file:///etc/hosts"),
+        //"file:///etc/hosts",
         "http://localhost/",
         "mailto:fred@example.com",
         "foo://info.example.com?fred",
@@ -52,36 +52,17 @@ fn it_should_mirror_valid_uris() {
         "telnet://192.0.2.16:80/",
         "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
     ] {
-        // input
-        assert_eq!(Some(input), squeeze::squeeze_uri(&input), "{}", input,);
-        // input surrounded by spaces
-        let spaces = format!(" {} ", input);
-        assert_eq!(Some(input), squeeze::squeeze_uri(&spaces), "{}", spaces);
-        // input surrounded by < >
-        let surrounded = format!("<{}>", input);
-        assert_eq!(
-            Some(input),
-            squeeze::squeeze_uri(&surrounded),
-            "{}",
-            surrounded
-        );
-        // input surrounded by [ ]
-        let square_brackets = format!("[{}]", input);
-        assert_eq!(
-            Some(input),
-            squeeze::squeeze_uri(&square_brackets),
-            "{}",
-            square_brackets
-        );
-        // input in html link
-        let html = format!("<a href=\"{}\">link</a>", input);
-        assert_eq!(Some(input), squeeze::squeeze_uri(&html), "{}", html);
-        // input surrounded by { }
-        let curly_brackets = format!("{{{}}}", input);
-        assert_eq!(input, squeeze::squeeze_uri(&curly_brackets).unwrap());
-        // TODO: input in markdown link
-        //let markdown = format!("[link]({})", input);
-        //assert_eq!(input, squeeze::squeeze_uri(&markdown).unwrap());
+        for i in vec![
+            input.to_owned(),
+            format!(" {} ", input),
+            format!("<{}>", input),
+            format!("[{}]", input),
+            format!("<a href=\"{}\">link</a>", input),
+            format!("{{{}}}", input),
+            //format!("[link]({})", input);
+        ] {
+            assert_eq!(Some(input), squeeze::squeeze_uri(&i), "{}", input);
+        }
     }
 }
 
