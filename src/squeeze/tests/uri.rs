@@ -23,6 +23,7 @@ fn it_should_mirror_valid_uris() {
         "http://foobar:@localhost:8080?a=b#c=d",
         // meh
         "http://:@localhost:/?#",
+        "http://test@",
         // ipv4
         "http://127.0.0.0",
         "http://127.0.0.10",
@@ -39,7 +40,7 @@ fn it_should_mirror_valid_uris() {
         "http://[::ffff:192.0.2.128]",
         "http://[::ffff:c000:0280]",
         // rfc examples
-        //"file:///etc/hosts",
+        "file:///etc/hosts",
         "http://localhost/",
         "mailto:fred@example.com",
         "foo://info.example.com?fred",
@@ -68,11 +69,7 @@ fn it_should_mirror_valid_uris() {
 
 #[test]
 fn it_should_skip_invalid_uris() {
-    for input in vec![
-        "", " ", ":", ":/", "://", "::", "-:",
-        // meh
-        //"http://test@",
-    ] {
+    for input in vec!["", " ", ":", ":/", "://", "::", "-:"] {
         assert_eq!(None, squeeze::uri::find(input), "{}", input);
     }
 }
