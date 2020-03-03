@@ -100,6 +100,10 @@ fn it_should_properly_identify_valid_ipv6s() {
 #[test]
 fn it_should_properly_identify_invalid_ipv6s() {
     for input in vec![
+        " ",
+        " ::",
+        ":: ",
+        " :: ",
         ":::",
         "::1::",
         ":1:",
