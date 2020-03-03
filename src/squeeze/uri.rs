@@ -1,6 +1,6 @@
 // https://tools.ietf.org/html/rfc3986#appendix-A
 // scheme ":" hier-part [ "?" query ] [ "#" fragment ]
-pub fn squeeze_uri(s: &str) -> Option<&str> {
+pub fn find(s: &str) -> Option<&str> {
     let input = s.as_bytes();
 
     let colon_idx = input.iter().position(|&b| b == b':')?;

@@ -1,0 +1,9 @@
+[package]
+name = "squeeze"
+version = "0.1.0"
+authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
+edition = "2018"
+
+[lib]
+name = "squeeze"
+path = "lib.rs"

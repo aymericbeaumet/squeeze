@@ -61,7 +61,7 @@ fn it_should_mirror_valid_uris() {
             format!("{{{}}}", input),
             //format!("[link]({})", input);
         ] {
-            assert_eq!(Some(input), squeeze::squeeze_uri(&i), "{}", input);
+            assert_eq!(Some(input), squeeze::uri::find(&i), "{}", input);
         }
     }
 }
@@ -73,7 +73,7 @@ fn it_should_skip_invalid_uris() {
         // meh
         //"http://test@",
     ] {
-        assert_eq!(None, squeeze::squeeze_uri(input), "{}", input);
+        assert_eq!(None, squeeze::uri::find(input), "{}", input);
     }
 }
 
@@ -91,7 +91,7 @@ fn it_should_skip_invalid_ipv6s() {
     ] {
         assert_eq!(
             None,
-            squeeze::look_ipv6address(input.as_bytes()),
+            squeeze::uri::look_ipv6address(input.as_bytes()),
             "{}",
             input
         );

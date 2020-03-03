@@ -1,0 +1,13 @@
+[package]
+name = "squeeze-cli"
+version = "0.1.0"
+authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
+edition = "2018"
+
+[[bin]]
+name = "squeeze"
+path = "main.rs"
+
+[dependencies]
+clap = { git = "https://github.com/clap-rs/clap/" }
+squeeze = { path = "../squeeze" }
