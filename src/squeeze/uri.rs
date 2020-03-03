@@ -265,12 +265,18 @@ fn look_hostname(input: &[u8]) -> Option<usize> {
 
 fn look_label(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
-    if idx < input.len() && is_alpha(input[idx]) {
+    if idx < input.len() && (is_alpha(input[idx]) || is_digit(input[idx]) || input[idx] == b'_') {
         idx += 1;
     } else {
         return None;
     }
-    while idx < input.len() && idx < 62 && (is_alpha(input[idx]) || input[idx] == b'-') {
+    while idx < input.len()
+        && idx < 62
+        && (is_alpha(input[idx])
+            || is_digit(input[idx])
+            || input[idx] == b'_'
+            || input[idx] == b'-')
+    {
         idx += 1;
     }
     Some(idx)

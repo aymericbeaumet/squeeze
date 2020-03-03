@@ -1,4 +1,6 @@
 use squeeze;
+use std::fs::File;
+use std::io::{prelude::*, BufReader};
 
 #[test]
 fn it_should_mirror_valid_uris() {
@@ -52,6 +54,9 @@ fn it_should_mirror_valid_uris() {
         "tel:+1-816-555-1212",
         "telnet://192.0.2.16:80/",
         "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
+        // found in the wild
+        // TODO: support invalid % encoding?
+        // "http://hellmann-eickeloh.de/images/galerie/Linkedin/index.php?login=%0%"
     ] {
         for i in vec![
             input.to_owned(),
@@ -60,6 +65,7 @@ fn it_should_mirror_valid_uris() {
             format!("[{}]", input),
             format!("<a href=\"{}\">link</a>", input),
             format!("{{{}}}", input),
+            // TODO: markdown links
             //format!("[link]({})", input);
         ] {
             assert_eq!(Some(input), squeeze::uri::find(&i), "{}", input);
@@ -148,5 +154,22 @@ fn it_should_skip_invalid_path_abempty() {
             "{}",
             input
         );
+    }
+}
+
+#[test]
+fn it_should_succeed_to_mirror_the_fixtures_uris() {
+    let fixtures_glob = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("uri-*");
+
+    for filepath in glob::glob(fixtures_glob.to_str().unwrap()).unwrap() {
+        let file = File::open(filepath.unwrap()).unwrap();
+        let reader = BufReader::new(file);
+        for line in reader.lines() {
+            let input = line.unwrap();
+            assert_eq!(input, squeeze::uri::find(&input).unwrap_or(""), "{}", input);
+        }
     }
 }
