@@ -377,14 +377,6 @@ fn look_left_bracket(input: &[u8]) -> Option<usize> {
     }
 }
 
-fn look_right_bracket(input: &[u8]) -> Option<usize> {
-    if input.len() >= 1 && input[0] == b']' {
-        Some(1)
-    } else {
-        None
-    }
-}
-
 fn look_colon(input: &[u8]) -> Option<usize> {
     if input.len() >= 1 && input[0] == b':' {
         Some(1)
