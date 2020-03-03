@@ -48,7 +48,7 @@ fn look_hier_part(input: &[u8]) -> Option<usize> {
     // "/" [ segment-nz path-abempty ]
     if let Some(idx) = look_slash(input).map(|idx| {
         idx + look_segment_nz(&input[idx..])
-            .map(|idx| idx + look_path_abempty(&input[idx..]))
+            .map(|i| i + look_path_abempty(&input[idx + i..]))
             .unwrap_or(0)
     }) {
         return Some(idx);
@@ -80,10 +80,10 @@ fn look_colon_port(input: &[u8]) -> Option<usize> {
 }
 
 // *( "/" segment )
-fn look_path_abempty(input: &[u8]) -> usize {
+pub fn look_path_abempty(input: &[u8]) -> usize {
     let mut idx = 0;
     while idx < input.len() {
-        idx += match look_slash(&input[idx..]).map(|idx| idx + look_segment(&input[idx..])) {
+        idx += match look_slash(&input[idx..]).map(|i| i + look_segment(&input[idx + i..])) {
             Some(n) => n,
             None => break,
         };
@@ -113,7 +113,7 @@ fn look_segment_nz(input: &[u8]) -> Option<usize> {
 
 // userinfo "@"
 fn look_userinfo_at(input: &[u8]) -> Option<usize> {
-    let arobase_idx = input.iter().position(|&b| b == b'@')?;
+    let arobase_idx = input.iter().take(256).position(|&b| b == b'@')?;
     if is_userinfo(&input[..arobase_idx]) {
         Some(arobase_idx + 1)
     } else {
@@ -410,7 +410,7 @@ fn look_slash(input: &[u8]) -> Option<usize> {
 }
 
 fn look_slash_slash(input: &[u8]) -> Option<usize> {
-    if input.len() > 1 && input[0] == b'/' && input[1] == b'/' {
+    if input.len() >= 2 && input[0] == b'/' && input[1] == b'/' {
         Some(2)
     } else {
         None
@@ -469,5 +469,5 @@ fn is_digit_0_to_5(c: u8) -> bool {
 
 // HEXDIG
 fn is_hexdig(c: u8) -> bool {
-    is_digit(c) || (c >= b'a' && c <= b'f' || c >= b'A' && c <= b'F')
+    is_digit(c) || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
 }

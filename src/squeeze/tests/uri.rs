@@ -43,8 +43,8 @@ fn it_should_mirror_valid_uris() {
         "http://localhost/",
         "mailto:fred@example.com",
         "foo://info.example.com?fred",
-        //"ftp://ftp.is.co.za/rfc/rfc1808.txt",
-        //"http://www.ietf.org/rfc/rfc2396.txt",
+        "ftp://ftp.is.co.za/rfc/rfc1808.txt",
+        "http://www.ietf.org/rfc/rfc2396.txt",
         "ldap://[2001:db8::7]/c=GB?objectClass?one",
         "mailto:John.Doe@example.com",
         "news:comp.infosystems.www.servers.unix",
@@ -116,6 +116,38 @@ fn it_should_properly_identify_invalid_ipv6s() {
         assert_eq!(
             false,
             squeeze::uri::is_ipv6address(input.as_bytes()),
+            "{}",
+            input
+        );
+    }
+}
+
+#[test]
+fn it_should_mirror_the_len_of_valid_path_abempty() {
+    for input in vec![
+        "",
+        "/",
+        "//",
+        "///",
+        "/foo/bar",
+        "/rfc/rfc1808.txt",
+        "/with/trailing/",
+    ] {
+        assert_eq!(
+            input.len(),
+            squeeze::uri::look_path_abempty(input.as_bytes()),
+            "{}",
+            input
+        );
+    }
+}
+
+#[test]
+fn it_should_skip_invalid_path_abempty() {
+    for input in vec!["foobar"] {
+        assert_eq!(
+            0,
+            squeeze::uri::look_path_abempty(input.as_bytes()),
             "{}",
             input
         );
