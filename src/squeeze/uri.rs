@@ -132,13 +132,19 @@ fn look_host(input: &[u8]) -> Option<usize> {
 fn look_ip_literal(input: &[u8]) -> Option<usize> {
     let mut idx = 0;
     idx += look_left_bracket(&input[idx..])?;
-    idx += look_ipv6address(&input[idx..]).or_else(|| look_ipvfuture(&input[idx..]))?;
-    idx += look_right_bracket(&input[idx..])?;
-    Some(idx)
+    let right_bracket_index = (&input[idx..]).iter().take(64).position(|&b| b == b']')?;
+    if right_bracket_index > 0 {
+        let end = idx + right_bracket_index;
+        let slice = &input[idx..end];
+        if is_ipv6address(slice) || is_ipvfuture(slice) {
+            return Some(end + 1);
+        }
+    }
+    None
 }
 
 // https://tools.ietf.org/html/rfc4291#section-2.2
-pub fn look_ipv6address(input: &[u8]) -> Option<usize> {
+pub fn is_ipv6address(input: &[u8]) -> bool {
     let mut idx = 0;
 
     let mut bytes_count = 0;
@@ -149,7 +155,7 @@ pub fn look_ipv6address(input: &[u8]) -> Option<usize> {
         while let Some(i) = look_colon(&input[idx..]) {
             if last_is_colon {
                 if double_colon_found {
-                    return None;
+                    return false;
                 }
                 double_colon_found = true;
                 bytes_count += 2;
@@ -176,11 +182,7 @@ pub fn look_ipv6address(input: &[u8]) -> Option<usize> {
         break;
     }
 
-    return if bytes_count == 16 || (double_colon_found && bytes_count <= 12) {
-        Some(idx)
-    } else {
-        None
-    };
+    idx == input.len() && (bytes_count == 16 || (double_colon_found && bytes_count <= 12))
 }
 
 // 1*4HEXDIG
@@ -195,8 +197,8 @@ fn look_h16(input: &[u8]) -> Option<usize> {
 
 // TODO
 // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
-fn look_ipvfuture(_input: &[u8]) -> Option<usize> {
-    None
+fn is_ipvfuture(_input: &[u8]) -> bool {
+    false
 }
 
 // dec-octet "." dec-octet "." dec-octet "." dec-octet

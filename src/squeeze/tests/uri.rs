@@ -78,20 +78,40 @@ fn it_should_skip_invalid_uris() {
 }
 
 #[test]
-fn it_should_skip_invalid_ipv6s() {
+fn it_should_properly_identify_valid_ipv6s() {
+    for input in vec![
+        "::",
+        "::1",
+        "1::",
+        "1:2:3:4:5:6:7:8",
+        "1:2:3:4:5:6::7",
+        "1:2:3:4:5:6:127.0.0.1",
+        "1::127.0.0.1",
+    ] {
+        assert_eq!(
+            true,
+            squeeze::uri::is_ipv6address(input.as_bytes()),
+            "{}",
+            input
+        );
+    }
+}
+
+#[test]
+fn it_should_properly_identify_invalid_ipv6s() {
     for input in vec![
         ":::",
         "::1::",
         ":1:",
         "1:2:3:4:5:6:7:8:9",
-        //"1:2:3:4:5:6:7:127.0.0.1",
+        "1:2:3:4:5:6:7:127.0.0.1",
         "1:2:3:4:5:6::7:8",
         "1:2:3:4:5:6::127.0.0.1",
         "1:127.0.0.1::",
     ] {
         assert_eq!(
-            None,
-            squeeze::uri::look_ipv6address(input.as_bytes()),
+            false,
+            squeeze::uri::is_ipv6address(input.as_bytes()),
             "{}",
             input
         );
