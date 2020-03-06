@@ -1,48 +1,61 @@
+use std::ops::Range;
+
 // https://tools.ietf.org/html/rfc3986#appendix-A
 // scheme ":" hier-part [ "?" query ] [ "#" fragment ]
-pub fn find(s: &str) -> Option<&str> {
-    let input = s.as_bytes();
+pub fn find(s: &str) -> Option<Range<usize>> {
+    let mut idx = 0;
 
-    let colon_idx = input.iter().position(|&b| b == b':')?;
-    let scheme_idx = find_scheme(&input[..colon_idx])?;
+    while idx < s.len() {
+        let input = &s[idx..].as_bytes();
 
-    let mut idx = colon_idx + 1;
-    if idx >= s.len() {
-        return None;
+        let colon_idx = input.iter().position(|&b| b == b':')?;
+        idx += colon_idx + 1;
+
+        let scheme_idx = match rtl_look_scheme(&input[..colon_idx]) {
+            Some(i) => i,
+            None => continue,
+        };
+
+        if idx > s.len() {
+            break;
+        }
+
+        idx += look_hier_part(&input[idx..]);
+        idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
+        idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
+
+        return Some(scheme_idx..idx);
     }
-    idx += look_hier_part(&input[idx..])?;
-    idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
-    idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
-    Some(&s[scheme_idx..idx])
+    None
 }
 
 // ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
-fn find_scheme(input: &[u8]) -> Option<usize> {
-    let mut scheme_idx = None;
+fn rtl_look_scheme(input: &[u8]) -> Option<usize> {
+    let mut idx = None;
     for (i, &c) in input.iter().enumerate().rev() {
         if is_alpha(c) {
-            scheme_idx = Some(i);
+            idx = Some(i);
         } else if is_digit(c) || [b'+', b'-', b'.'].contains(&c) {
             // noop
         } else {
             break;
         }
     }
-    scheme_idx
+    idx
 }
 
 // hier-part = "//" authority path-abempty
 //           / path-absolute
 //           / path-rootless
 //           / path-empty
-fn look_hier_part(input: &[u8]) -> Option<usize> {
+fn look_hier_part(input: &[u8]) -> usize {
     // "//" authority path-abempty
     if let Some(idx) = look_slash_slash(input)
         .and_then(|idx| Some(idx + look_authority(&input[idx..])?))
         .map(|idx| idx + look_path_abempty(&input[idx..]))
     {
-        return Some(idx);
+        return idx;
     }
 
     // "/" [ segment-nz path-abempty ]
@@ -51,16 +64,16 @@ fn look_hier_part(input: &[u8]) -> Option<usize> {
             .map(|i| i + look_path_abempty(&input[idx + i..]))
             .unwrap_or(0)
     }) {
-        return Some(idx);
+        return idx;
     }
 
     // segment-nz path-abempty
     if let Some(idx) = look_segment_nz(input).map(|idx| idx + look_path_abempty(&input[idx..])) {
-        return Some(idx);
+        return idx;
     }
 
     // 0<pchar>
-    Some(0)
+    0
 }
 
 // [ userinfo "@" ] host [ ":" port ]
@@ -80,7 +93,7 @@ fn look_colon_port(input: &[u8]) -> Option<usize> {
 }
 
 // *( "/" segment )
-pub fn look_path_abempty(input: &[u8]) -> usize {
+fn look_path_abempty(input: &[u8]) -> usize {
     let mut idx = 0;
     while idx < input.len() {
         idx += match look_slash(&input[idx..]).map(|i| i + look_segment(&input[idx + i..])) {
@@ -144,7 +157,7 @@ fn look_ip_literal(input: &[u8]) -> Option<usize> {
 }
 
 // https://tools.ietf.org/html/rfc4291#section-2.2
-pub fn is_ipv6address(input: &[u8]) -> bool {
+fn is_ipv6address(input: &[u8]) -> bool {
     let mut idx = 0;
 
     let mut bytes_count = 0;
@@ -476,4 +489,71 @@ fn is_digit_0_to_5(c: u8) -> bool {
 // HEXDIG
 fn is_hexdig(c: u8) -> bool {
     is_digit(c) || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_ipv6address_should_identify_valid_ipv6s() {
+        for input in vec![
+            "::",
+            "::1",
+            "1::",
+            "1:2:3:4:5:6:7:8",
+            "1:2:3:4:5:6::7",
+            "1:2:3:4:5:6:127.0.0.1",
+            "1::127.0.0.1",
+        ] {
+            assert_eq!(true, is_ipv6address(input.as_bytes()), "{}", input);
+        }
+    }
+
+    #[test]
+    fn is_ipv6address_should_identify_invalid_ipv6s() {
+        for input in vec![
+            " ",
+            " ::",
+            ":: ",
+            " :: ",
+            ":::",
+            "::1::",
+            ":1:",
+            "1:2:3:4:5:6:7:8:9",
+            "1:2:3:4:5:6:7:127.0.0.1",
+            "1:2:3:4:5:6::7:8",
+            "1:2:3:4:5:6::127.0.0.1",
+            "1:127.0.0.1::",
+        ] {
+            assert_eq!(false, is_ipv6address(input.as_bytes()), "{}", input);
+        }
+    }
+
+    #[test]
+    fn look_path_abempty_should_mirror_the_len_of_valid_inputs() {
+        for input in vec![
+            "",
+            "/",
+            "//",
+            "///",
+            "/foo/bar",
+            "/rfc/rfc1808.txt",
+            "/with/trailing/",
+        ] {
+            assert_eq!(
+                input.len(),
+                look_path_abempty(input.as_bytes()),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn look_path_abempty_should_skip_invalid_inputs() {
+        for input in vec!["foobar"] {
+            assert_eq!(0, look_path_abempty(input.as_bytes()), "{}", input);
+        }
+    }
 }

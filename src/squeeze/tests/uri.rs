@@ -41,6 +41,8 @@ fn it_should_mirror_valid_uris() {
         "http://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]",
         "http://[::ffff:192.0.2.128]",
         "http://[::ffff:c000:0280]",
+        // scheme only
+        "foobar:",
         // rfc examples
         "file:///etc/hosts",
         "http://localhost/",
@@ -66,94 +68,9 @@ fn it_should_mirror_valid_uris() {
             format!("<a href=\"{}\">link</a>", input),
             format!("{{{}}}", input),
             // TODO: markdown links
-            //format!("[link]({})", input);
         ] {
-            assert_eq!(Some(input), squeeze::uri::find(&i), "{}", input);
+            assert_eq!(input, &i[squeeze::uri::find(&i).expect(input)], "{}", input);
         }
-    }
-}
-
-#[test]
-fn it_should_skip_invalid_uris() {
-    for input in vec!["", " ", ":", ":/", "://", "::", "-:"] {
-        assert_eq!(None, squeeze::uri::find(input), "{}", input);
-    }
-}
-
-#[test]
-fn it_should_properly_identify_valid_ipv6s() {
-    for input in vec![
-        "::",
-        "::1",
-        "1::",
-        "1:2:3:4:5:6:7:8",
-        "1:2:3:4:5:6::7",
-        "1:2:3:4:5:6:127.0.0.1",
-        "1::127.0.0.1",
-    ] {
-        assert_eq!(
-            true,
-            squeeze::uri::is_ipv6address(input.as_bytes()),
-            "{}",
-            input
-        );
-    }
-}
-
-#[test]
-fn it_should_properly_identify_invalid_ipv6s() {
-    for input in vec![
-        " ",
-        " ::",
-        ":: ",
-        " :: ",
-        ":::",
-        "::1::",
-        ":1:",
-        "1:2:3:4:5:6:7:8:9",
-        "1:2:3:4:5:6:7:127.0.0.1",
-        "1:2:3:4:5:6::7:8",
-        "1:2:3:4:5:6::127.0.0.1",
-        "1:127.0.0.1::",
-    ] {
-        assert_eq!(
-            false,
-            squeeze::uri::is_ipv6address(input.as_bytes()),
-            "{}",
-            input
-        );
-    }
-}
-
-#[test]
-fn it_should_mirror_the_len_of_valid_path_abempty() {
-    for input in vec![
-        "",
-        "/",
-        "//",
-        "///",
-        "/foo/bar",
-        "/rfc/rfc1808.txt",
-        "/with/trailing/",
-    ] {
-        assert_eq!(
-            input.len(),
-            squeeze::uri::look_path_abempty(input.as_bytes()),
-            "{}",
-            input
-        );
-    }
-}
-
-#[test]
-fn it_should_skip_invalid_path_abempty() {
-    for input in vec!["foobar"] {
-        assert_eq!(
-            0,
-            squeeze::uri::look_path_abempty(input.as_bytes()),
-            "{}",
-            input
-        );
     }
 }
 
@@ -169,7 +86,12 @@ fn it_should_succeed_to_mirror_the_fixtures_uris() {
         let reader = BufReader::new(file);
         for line in reader.lines() {
             let input = line.unwrap();
-            assert_eq!(input, squeeze::uri::find(&input).unwrap_or(""), "{}", input);
+            assert_eq!(
+                Some(0..input.len()),
+                squeeze::uri::find(&input),
+                "{}",
+                input
+            );
         }
     }
 }
