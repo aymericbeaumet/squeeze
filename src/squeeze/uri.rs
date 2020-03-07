@@ -1,37 +1,55 @@
+// https://tools.ietf.org/html/rfc3986#appendix-A
+
+use std::collections::HashSet;
 use std::ops::Range;
 
-// https://tools.ietf.org/html/rfc3986#appendix-A
+static DISALLOW_EMPTY_HIER_PART: phf::Set<&'static str> = phf::phf_set! {
+    "ftp",
+    "http",
+    "https",
+};
+
+#[derive(Default)]
+pub struct Config {
+    schemes: HashSet<String>,
+}
+
+impl Config {
+    pub fn scheme(&mut self, s: &str) {
+        self.schemes.insert(s.to_owned());
+    }
+}
+
 // scheme ":" hier-part [ "?" query ] [ "#" fragment ]
-pub fn find(s: &str) -> Option<Range<usize>> {
+pub fn find(s: &str, c: &Config) -> Option<Range<usize>> {
+    let input = s.as_bytes();
     let mut idx = 0;
 
-    while idx < s.len() {
-        let input = &s[idx..].as_bytes();
+    while idx < input.len() {
+        let start = idx;
 
-        let colon_idx = input.iter().position(|&b| b == b':')?;
-        idx += colon_idx + 1;
+        let colon_idx = start + &input[start..].iter().position(|&b| b == b':')?;
+        idx = colon_idx + 1;
 
-        let scheme_idx = match rtl_look_scheme(&input[..colon_idx]) {
-            Some(i) => i,
+        let scheme_idx = match rlook_scheme(&input[start..colon_idx]) {
+            Some(i) => start + i,
             None => continue,
         };
-
-        if idx > s.len() {
-            break;
-        }
 
         idx += look_hier_part(&input[idx..]);
         idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
         idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
-        return Some(scheme_idx..idx);
+        if c.schemes.is_empty() || c.schemes.contains(&s[scheme_idx..colon_idx]) {
+            return Some(scheme_idx..idx);
+        }
     }
 
     None
 }
 
 // ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
-fn rtl_look_scheme(input: &[u8]) -> Option<usize> {
+fn rlook_scheme(input: &[u8]) -> Option<usize> {
     let mut idx = None;
     for (i, &c) in input.iter().enumerate().rev() {
         if is_alpha(c) {
@@ -208,9 +226,9 @@ fn look_h16(input: &[u8]) -> Option<usize> {
     }
 }
 
-// TODO
 // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
 fn is_ipvfuture(_input: &[u8]) -> bool {
+    // TODO: implementation
     false
 }
 

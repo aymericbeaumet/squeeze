@@ -24,14 +24,14 @@ cargo install --path=/tmp/squeeze/src/squeeze-cli
 - Extract the first URL:
 
 ```shell
-echo 'lorem https://github.com ipsum' | squeeze -1 --uri
+echo 'lorem https://github.com ipsum' | squeeze -1 --url
 # https://github.com
 ```
 
 - Extract all the URLs:
 
 ```shell
-squeeze --uri << EOF
+squeeze --url << EOF
 this a domain: github.com, but this is a url: https://aymericbeaumet.com
 this is some markdown: [link](https://wikipedia.com)
 EOF
@@ -48,7 +48,7 @@ EOF
 
 ```vim
 " ~/.vimrc
-vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --uri \| xargs open<CR><CR>
+vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
 ```
 
 ### tmux
@@ -58,5 +58,5 @@ vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --uri \| xargs open<CR><CR>
 
 ```tmux
 # ~/.tmux.conf
-bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --uri | xargs open"
+bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
 ```

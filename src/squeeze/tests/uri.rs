@@ -1,4 +1,4 @@
-use squeeze;
+use squeeze::uri;
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 
@@ -57,8 +57,7 @@ fn it_should_mirror_valid_uris() {
         "telnet://192.0.2.16:80/",
         "urn:oasis:names:specification:docbook:dtd:xml:4.1.2",
         // found in the wild
-        // TODO: support invalid % encoding?
-        // "http://hellmann-eickeloh.de/images/galerie/Linkedin/index.php?login=%0%"
+        // "http://hellmann-eickeloh.de/images/galerie/Linkedin/index.php?login=%0%" // TODO: support invalid % encoding?
     ] {
         for i in vec![
             input.to_owned(),
@@ -67,9 +66,16 @@ fn it_should_mirror_valid_uris() {
             format!("[{}]", input),
             format!("<a href=\"{}\">link</a>", input),
             format!("{{{}}}", input),
-            // TODO: markdown links
+            format!("\"{}\"", input),
+            //format!("[link]({})", input), // TODO: markdown links
+            //format!("'{}'", input), // TODO: links in single quotes
         ] {
-            assert_eq!(input, &i[squeeze::uri::find(&i).expect(input)], "{}", input);
+            assert_eq!(
+                input,
+                &i[uri::find(&i, &uri::Config::default()).expect(input)],
+                "{}",
+                input
+            );
         }
     }
 }
@@ -88,7 +94,7 @@ fn it_should_succeed_to_mirror_the_fixtures_uris() {
             let input = line.unwrap();
             assert_eq!(
                 Some(0..input.len()),
-                squeeze::uri::find(&input),
+                uri::find(&input, &uri::Config::default()),
                 "{}",
                 input
             );
