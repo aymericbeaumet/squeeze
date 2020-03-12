@@ -1,0 +1,15 @@
+[package]
+name = "squeeze"
+version = "0.1.0"
+authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
+edition = "2018"
+
+[lib]
+name = "squeeze"
+path = "lib.rs"
+
+[dependencies]
+phf = { version = "0.8", features = ["macros"] }
+
+[dev-dependencies]
+glob = "0.3.0"

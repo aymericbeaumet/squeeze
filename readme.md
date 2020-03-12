@@ -12,8 +12,11 @@ meant to be orthogonal to tools like xargs(1) and open(1). See
 
 ## Install
 
+### Using git
+
 ```shell
-go install github.com/aymericbeaumet/squeeze
+git clone https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
+cargo install --path=/tmp/squeeze/src/squeeze-cli
 ```
 
 ## Examples
