@@ -25,7 +25,6 @@ fn it_should_mirror_valid_uris() {
         "http://foobar:@localhost:8080?a=b#c=d",
         // meh
         "http://:@localhost:/?#",
-        "http://test@",
         // ipv4
         "http://127.0.0.0",
         "http://127.0.0.10",
@@ -77,6 +76,23 @@ fn it_should_mirror_valid_uris() {
                 input
             );
         }
+    }
+}
+
+#[test]
+fn it_should_ignore_invalid_uris() {
+    for input in vec![
+        // some protocols require a host
+        "ftp:///test",
+        "http:///test",
+        "https:///test",
+    ] {
+        assert_eq!(
+            None,
+            uri::find(&input, &uri::Config::default()),
+            "{}",
+            input
+        );
     }
 }
 

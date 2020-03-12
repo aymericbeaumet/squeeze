@@ -3,11 +3,22 @@
 use std::collections::HashSet;
 use std::ops::Range;
 
-static DISALLOW_EMPTY_HIER_PART: phf::Set<&'static str> = phf::phf_set! {
-    "ftp",
-    "http",
-    "https",
+/*
+ * Scheme specific configuration (statically defined at compile time)
+ */
+
+type SchemeConfig = u8;
+const DISALLOW_EMPTY_HOST: u8 = 1 << 0;
+
+static SCHEMES_CONFIGS: phf::Map<&'static str, SchemeConfig> = phf::phf_map! {
+    "ftp" => DISALLOW_EMPTY_HOST,
+    "http" => DISALLOW_EMPTY_HOST,
+    "https" => DISALLOW_EMPTY_HOST,
 };
+
+/*
+ * Runtime configuration
+ */
 
 #[derive(Default)]
 pub struct Config {
@@ -35,12 +46,14 @@ pub fn find(s: &str, c: &Config) -> Option<Range<usize>> {
             Some(i) => start + i,
             None => continue,
         };
+        let scheme = &s[scheme_idx..colon_idx];
+        let scheme_config = SCHEMES_CONFIGS.get(scheme);
 
-        idx += look_hier_part(&input[idx..]);
+        idx += look_hier_part(&input[idx..], scheme_config)?;
         idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
         idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
-        if c.schemes.is_empty() || c.schemes.contains(&s[scheme_idx..colon_idx]) {
+        if c.schemes.is_empty() || c.schemes.contains(scheme) {
             return Some(scheme_idx..idx);
         }
     }
@@ -67,13 +80,20 @@ fn rlook_scheme(input: &[u8]) -> Option<usize> {
 //           / path-absolute
 //           / path-rootless
 //           / path-empty
-fn look_hier_part(input: &[u8]) -> usize {
+fn look_hier_part(input: &[u8], sc: Option<&SchemeConfig>) -> Option<usize> {
     // "//" authority path-abempty
     if let Some(idx) = look_slash_slash(input)
-        .and_then(|idx| Some(idx + look_authority(&input[idx..])?))
+        .and_then(|idx| Some(idx + look_authority(&input[idx..], sc)?))
         .map(|idx| idx + look_path_abempty(&input[idx..]))
     {
-        return idx;
+        return Some(idx);
+    }
+
+    // Some protocols disallow empty hosts
+    if let Some(sc) = sc {
+        if (sc & DISALLOW_EMPTY_HOST) != 0 {
+            return None;
+        }
     }
 
     // "/" [ segment-nz path-abempty ]
@@ -82,23 +102,32 @@ fn look_hier_part(input: &[u8]) -> usize {
             .map(|i| i + look_path_abempty(&input[idx + i..]))
             .unwrap_or(0)
     }) {
-        return idx;
+        return Some(idx);
     }
 
     // segment-nz path-abempty
     if let Some(idx) = look_segment_nz(input).map(|idx| idx + look_path_abempty(&input[idx..])) {
-        return idx;
+        return Some(idx);
     }
 
     // 0<pchar>
-    0
+    Some(0)
 }
 
 // [ userinfo "@" ] host [ ":" port ]
-fn look_authority(input: &[u8]) -> Option<usize> {
+fn look_authority(input: &[u8], sc: Option<&SchemeConfig>) -> Option<usize> {
     let mut idx = 0;
     idx += look_userinfo_at(&input[idx..]).unwrap_or(0);
-    idx += look_host(&input[idx..])?;
+    idx += look_host(&input[idx..]).and_then(|i| {
+        if i == 0 {
+            if let Some(sc) = sc {
+                if (sc & DISALLOW_EMPTY_HOST) != 0 {
+                    return None;
+                }
+            }
+        }
+        Some(i)
+    })?;
     idx += look_colon_port(&input[idx..]).unwrap_or(0);
     Some(idx)
 }
