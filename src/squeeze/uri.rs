@@ -4,17 +4,43 @@ use std::collections::HashSet;
 use std::ops::Range;
 
 /*
- * Scheme specific configuration (statically defined at compile time)
+ * Scheme specific configuration
  */
 
-type SchemeConfig = u8;
+#[derive(Clone, Copy)]
+struct SchemeConfig(u8);
+
+impl SchemeConfig {
+    fn has(&self, flag: u8) -> bool {
+        (self.0 & flag) != 0
+    }
+}
+
+impl Default for SchemeConfig {
+    fn default() -> Self {
+        SchemeConfig(0)
+    }
+}
+
+struct SchemeConfigs(phf::Map<&'static str, SchemeConfig>);
+
+impl SchemeConfigs {
+    fn get(&self, key: &str) -> SchemeConfig {
+        if let Some(sc) = self.0.get(key) {
+            *sc
+        } else {
+            SchemeConfig::default()
+        }
+    }
+}
+
 const DISALLOW_EMPTY_HOST: u8 = 1 << 0;
 
-static SCHEMES_CONFIGS: phf::Map<&'static str, SchemeConfig> = phf::phf_map! {
-    "ftp" => DISALLOW_EMPTY_HOST,
-    "http" => DISALLOW_EMPTY_HOST,
-    "https" => DISALLOW_EMPTY_HOST,
-};
+static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
+    "ftp" => SchemeConfig(DISALLOW_EMPTY_HOST),
+    "http" => SchemeConfig(DISALLOW_EMPTY_HOST),
+    "https" => SchemeConfig(DISALLOW_EMPTY_HOST),
+});
 
 /*
  * Runtime configuration
@@ -80,7 +106,7 @@ fn rlook_scheme(input: &[u8]) -> Option<usize> {
 //           / path-absolute
 //           / path-rootless
 //           / path-empty
-fn look_hier_part(input: &[u8], sc: Option<&SchemeConfig>) -> Option<usize> {
+fn look_hier_part(input: &[u8], sc: SchemeConfig) -> Option<usize> {
     // "//" authority path-abempty
     if let Some(idx) = look_slash_slash(input)
         .and_then(|idx| Some(idx + look_authority(&input[idx..], sc)?))
@@ -90,10 +116,8 @@ fn look_hier_part(input: &[u8], sc: Option<&SchemeConfig>) -> Option<usize> {
     }
 
     // Some protocols disallow empty hosts
-    if let Some(sc) = sc {
-        if (sc & DISALLOW_EMPTY_HOST) != 0 {
-            return None;
-        }
+    if sc.has(DISALLOW_EMPTY_HOST) {
+        return None;
     }
 
     // "/" [ segment-nz path-abempty ]
@@ -115,15 +139,13 @@ fn look_hier_part(input: &[u8], sc: Option<&SchemeConfig>) -> Option<usize> {
 }
 
 // [ userinfo "@" ] host [ ":" port ]
-fn look_authority(input: &[u8], sc: Option<&SchemeConfig>) -> Option<usize> {
+fn look_authority(input: &[u8], sc: SchemeConfig) -> Option<usize> {
     let mut idx = 0;
     idx += look_userinfo_at(&input[idx..]).unwrap_or(0);
     idx += look_host(&input[idx..]).and_then(|i| {
         if i == 0 {
-            if let Some(sc) = sc {
-                if (sc & DISALLOW_EMPTY_HOST) != 0 {
-                    return None;
-                }
+            if sc.has(DISALLOW_EMPTY_HOST) {
+                return None;
             }
         }
         Some(i)
