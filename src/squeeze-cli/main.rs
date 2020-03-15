@@ -17,7 +17,7 @@ struct Opts {
 
     // codetag
     #[clap(long = "codetag", help = "search for codetags")]
-    codetag: Option<Option<String>>,
+    mnemonic: Option<Option<String>>,
     #[clap(
         long = "hide-mnemonic",
         help = "whether to show the mnemonics in the results"
@@ -34,7 +34,7 @@ struct Opts {
 
     // uri
     #[clap(long = "uri", help = "search for uris")]
-    uri: Option<Option<String>>,
+    scheme: Option<Option<String>>,
     #[clap(
         long = "url",
         help = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
@@ -50,13 +50,13 @@ impl TryFrom<&Opts> for Codetag {
     type Error = ();
 
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.codetag.is_some() || opts.fixme || opts.todo) {
+        if !(opts.mnemonic.is_some() || opts.fixme || opts.todo) {
             return Err(());
         }
 
         let mut finder = Codetag::default();
         finder.hide_mnemonic = opts.hide_mnemonic;
-        if let Some(Some(ref mnemonic)) = opts.codetag {
+        if let Some(Some(ref mnemonic)) = opts.mnemonic {
             for m in mnemonic.split(",") {
                 finder.add_mnemonic(m);
             }
@@ -89,13 +89,13 @@ impl TryFrom<&Opts> for URI {
     type Error = ();
 
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.uri.is_some() || opts.url || opts.http || opts.https) {
+        if !(opts.scheme.is_some() || opts.url || opts.http || opts.https) {
             return Err(());
         }
 
         let mut finder = URI::default();
-        if let Some(Some(ref uri)) = opts.uri {
-            for s in uri.split(",") {
+        if let Some(Some(ref scheme)) = opts.scheme {
+            for s in scheme.split(",") {
                 finder.add_scheme(s);
             }
         }
