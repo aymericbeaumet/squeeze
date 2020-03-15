@@ -4,7 +4,9 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information from any text (raw, JSON, HTML, YAML, etc), currently supported:
+information from any text (raw, JSON, HTML, YAML, etc).
+
+Currently supported:
 
 - Codetags (as defined per [PEP 350](https://www.python.org/dev/peps/pep-0350/))
 - URIs (as defined per [RFC 3986](https://tools.ietf.org/html/rfc3986/))
@@ -96,12 +98,8 @@ copy the result into your clipboard:
 
 ```shell
 # ~/.bashrc ~/.zshrc
-urls() {
-  fc -rl 1 | squeeze --url | sort -u
-}
-furls() {
-  urls | fzf | pbcopy
-}
+urls() { fc -rl 1 | squeeze --url | sort -u; }
+furls() { urls | fzf | pbcopy; }
 ```
 
 ### tmux
@@ -129,5 +127,5 @@ vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
 Search the output of any command supporting the `$PAGER` environment variable:
 
 ```shell
-$ PAGER='squeeze --url' man git
+env PAGER='squeeze --url' man git
 ```
