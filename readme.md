@@ -84,13 +84,14 @@ bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xarg
 vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
 ```
 
-### zsh
+### shell (bash, zsh)
 
-- Use the `urls` function to list all the URLs in your shell history. You can
-  even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it:
+- Define an `urls` function to list all the URLs in your shell history. You can
+  even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it
+  and copy the result into your clipboard:
 
-```zsh
-# ~/.zshrc
+```shell
+# ~/.bashrc ~/.zshrc
 urls() {
   fc -rl 1 | squeeze --url | sort -u
 }
