@@ -79,6 +79,8 @@ pub fn find(s: &str, c: &Config) -> Option<Range<usize>> {
         idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
         idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
+        // we cannot early exit as soon as we know the scheme as we need to advance idx even if the
+        // url should be discarded
         if c.schemes.is_empty() || c.schemes.contains(scheme) {
             return Some(scheme_idx..idx);
         }

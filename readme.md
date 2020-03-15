@@ -4,7 +4,7 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information from any text (raw, JSON, HTML, YAML, etc).
+information (URIs, Codetags, etc) from any text (raw, JSON, HTML, YAML, etc).
 
 It has proven to be particularly useful to optimize a work environment. It is
 meant to be orthogonal to tools like xargs(1) and open(1). See
@@ -13,6 +13,9 @@ meant to be orthogonal to tools like xargs(1) and open(1). See
 ## Install
 
 ### Using git
+
+_This method requires the [Rust
+toolchain](https://www.rust-lang.org/tools/install) to be installed._
 
 ```shell
 git clone https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
@@ -25,7 +28,10 @@ cargo install --path=/tmp/squeeze/src/squeeze-cli
 
 ```shell
 echo 'lorem https://github.com ipsum' | squeeze -1 --url
-# https://github.com
+```
+
+```
+https://github.com
 ```
 
 - Extract all the URLs:
@@ -35,8 +41,24 @@ squeeze --url << EOF
 this a domain: github.com, but this is a url: https://aymericbeaumet.com
 this is some markdown: [link](https://wikipedia.com)
 EOF
-# https://aymericbeaumet.com
-# https://wikipedia.com
+```
+
+```
+https://aymericbeaumet.com
+https://wikipedia.com
+```
+
+- Extract the TODO codetags:
+
+```shell
+squeeze --todo << EOF
+// TODO: implement the main function
+fn main {}
+EOF
+```
+
+```
+TODO: implement the main function
 ```
 
 ## Integrations
