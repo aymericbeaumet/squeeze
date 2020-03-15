@@ -1,11 +1,8 @@
 // https://tools.ietf.org/html/rfc3986#appendix-A
 
+use super::Finder;
 use std::collections::HashSet;
 use std::ops::Range;
-
-/*
- * Scheme specific configuration
- */
 
 #[derive(Clone, Copy)]
 struct SchemeConfig(u8);
@@ -42,51 +39,53 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
     "https" => SchemeConfig(DISALLOW_EMPTY_HOST),
 });
 
-/*
- * Runtime configuration
- */
-
 #[derive(Default)]
-pub struct Config {
+pub struct URI {
     schemes: HashSet<String>,
 }
 
-impl Config {
-    pub fn scheme(&mut self, s: &str) {
-        self.schemes.insert(s.to_owned());
+impl URI {
+    pub fn add_scheme(&mut self, s: &str) {
+        self.schemes.insert(s.to_lowercase());
     }
 }
 
-// scheme ":" hier-part [ "?" query ] [ "#" fragment ]
-pub fn find(s: &str, c: &Config) -> Option<Range<usize>> {
-    let input = s.as_bytes();
-    let mut idx = 0;
-
-    while idx < input.len() {
-        let start = idx;
-
-        let colon_idx = start + &input[start..].iter().position(|&b| b == b':')?;
-        idx = colon_idx + 1;
-
-        let scheme_idx = match rlook_scheme(&input[start..colon_idx]) {
-            Some(i) => start + i,
-            None => continue,
-        };
-        let scheme = &s[scheme_idx..colon_idx];
-        let scheme_config = SCHEMES_CONFIGS.get(scheme);
-
-        idx += look_hier_part(&input[idx..], scheme_config)?;
-        idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
-        idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
-
-        // we cannot early exit as soon as we know the scheme as we need to advance idx even if the
-        // url should be discarded
-        if c.schemes.is_empty() || c.schemes.contains(scheme) {
-            return Some(scheme_idx..idx);
-        }
+impl Finder for URI {
+    fn id(&self) -> &'static str {
+        "uri"
     }
 
-    None
+    // scheme ":" hier-part [ "?" query ] [ "#" fragment ]
+    fn find(&self, s: &str) -> Option<Range<usize>> {
+        let input = s.as_bytes();
+        let mut idx = 0;
+
+        while idx < input.len() {
+            let start = idx;
+
+            let colon_idx = start + &input[start..].iter().position(|&b| b == b':')?;
+            idx = colon_idx + 1;
+
+            let scheme_idx = match rlook_scheme(&input[start..colon_idx]) {
+                Some(i) => start + i,
+                None => continue,
+            };
+            let scheme = &s[scheme_idx..colon_idx];
+            let scheme_config = SCHEMES_CONFIGS.get(scheme);
+
+            idx += look_hier_part(&input[idx..], scheme_config)?;
+            idx += look_question_mark_query(&input[idx..]).unwrap_or(0);
+            idx += look_sharp_fragment(&input[idx..]).unwrap_or(0);
+
+            // we cannot early exit as soon as we know the scheme as we need to advance idx even if the
+            // url should be discarded
+            if self.schemes.is_empty() || self.schemes.contains(scheme) {
+                return Some(scheme_idx..idx);
+            }
+        }
+
+        None
+    }
 }
 
 // ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )

@@ -1,4 +1,4 @@
-use squeeze::uri;
+use squeeze::{uri, Finder};
 use std::fs::File;
 use std::io::{prelude::*, BufReader};
 
@@ -58,6 +58,7 @@ fn it_should_mirror_valid_uris() {
         // found in the wild
         // "http://hellmann-eickeloh.de/images/galerie/Linkedin/index.php?login=%0%" // TODO: support invalid % encoding?
     ] {
+        let finder = uri::URI::default();
         for i in vec![
             input.to_owned(),
             format!(" {} ", input),
@@ -69,35 +70,27 @@ fn it_should_mirror_valid_uris() {
             //format!("[link]({})", input), // TODO: markdown links
             //format!("'{}'", input), // TODO: links in single quotes
         ] {
-            assert_eq!(
-                input,
-                &i[uri::find(&i, &uri::Config::default()).expect(input)],
-                "{}",
-                input
-            );
+            assert_eq!(Some(input), finder.find(&i).map(|r| &i[r]), "{}", input);
         }
     }
 }
 
 #[test]
 fn it_should_ignore_invalid_uris() {
+    let finder = uri::URI::default();
     for input in vec![
         // some protocols require a host
         "ftp:///test",
         "http:///test",
         "https:///test",
     ] {
-        assert_eq!(
-            None,
-            uri::find(&input, &uri::Config::default()),
-            "{}",
-            input
-        );
+        assert_eq!(None, finder.find(input), "{}", input);
     }
 }
 
 #[test]
 fn it_should_succeed_to_mirror_the_fixtures_uris() {
+    let finder = uri::URI::default();
     let fixtures_glob = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
@@ -107,13 +100,8 @@ fn it_should_succeed_to_mirror_the_fixtures_uris() {
         let file = File::open(filepath.unwrap()).unwrap();
         let reader = BufReader::new(file);
         for line in reader.lines() {
-            let input = line.unwrap();
-            assert_eq!(
-                Some(0..input.len()),
-                uri::find(&input, &uri::Config::default()),
-                "{}",
-                input
-            );
+            let input = &line.unwrap();
+            assert_eq!(Some(0..input.len()), finder.find(input), "{}", input);
         }
     }
 }

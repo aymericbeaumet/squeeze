@@ -416,6 +416,7 @@ name = "squeeze"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "lazy_static",
  "phf",
  "regex",
  "regex-syntax",

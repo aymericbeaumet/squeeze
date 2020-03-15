@@ -4,7 +4,7 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information (URIs, Codetags, etc) from any text (raw, JSON, HTML, YAML, etc).
+information (URIs, Codetags) from any text (raw, JSON, HTML, YAML, etc).
 
 It has proven to be particularly useful to optimize a work environment. It is
 meant to be orthogonal to tools like xargs(1) and open(1). See

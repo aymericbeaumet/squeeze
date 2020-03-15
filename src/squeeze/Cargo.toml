@@ -9,6 +9,7 @@ name = "squeeze"
 path = "lib.rs"
 
 [dependencies]
+lazy_static = "1.4.0"
 phf = { version = "0.8", features = ["macros"] }
 regex = "1"
 regex-syntax = "0.6"
