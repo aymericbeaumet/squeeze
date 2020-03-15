@@ -127,7 +127,7 @@ fn main() {
             debug!("[CODETAG] SEARCHING IN \"{}\"", segment);
             if let Some(range) = finder.find(segment) {
                 debug!("[CODETAG] FOUND AT [{};{}[", range.start, range.end);
-                println!("{}", &segment[range]);
+                println!("{}", &segment[range].trim());
                 if opts.first {
                     return;
                 }
@@ -143,7 +143,7 @@ fn main() {
                 if let Some(range) = uri::find(segment, config) {
                     debug!("[URI] FOUND AT [{};{}[", range.start, range.end);
                     idx += range.end;
-                    println!("{}", &segment[range]);
+                    println!("{}", &segment[range].trim());
                     if opts.first {
                         return;
                     }
