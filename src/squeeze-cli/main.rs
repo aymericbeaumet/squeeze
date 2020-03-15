@@ -142,7 +142,7 @@ fn main() {
     }
 
     for line in io::stdin().lock().lines() {
-        let line = &line.unwrap();
+        let line = &clean_line(line.unwrap());
         for finder in &finders {
             debug!("[{}] line \"{}\"", finder.id(), line);
             let mut idx = 0;
@@ -164,5 +164,66 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+// This will not be working with utf8 characters (only the last byte will be trimmed). But this
+// should not cause issues considering the line this function will receive. We will see.
+fn clean_line(line: String) -> String {
+    let mut bytes = line.into_bytes();
+
+    // get the index of all the backspaces starting from the end
+    let mut backspace_indices = vec![];
+    for (idx, &byte) in bytes.iter().enumerate().rev() {
+        if is_backspace(byte) {
+            backspace_indices.push(idx);
+        }
+    }
+
+    let mut idx = 0;
+    bytes.retain(|&byte| {
+        // idx always point to the next character
+        idx += 1;
+        // do not keep when byte == backspace
+        if is_backspace(byte) {
+            return false;
+        }
+        // do not keep when the next character is backspace
+        if let Some(&bs_idx) = backspace_indices.last() {
+            if idx == bs_idx {
+                backspace_indices.pop();
+                return false;
+            }
+        }
+        // otherwise it's good
+        return true;
+    });
+
+    unsafe { String::from_utf8_unchecked(bytes) }
+}
+
+fn is_backspace(b: u8) -> bool {
+    b == 8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_line_should_remove_backspaces() {
+        assert_eq!(
+            "abcd",
+            clean_line(unsafe {
+                String::from_utf8_unchecked(vec![
+                    b'a', b'_', 8, b'b', b'_', 8, b'c', b'_', 8, b'd', b'_', 8,
+                ])
+            }),
+        )
+    }
+
+    #[test]
+    fn clean_line_should_mirror_strings_without_backspaces() {
+        assert_eq!("abcd", clean_line(String::from("abcd")))
     }
 }
