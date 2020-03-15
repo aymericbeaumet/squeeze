@@ -149,6 +149,8 @@ fn main() {
                     if opts.first {
                         return;
                     }
+                } else {
+                    break;
                 }
             }
         }
