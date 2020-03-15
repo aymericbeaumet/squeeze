@@ -1,4 +1,5 @@
 pub mod codetag;
+pub mod mirror;
 pub mod uri;
 
 use std::ops::Range;

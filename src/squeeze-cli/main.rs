@@ -1,6 +1,6 @@
 use clap::Clap;
 use log::debug;
-use squeeze::{codetag::Codetag, uri::URI, Finder};
+use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
 
@@ -27,6 +27,10 @@ struct Opts {
     fixme: bool,
     #[clap(long = "todo", help = "alias for: --codetag=todo")]
     todo: bool,
+
+    // mirror
+    #[clap(long = "mirror", help = "[debug] mirror the input")]
+    mirror: bool,
 
     // uri
     #[clap(long = "uri", help = "search for uris")]
@@ -64,6 +68,19 @@ impl TryFrom<&Opts> for Codetag {
             finder.add_mnemonic("todo");
         }
         finder.build_mnemonics_regex().unwrap();
+        Ok(finder)
+    }
+}
+
+impl TryFrom<&Opts> for Mirror {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.mirror {
+            return Err(());
+        }
+
+        let finder = Mirror::default();
         Ok(finder)
     }
 }
@@ -108,10 +125,12 @@ fn main() {
     let opts = Opts::parse();
 
     let codetag = TryInto::<Codetag>::try_into(&opts);
+    let mirror = TryInto::<Mirror>::try_into(&opts);
     let uri = TryInto::<URI>::try_into(&opts);
 
     let finders: Vec<_> = [
         codetag.as_ref().map(|f| f as &dyn Finder),
+        mirror.as_ref().map(|f| f as &dyn Finder),
         uri.as_ref().map(|f| f as &dyn Finder),
     ]
     .iter()
