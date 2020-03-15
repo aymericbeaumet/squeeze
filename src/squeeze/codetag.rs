@@ -117,31 +117,6 @@ pub struct Codetag {
     mnemonics_regex: Option<Regex>,
 }
 
-impl Codetag {
-    pub fn add_mnemonic(&mut self, mnemonic: &str) {
-        self.mnemonics.insert(mnemonic.to_uppercase());
-    }
-
-    pub fn build_mnemonics_regex(&mut self) -> Result<(), regex::Error> {
-        let mnemonics = if self.mnemonics.is_empty() {
-            DEFAULT_MNEMONICS.iter()
-        } else {
-            self.mnemonics.iter()
-        };
-        let mut r = String::with_capacity(mnemonics.len() * 16);
-        r.push_str("(?i)(?:");
-        for (i, m) in mnemonics.enumerate() {
-            if i > 0 {
-                r.push('|');
-            }
-            regex_syntax::escape_into(m, &mut r);
-        }
-        r.push_str(")(?:\\([^)]*\\))?:");
-        self.mnemonics_regex = Some(Regex::new(&r)?);
-        Ok(())
-    }
-}
-
 impl Finder for Codetag {
     fn id(&self) -> &'static str {
         "codetag"
@@ -166,6 +141,31 @@ impl Finder for Codetag {
         } else {
             Some(from..to)
         }
+    }
+}
+
+impl Codetag {
+    pub fn add_mnemonic(&mut self, mnemonic: &str) {
+        self.mnemonics.insert(mnemonic.to_uppercase());
+    }
+
+    pub fn build_mnemonics_regex(&mut self) -> Result<(), regex::Error> {
+        let mnemonics = if self.mnemonics.is_empty() {
+            DEFAULT_MNEMONICS.iter()
+        } else {
+            self.mnemonics.iter()
+        };
+        let mut r = String::with_capacity(mnemonics.len() * 16);
+        r.push_str("(?i)(?:");
+        for (i, m) in mnemonics.enumerate() {
+            if i > 0 {
+                r.push('|');
+            }
+            regex_syntax::escape_into(m, &mut r);
+        }
+        r.push_str(")(?:\\([^)]*\\))?:");
+        self.mnemonics_regex = Some(Regex::new(&r)?);
+        Ok(())
     }
 }
 
