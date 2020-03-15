@@ -17,17 +17,15 @@ struct Opts {
 
     // codetag
     #[clap(long = "codetag", help = "search for codetags")]
-    codetag: bool,
-    #[clap(long = "mnemonics", help = "limit codetag search to these mnemonics")]
-    mnemonic: Option<String>,
+    codetag: Option<Option<String>>,
     #[clap(
-        long = "show-mnemonic",
+        long = "hide-mnemonic",
         help = "whether to show the mnemonics in the results"
     )]
-    show_mnemonic: bool,
-    #[clap(long = "fixme", help = "alias for: --codetag --mnemonic=fixme")]
+    hide_mnemonic: bool,
+    #[clap(long = "fixme", help = "alias for: --codetag=fixme")]
     fixme: bool,
-    #[clap(long = "todo", help = "alias for: --codetag --mnemonic=todo")]
+    #[clap(long = "todo", help = "alias for: --codetag=todo")]
     todo: bool,
 
     // uri
@@ -50,12 +48,12 @@ impl TryFrom<&Opts> for Codetag {
     type Error = ();
 
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.codetag || opts.fixme || opts.todo) {
+        if !(opts.codetag.is_some() || opts.fixme || opts.todo) {
             return Err(());
         }
+        let codetag = opts.codetag.as_ref().unwrap();
 
-        let mut mnemonics = opts
-            .mnemonic
+        let mut mnemonics = codetag
             .as_ref()
             .map(|m| m.split(",").collect::<Vec<_>>())
             .unwrap_or(vec![]);
@@ -69,7 +67,7 @@ impl TryFrom<&Opts> for Codetag {
         }
 
         let mut finder = Codetag::new(mnemonics);
-        finder.show_mnemonic = opts.show_mnemonic;
+        finder.show_mnemonic = !opts.hide_mnemonic;
         Ok(finder)
     }
 }
