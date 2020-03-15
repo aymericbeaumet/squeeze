@@ -23,9 +23,9 @@ git clone https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
 cargo install --path=/tmp/squeeze/src/squeeze-cli
 ```
 
-## Examples
+## Getting Started
 
-- Extract the first URL:
+Let's start by extracting an URL:
 
 ```shell
 echo 'lorem https://github.com ipsum' | squeeze -1 --url
@@ -35,7 +35,9 @@ echo 'lorem https://github.com ipsum' | squeeze -1 --url
 https://github.com
 ```
 
-- Extract all the URLs:
+The `-1` option allows to immediately abort after one result has been found.
+
+The default behaviour is to print all the URLs:
 
 ```shell
 squeeze --url << EOF
@@ -49,10 +51,10 @@ https://aymericbeaumet.com
 https://wikipedia.com
 ```
 
-- Extract the TODO codetags:
+It is also possible to extract other kinds, like codetags:
 
 ```shell
-squeeze --todo << EOF
+squeeze --codetag=todo << EOF
 // TODO: implement the main function
 fn main {}
 EOF
@@ -62,33 +64,35 @@ EOF
 TODO: implement the main function
 ```
 
+Note that for convenience you can use `--todo` instead of `--codetag=todo`. In
+the same vein, `--url` is an alias to limit the search to specific url schemes
+`--uri=http,https` (I omitted the full scheme list for brevity, check
+`--help` for more information).
+
+You can even mix it up all together:
+
+```shell
+squeeze --uri=https --codetag==todo << EOF
+// TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
+EOF
+```
+
+```
+TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
+https://github.com/aymericbeaumet/squeeze
+```
+
+Get further information by looking at `squeeze --help`.
+
 ## Integrations
 
-### tmux
-
-- Press `Enter` in copy mode to extract the first URL from the current
-  selection and open it:
-
-```tmux
-# ~/.tmux.conf
-bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
-```
-
-### vim/nvim
-
-- Press `Enter` in visual mode to extract the first URL from the current
-  selection and open it:
-
-```vim
-" ~/.vimrc
-vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
-```
+Some integrations I find particularly useful.
 
 ### shell (bash, zsh)
 
-- Define an `urls` function to list all the URLs in your shell history. You can
-  even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it
-  and copy the result into your clipboard:
+Define an `urls` function to list all the URLs in your shell history. You can
+even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it and
+copy the result into your clipboard:
 
 ```shell
 # ~/.bashrc ~/.zshrc
@@ -98,4 +102,32 @@ urls() {
 furls() {
   urls | fzf | pbcopy
 }
+```
+
+### tmux
+
+Press `Enter` in copy mode to extract the first URL from the current selection
+and open it:
+
+```tmux
+# ~/.tmux.conf
+bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
+```
+
+### vim/nvim
+
+Press `Enter` in visual mode to extract the first URL from the current
+selection and open it:
+
+```vim
+" ~/.vimrc
+vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
+```
+
+### pager (man, etc)
+
+Search the output of any command supporting the `$PAGER` environment variable:
+
+```shell
+$ PAGER='squeeze --url' man git
 ```
