@@ -4,11 +4,12 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information (URIs, Codetags) from any text (raw, JSON, HTML, YAML, etc).
+information from any text (raw, JSON, HTML, YAML, etc), currently supported:
 
-It has proven to be particularly useful to optimize a work environment. It is
-meant to be orthogonal to tools like xargs(1) and open(1). See
-[integrations](#integrations) for some practical uses.
+- Codetags (as defined per [PEP 350](https://www.python.org/dev/peps/pep-0350/))
+- URIs (as defined per [RFC 3986](https://tools.ietf.org/html/rfc3986/))
+
+See [integrations](#integrations) for some practical uses.
 
 ## Install
 
@@ -63,9 +64,19 @@ TODO: implement the main function
 
 ## Integrations
 
+### tmux
+
+- Press `Enter` in copy mode to extract the first URL from the current
+  selection and open it:
+
+```tmux
+# ~/.tmux.conf
+bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
+```
+
 ### vim/nvim
 
-- Press _Enter_ in visual mode to extract the first URL from the current
+- Press `Enter` in visual mode to extract the first URL from the current
   selection and open it:
 
 ```vim
@@ -73,12 +84,17 @@ TODO: implement the main function
 vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
 ```
 
-### tmux
+### zsh
 
-- Press _Enter_ in copy mode to extract the first URL from the current
-  selection and open it:
+- Use the `urls` function to list all the URLs in your shell history. You can
+  even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it:
 
-```tmux
-# ~/.tmux.conf
-bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
+```zsh
+# ~/.zshrc
+urls() {
+  fc -rl 1 | squeeze --url | sort -u
+}
+furls() {
+  urls | fzf | pbcopy
+}
 ```
