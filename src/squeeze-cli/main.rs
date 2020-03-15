@@ -35,6 +35,8 @@ struct Opts {
     // uri
     #[clap(long = "uri", help = "search for uris")]
     scheme: Option<Option<String>>,
+    #[clap(long = "strict", help = "strictly respect the RFC")]
+    strict: bool,
     #[clap(
         long = "url",
         help = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
@@ -94,6 +96,7 @@ impl TryFrom<&Opts> for URI {
         }
 
         let mut finder = URI::default();
+        finder.strict = opts.strict;
         if let Some(Some(ref scheme)) = opts.scheme {
             for s in scheme.split(",") {
                 finder.add_scheme(s);
