@@ -1,6 +1,6 @@
 use clap::Clap;
 use log::debug;
-use squeeze::uri;
+use squeeze::{codetag::Codetag, uri, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
 
@@ -12,13 +12,28 @@ use std::io::{self, BufRead};
 )]
 struct Opts {
     // flags
-    #[clap(short = "1", long = "--first", help = "stop after the first result")]
+    #[clap(short = "1", long = "--first", help = "only show the first result")]
     first: bool,
 
+    // codetag
+    #[clap(long = "codetag", help = "search for codetags")]
+    codetag: bool,
+    #[clap(long = "mnemonics", help = "limit codetag search to these mnemonics")]
+    mnemonic: Option<String>,
+    #[clap(
+        long = "show-mnemonic",
+        help = "whether to show the mnemonics in the results"
+    )]
+    show_mnemonic: bool,
+    #[clap(long = "fixme", help = "alias for: --codetag --mnemonic=fixme")]
+    fixme: bool,
+    #[clap(long = "todo", help = "alias for: --codetag --mnemonic=todo")]
+    todo: bool,
+
     // uri
-    #[clap(long = "uri", help = "search for absolute uris")]
+    #[clap(long = "uri", help = "search for uris")]
     uri: bool,
-    #[clap(long = "scheme", help = "limit uris search to the following schemes")]
+    #[clap(long = "schemes", help = "limit uris search to these schemes")]
     scheme: Option<String>,
     #[clap(
         long = "url",
@@ -29,6 +44,34 @@ struct Opts {
     http: bool,
     #[clap(long = "https", help = "alias for: --uri --scheme=https")]
     https: bool,
+}
+
+impl TryFrom<&Opts> for Codetag {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !(opts.codetag || opts.fixme || opts.todo) {
+            return Err(());
+        }
+
+        let mut mnemonics = opts
+            .mnemonic
+            .as_ref()
+            .map(|m| m.split(",").collect::<Vec<_>>())
+            .unwrap_or(vec![]);
+
+        if opts.fixme {
+            mnemonics.push("fixme");
+        }
+
+        if opts.todo {
+            mnemonics.push("todo");
+        }
+
+        let mut finder = Codetag::new(mnemonics);
+        finder.show_mnemonic = opts.show_mnemonic;
+        Ok(finder)
+    }
 }
 
 impl TryFrom<&Opts> for uri::Config {
@@ -70,10 +113,28 @@ fn main() {
     pretty_env_logger::init();
     let opts = Opts::parse();
 
+    let codetag: Result<Codetag, _> = (&opts).try_into();
     let uri_config = (&opts).try_into();
+
+    if codetag.is_err() && uri_config.is_err() {
+        return;
+    }
 
     for line in io::stdin().lock().lines() {
         let line = &line.unwrap();
+
+        if let Ok(ref finder) = codetag {
+            debug!("[CODETAG] LINE \"{}\"", line);
+            let segment = line;
+            debug!("[CODETAG] SEARCHING IN \"{}\"", segment);
+            if let Some(range) = finder.find(segment) {
+                debug!("[CODETAG] FOUND AT [{};{}[", range.start, range.end);
+                println!("{}", &segment[range]);
+                if opts.first {
+                    return;
+                }
+            }
+        }
 
         if let Ok(ref config) = uri_config {
             debug!("[URI] LINE \"{}\"", line);
@@ -88,8 +149,6 @@ fn main() {
                     if opts.first {
                         return;
                     }
-                } else {
-                    break;
                 }
             }
         }

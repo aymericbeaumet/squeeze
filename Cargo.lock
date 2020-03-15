@@ -417,6 +417,8 @@ version = "0.1.0"
 dependencies = [
  "glob",
  "phf",
+ "regex",
+ "regex-syntax",
 ]
 
 [[package]]
