@@ -140,3 +140,25 @@ Search the output of any command supporting the `$PAGER` environment variable:
 ```shell
 env PAGER='squeeze --url' man git
 ```
+
+## Development
+
+### Run binary
+
+```shell
+echo 'http://localhost' | cargo run -- --url
+```
+
+### Run tests
+
+```shell
+cargo test
+# https://github.com/watchexec/watchexec
+watchexec --clear --restart cargo test
+```
+
+### Update dependencies
+
+```shell
+cargo install cargo-edit && cargo update
+```
