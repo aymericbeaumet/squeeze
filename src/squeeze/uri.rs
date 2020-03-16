@@ -73,7 +73,7 @@ impl Finder for URI {
             idx += self.look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
             // we cannot early exit as soon as we know the scheme as we need to advance idx even if the
-            // url should be discarded
+            // uri should be discarded
             if self.schemes.is_empty() || self.schemes.contains(scheme) {
                 return Some(scheme_idx..idx);
             }
@@ -117,7 +117,7 @@ impl URI {
             return Some(idx);
         }
 
-        // Some protocols disallow empty hosts
+        // Some schemes disallow empty hosts
         if sc.has(DISALLOW_EMPTY_HOST) {
             return None;
         }
