@@ -68,7 +68,7 @@ EOF
 TODO: implement the main function
 ```
 
-Note that for convenience you can use `--todo` instead of `--codetag=todo`. In
+> Note that for convenience you can use `--todo` instead of `--codetag=todo`. In
 the same vein, `--url` is an alias to limit the search to specific url schemes:
 `--uri=http,https,...`.
 
