@@ -4,14 +4,15 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information from any text (raw, JSON, HTML, YAML, etc).
+information from any text (raw, JSON, HTML, YAML, man pages, etc).
 
 Currently supported:
 
 - Codetags (as defined per [PEP 350](https://www.python.org/dev/peps/pep-0350/))
 - URIs (as defined per [RFC 3986](https://tools.ietf.org/html/rfc3986/))
 
-See [integrations](#integrations) for some practical uses.
+See [integrations](#integrations) for some practical uses. Continue reading for
+the install and getting started instructions.
 
 ## Install
 
@@ -27,7 +28,7 @@ cargo install --path=/tmp/squeeze/src/squeeze-cli
 
 ## Getting Started
 
-Let's start by extracting an URL:
+Let's start by extracting a URL:
 
 ```shell
 echo 'lorem https://github.com ipsum' | squeeze -1 --url
@@ -37,9 +38,9 @@ echo 'lorem https://github.com ipsum' | squeeze -1 --url
 https://github.com
 ```
 
-The `-1` option allows to immediately abort after one result has been found.
+> The `-1` flag allows to immediately abort after one result has been found.
 
-The default behaviour is to print all the URLs:
+If you want to print all the URLs, just omit the flag:
 
 ```shell
 squeeze --url << EOF
@@ -53,7 +54,8 @@ https://aymericbeaumet.com
 https://wikipedia.com
 ```
 
-It is also possible to extract other kinds, like codetags:
+It is also possible to extract other types of information, like codetags
+(`TODO:`, `FIXME:`, etc):
 
 ```shell
 squeeze --codetag=todo << EOF
@@ -67,11 +69,11 @@ TODO: implement the main function
 ```
 
 Note that for convenience you can use `--todo` instead of `--codetag=todo`. In
-the same vein, `--url` is an alias to limit the search to specific url schemes
-`--uri=http,https` (I omitted the full scheme list for brevity, check
-`--help` for more information).
+the same vein, `--url` is an alias to limit the search to specific url schemes:
+`--uri=http,https,...`.
 
-You can even mix it up all together:
+You can mix it up all together, the finders will be run sequentially for each
+line:
 
 ```shell
 squeeze --uri=https --codetag==todo << EOF
@@ -84,15 +86,13 @@ TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
 https://github.com/aymericbeaumet/squeeze
 ```
 
-Get further information by looking at `squeeze --help`.
+Get an idea of all the possibilities by looking at `squeeze --help`.
 
 ## Integrations
 
-Some integrations I find particularly useful.
-
 ### shell (bash, zsh)
 
-Define an `urls` function to list all the URLs in your shell history. You can
+Define a `urls` function to list all the URLs in your shell history. You can
 even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it and
 copy the result into your clipboard:
 
