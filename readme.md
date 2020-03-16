@@ -120,7 +120,7 @@ and open it:
 
 ```tmux
 # ~/.tmux.conf
-bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url | xargs open"
+bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url --open"
 ```
 
 ### vim/nvim
@@ -130,7 +130,7 @@ selection and open it:
 
 ```vim
 " ~/.vimrc
-vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url \| xargs open<CR><CR>
+vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url --open<CR><CR>
 ```
 
 ### pager (man, etc)

@@ -3,6 +3,7 @@ use log::debug;
 use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
+use std::process::{Child, Command};
 
 #[derive(Clap)]
 #[clap(
@@ -14,6 +15,8 @@ struct Opts {
     // flags
     #[clap(short = "1", long = "--first", help = "only show the first result")]
     first: bool,
+    #[clap(long = "--open", help = "open the results")]
+    open: bool,
 
     // codetag
     #[clap(long = "codetag", help = "search for codetags")]
@@ -35,7 +38,10 @@ struct Opts {
     // uri
     #[clap(long = "uri", help = "search for uris")]
     scheme: Option<Option<String>>,
-    #[clap(long = "strict", help = "strictly respect the RFC")]
+    #[clap(
+        long = "strict",
+        help = "strictly respect the URI RFC in regards to closing ' and )"
+    )]
     strict: bool,
     #[clap(
         long = "url",
@@ -158,6 +164,9 @@ fn main() {
                     let found = &segment[range].trim();
                     if found.len() > 0 {
                         println!("{}", found);
+                        if opts.open {
+                            open(found).expect("failed to open result");
+                        }
                         if opts.first {
                             return;
                         }
@@ -168,6 +177,16 @@ fn main() {
             }
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn open(arg: &str) -> io::Result<Child> {
+    Command::new("open").args(&[arg]).spawn()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open(arg: &str) -> io::Result<Child> {
+    unimplemented!("The --open flag is not yet available on your platform. In the meantime, `... | squeeze | xargs xdg-open` might be used as a workaround (YMMV).");
 }
 
 // This will not be working with utf8 characters (only the last byte will be trimmed). But this
