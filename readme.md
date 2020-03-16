@@ -42,8 +42,6 @@ https://github.com
 
 > The `-1` flag allows to immediately abort after one result has been found.
 
-> The `--url` flag is actually an alias for a limited list of URI schemes.
-
 If you want to print all the URLs, just omit the `-1` flag:
 
 ```shell
@@ -80,9 +78,11 @@ It is possible to enable several finders at the same time, they will be run
 sequentially for each line:
 
 ```shell
-squeeze --uri=https --codetag==todo,fixme << EOF
+squeeze --uri=http,https --codetag==todo,fixme << EOF
 // TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
 // FIXME: update with a better example
+ftp://localhost
+http://localhost
 EOF
 ```
 
@@ -90,14 +90,15 @@ EOF
 TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
 https://github.com/aymericbeaumet/squeeze/issues
 FIXME: update with a better example
+http://localhost
 ```
 
-This getting started should have given you an overview of what's possible with
+This getting started should give you an overview of what's possible with
 `squeeze`. Have a look at all the possibilities with `squeeze --help`.
 
 ## Integrations
 
-Some integrations with popular tools.
+Integrations with some popular tools.
 
 ### shell (bash, zsh)
 
