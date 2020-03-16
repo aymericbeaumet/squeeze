@@ -9,7 +9,7 @@ information from any text (raw, JSON, HTML, YAML, man pages, etc).
 Currently supported:
 
 - Codetags (as defined per [PEP 350](https://www.python.org/dev/peps/pep-0350/))
-- URIs (as defined per [RFC 3986](https://tools.ietf.org/html/rfc3986/))
+- URIs/URLs/URNs (as defined per [RFC 3986](https://tools.ietf.org/html/rfc3986/))
 
 See [integrations](#integrations) for some practical uses. Continue reading for
 the install and getting started instructions.
