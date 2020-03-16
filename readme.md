@@ -78,7 +78,7 @@ It is possible to enable several finders at the same time, they will be run
 sequentially for each line:
 
 ```shell
-squeeze --uri=http,https --codetag==todo,fixme << EOF
+squeeze --uri=http,https --codetag=todo,fixme << EOF
 // TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
 // FIXME: update with a better example
 ftp://localhost
