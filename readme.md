@@ -19,7 +19,8 @@ the install and getting started instructions.
 ### Using git
 
 _This method requires the [Rust
-toolchain](https://www.rust-lang.org/tools/install) to be installed._
+toolchain](https://www.rust-lang.org/tools/install) to be installed on your
+machine._
 
 ```shell
 git clone https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
@@ -28,7 +29,8 @@ cargo install --path=/tmp/squeeze/src/squeeze-cli
 
 ## Getting Started
 
-Let's start by extracting a URL:
+Let's start by extracting a URL, `squeeze` expects the text to be search on its
+standard input, with the results being placed on its standard output:
 
 ```shell
 echo 'lorem https://github.com ipsum' | squeeze -1 --url
@@ -40,7 +42,9 @@ https://github.com
 
 > The `-1` flag allows to immediately abort after one result has been found.
 
-If you want to print all the URLs, just omit the flag:
+> The `--url` flag is actually an alias for a limited list of URI schemes.
+
+If you want to print all the URLs, just omit the `-1` flag:
 
 ```shell
 squeeze --url << EOF
@@ -55,7 +59,7 @@ https://wikipedia.com
 ```
 
 It is also possible to extract other types of information, like codetags
-(`TODO:`, `FIXME:`, etc):
+(`TODO:`, `FIXME:`, etc). The usage remains very similar:
 
 ```shell
 squeeze --codetag=todo << EOF
@@ -68,27 +72,32 @@ EOF
 TODO: implement the main function
 ```
 
-> Note that for convenience you can use `--todo` instead of `--codetag=todo`. In
-the same vein, `--url` is an alias to limit the search to specific url schemes:
-`--uri=http,https,...`.
+> Note that for convenience some aliases are defined. In this case, you can use
+`--todo` instead of `--codetag=todo`. In the same vein, `--url` is an alias to
+limit the search to specific URI schemes.
 
-You can mix it up all together, the finders will be run sequentially for each
-line:
+It is possible to enable several finders at the same time, they will be run
+sequentially for each line:
 
 ```shell
-squeeze --uri=https --codetag==todo << EOF
+squeeze --uri=https --codetag==todo,fixme << EOF
 // TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
+// FIXME: update with a better example
 EOF
 ```
 
 ```
 TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
-https://github.com/aymericbeaumet/squeeze
+https://github.com/aymericbeaumet/squeeze/issues
+FIXME: update with a better example
 ```
 
-Get an idea of all the possibilities by looking at `squeeze --help`.
+This getting started should have given you an overview of what's possible with
+`squeeze`. Have a look at all the possibilities with `squeeze --help`.
 
 ## Integrations
+
+Some integrations with popular tools.
 
 ### shell (bash, zsh)
 
