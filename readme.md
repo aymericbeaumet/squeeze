@@ -29,8 +29,8 @@ cargo install --path=/tmp/squeeze/src/squeeze-cli
 
 ## Getting Started
 
-Let's start by extracting a URL, `squeeze` expects the text to be search on its
-standard input, with the results being placed on its standard output:
+Let's start by extracting a URL, `squeeze` expects the text to be searched on
+its standard input, with the results being placed on its standard output:
 
 ```shell
 echo 'lorem https://github.com ipsum' | squeeze -1 --url
