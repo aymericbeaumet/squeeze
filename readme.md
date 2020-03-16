@@ -160,5 +160,5 @@ watchexec --clear --restart cargo test
 ### Update dependencies
 
 ```shell
-cargo install cargo-edit && cargo update
+cargo upgrade --all && cargo update
 ```
