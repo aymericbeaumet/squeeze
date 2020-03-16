@@ -79,17 +79,18 @@ sequentially for each line:
 
 ```shell
 squeeze --uri=http,https --codetag=todo,fixme << EOF
-// TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
-// FIXME: update with a better example
+// TODO: update with a better example
+// FIXME: all of https://github.com/aymericbeaumet/squeeze/issues
+// Some random comment to be ignored
 ftp://localhost
 http://localhost
 EOF
 ```
 
 ```
-TODO: fix all https://github.com/aymericbeaumet/squeeze/issues
+TODO: update with a better example
+FIXME: all of https://github.com/aymericbeaumet/squeeze/issues
 https://github.com/aymericbeaumet/squeeze/issues
-FIXME: update with a better example
 http://localhost
 ```
 
