@@ -13,44 +13,44 @@ use std::process::{Child, Command};
 )]
 struct Opts {
     // flags
-    #[clap(short = "1", long = "--first", help = "only show the first result")]
+    #[clap(short = '1', long = "--first", about = "only show the first result")]
     first: bool,
-    #[clap(long = "--open", help = "open the results")]
+    #[clap(long = "--open", about = "open the results")]
     open: bool,
 
     // codetag
-    #[clap(long = "codetag", help = "search for codetags")]
+    #[clap(long = "codetag", about = "search for codetags")]
     mnemonic: Option<Option<String>>,
     #[clap(
         long = "hide-mnemonic",
-        help = "whether to show the mnemonics in the results"
+        about = "whether to show the mnemonics in the results"
     )]
     hide_mnemonic: bool,
-    #[clap(long = "fixme", help = "alias for: --codetag=fixme")]
+    #[clap(long = "fixme", about = "alias for: --codetag=fixme")]
     fixme: bool,
-    #[clap(long = "todo", help = "alias for: --codetag=todo")]
+    #[clap(long = "todo", about = "alias for: --codetag=todo")]
     todo: bool,
 
     // mirror
-    #[clap(long = "mirror", help = "[debug] mirror the input")]
+    #[clap(long = "mirror", about = "[debug] mirror the input")]
     mirror: bool,
 
     // uri
-    #[clap(long = "uri", help = "search for uris")]
+    #[clap(long = "uri", about = "search for uris")]
     scheme: Option<Option<String>>,
     #[clap(
         long = "strict",
-        help = "strictly respect the URI RFC in regards to closing ' and )"
+        about = "strictly respect the URI RFC in regards to closing ' and )"
     )]
     strict: bool,
     #[clap(
         long = "url",
-        help = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
+        about = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
     )]
     url: bool,
-    #[clap(long = "http", help = "alias for: --uri=http")]
+    #[clap(long = "http", about = "alias for: --uri=http")]
     http: bool,
-    #[clap(long = "https", help = "alias for: --uri=https")]
+    #[clap(long = "https", about = "alias for: --uri=https")]
     https: bool,
 }
 

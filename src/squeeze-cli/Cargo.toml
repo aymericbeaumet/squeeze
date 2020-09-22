@@ -9,7 +9,7 @@ name = "squeeze"
 path = "main.rs"
 
 [dependencies]
-clap = { git = "https://github.com/clap-rs/clap/" }
-log = "0.4.8"
+clap = "3.0.0-beta.2"
+log = "0.4.11"
 pretty_env_logger = "0.4.0"
 squeeze = { path = "../squeeze" }
