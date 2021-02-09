@@ -159,6 +159,8 @@ watchexec --clear --restart cargo test
 
 ### Update dependencies
 
+_Requires [cargo-edit](https://github.com/killercup/cargo-edit)._
+
 ```shell
-cargo upgrade --all && cargo update
+cargo upgrade --workspace && cargo update
 ```
