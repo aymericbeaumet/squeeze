@@ -101,13 +101,14 @@ This getting started should give you an overview of what's possible with
 
 Integrations with some popular tools.
 
-### shell (bash, zsh)
+### vim/nvim
 
-Define a `urls` function to list all the URLs in your shell history:
+Press `Enter` in visual mode to extract the first URL from the current
+selection and open it:
 
-```shell
-# ~/.bashrc ~/.zshrc
-urls() { fc -rl 1 | squeeze --url | sort -u; }
+```vim
+" ~/.vimrc
+vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url --open<CR><CR>
 ```
 
 ### tmux
@@ -120,14 +121,13 @@ and open it:
 bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url --open"
 ```
 
-### vim/nvim
+### shell (bash, zsh)
 
-Press `Enter` in visual mode to extract the first URL from the current
-selection and open it:
+Define a `urls` function to list all the URLs in your shell history:
 
-```vim
-" ~/.vimrc
-vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url --open<CR><CR>
+```shell
+# ~/.bashrc ~/.zshrc
+urls() { fc -rl 1 | squeeze --url | sort -u; }
 ```
 
 ### pager (man, etc)
