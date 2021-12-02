@@ -103,14 +103,11 @@ Integrations with some popular tools.
 
 ### shell (bash, zsh)
 
-Define a `urls` function to list all the URLs in your shell history. You can
-even pair it with [fzf](https://github.com/junegunn/fzf) to fuzzy-search it and
-copy the result into your clipboard:
+Define a `urls` function to list all the URLs in your shell history:
 
 ```shell
 # ~/.bashrc ~/.zshrc
 urls() { fc -rl 1 | squeeze --url | sort -u; }
-furls() { urls | fzf | pbcopy; }
 ```
 
 ### tmux
