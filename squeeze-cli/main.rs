@@ -2,7 +2,6 @@ use clap::Parser;
 use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
-use std::process::{Child, Command};
 
 #[derive(Parser)]
 #[clap(
@@ -179,11 +178,11 @@ fn main() {
 }
 
 #[cfg(target_os = "macos")]
-fn open(arg: &str) -> io::Result<Child> {
-    Command::new("open").arg(arg).spawn()
+fn open(arg: &str) -> io::Result<std::process::Child> {
+    std::process::Command::new("open").arg(arg).spawn()
 }
 
 #[cfg(not(target_os = "macos"))]
-fn open(arg: &str) -> io::Result<Child> {
+fn open(arg: &str) -> io::Result<std::process::Child> {
     unimplemented!("The --open flag is not yet available on your platform. In the meantime, `... | squeeze | xargs xdg-open` might be used as a workaround (YMMV).");
 }
