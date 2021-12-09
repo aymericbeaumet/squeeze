@@ -183,6 +183,6 @@ fn open(arg: &str) -> io::Result<std::process::Child> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn open(arg: &str) -> io::Result<std::process::Child> {
+fn open(_: &str) -> io::Result<std::process::Child> {
     unimplemented!("The --open flag is not yet available on your platform. In the meantime, `... | squeeze | xargs xdg-open` might be used as a workaround (YMMV).");
 }
