@@ -1,7 +1,5 @@
 on: push
 
-name: Continuous Integration
-
 jobs:
   ci:
     runs-on: ubuntu-latest

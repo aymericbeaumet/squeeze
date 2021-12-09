@@ -1,4 +1,4 @@
-# squeeze [![GitHub Actions](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml)
+# squeeze [![GitHub Actions](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
 information from any text (raw, JSON, HTML, YAML, etc).
