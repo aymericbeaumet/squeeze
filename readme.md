@@ -1,7 +1,7 @@
 # squeeze
 
-[![travis](https://img.shields.io/travis/aymericbeaumet/squeeze?style=flat-square&logo=travis)](https://travis-ci.org/aymericbeaumet/squeeze)
-[![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
+[![GitHub Actions](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci/badge.svg)
+](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
 information from any text (raw, JSON, HTML, YAML, etc).
