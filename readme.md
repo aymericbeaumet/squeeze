@@ -1,6 +1,4 @@
-# squeeze
-
-[![GitHub Actions](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci/badge.svg)
+# squeeze [![GitHub Actions](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci/badge.svg)
 ](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
