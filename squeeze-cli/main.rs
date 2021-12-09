@@ -1,11 +1,10 @@
-use clap::Clap;
-use log::debug;
+use clap::Parser;
 use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
 use std::process::{Child, Command};
 
-#[derive(Clap)]
+#[derive(Parser)]
 #[clap(
     name = "squeeze",
     version = "1.0",
@@ -13,44 +12,44 @@ use std::process::{Child, Command};
 )]
 struct Opts {
     // flags
-    #[clap(short = '1', long = "--first", about = "only show the first result")]
+    #[clap(short = '1', long = "--first", help = "only show the first result")]
     first: bool,
-    #[clap(long = "--open", about = "open the results")]
+    #[clap(long = "--open", help = "open the results")]
     open: bool,
 
     // codetag
-    #[clap(long = "codetag", about = "search for codetags")]
+    #[clap(long = "codetag", help = "search for codetags")]
     mnemonic: Option<Option<String>>,
     #[clap(
         long = "hide-mnemonic",
-        about = "whether to show the mnemonics in the results"
+        help = "whether to show the mnemonics in the results"
     )]
     hide_mnemonic: bool,
-    #[clap(long = "fixme", about = "alias for: --codetag=fixme")]
+    #[clap(long = "fixme", help = "alias for: --codetag=fixme")]
     fixme: bool,
-    #[clap(long = "todo", about = "alias for: --codetag=todo")]
+    #[clap(long = "todo", help = "alias for: --codetag=todo")]
     todo: bool,
 
     // mirror
-    #[clap(long = "mirror", about = "[debug] mirror the input")]
+    #[clap(long = "mirror", help = "[debug] mirror the input")]
     mirror: bool,
 
     // uri
-    #[clap(long = "uri", about = "search for uris")]
+    #[clap(long = "uri", help = "search for uris")]
     scheme: Option<Option<String>>,
     #[clap(
         long = "strict",
-        about = "strictly respect the URI RFC in regards to closing ' and )"
+        help = "strictly respect the URI RFC in regards to closing ' and )"
     )]
     strict: bool,
     #[clap(
         long = "url",
-        about = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
+        help = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
     )]
     url: bool,
-    #[clap(long = "http", about = "alias for: --uri=http")]
+    #[clap(long = "http", help = "alias for: --uri=http")]
     http: bool,
-    #[clap(long = "https", about = "alias for: --uri=https")]
+    #[clap(long = "https", help = "alias for: --uri=https")]
     https: bool,
 }
 
@@ -65,7 +64,7 @@ impl TryFrom<&Opts> for Codetag {
         let mut finder = Codetag::default();
         finder.hide_mnemonic = opts.hide_mnemonic;
         if let Some(Some(ref mnemonic)) = opts.mnemonic {
-            for m in mnemonic.split(",") {
+            for m in mnemonic.split(',') {
                 finder.add_mnemonic(m);
             }
         }
@@ -104,7 +103,7 @@ impl TryFrom<&Opts> for URI {
         let mut finder = URI::default();
         finder.strict = opts.strict;
         if let Some(Some(ref scheme)) = opts.scheme {
-            for s in scheme.split(",") {
+            for s in scheme.split(',') {
                 finder.add_scheme(s);
             }
         }
@@ -131,8 +130,8 @@ impl TryFrom<&Opts> for URI {
 
 fn main() {
     pretty_env_logger::init();
-    let opts = Opts::parse();
 
+    let opts = Opts::parse();
     let codetag = TryInto::<Codetag>::try_into(&opts);
     let mirror = TryInto::<Mirror>::try_into(&opts);
     let uri = TryInto::<URI>::try_into(&opts);
@@ -142,7 +141,7 @@ fn main() {
         mirror.as_ref().map(|f| f as &dyn Finder),
         uri.as_ref().map(|f| f as &dyn Finder),
     ]
-    .iter()
+    .into_iter()
     .filter_map(|finder| finder.ok())
     .collect();
 
@@ -151,18 +150,18 @@ fn main() {
     }
 
     for line in io::stdin().lock().lines() {
-        let line = &clean_line(line.unwrap());
         for finder in &finders {
-            debug!("[{}] line \"{}\"", finder.id(), line);
+            let line = line.as_ref().unwrap();
+            log::debug!("[{}] line \"{}\"", finder.id(), line);
             let mut idx = 0;
             while idx < line.len() {
                 let segment = &line[idx..];
-                debug!("[{}] searching in \"{}\"", finder.id(), segment);
+                log::debug!("[{}] searching in \"{}\"", finder.id(), segment);
                 if let Some(range) = finder.find(segment) {
-                    debug!("[{}] found at [{};{}[", finder.id(), range.start, range.end);
+                    log::debug!("[{}] found at [{};{}[", finder.id(), range.start, range.end);
                     idx += range.end;
                     let found = &segment[range].trim();
-                    if found.len() > 0 {
+                    if !found.is_empty() {
                         println!("{}", found);
                         if opts.open {
                             open(found).expect("failed to open result");
@@ -181,71 +180,10 @@ fn main() {
 
 #[cfg(target_os = "macos")]
 fn open(arg: &str) -> io::Result<Child> {
-    Command::new("open").args(&[arg]).spawn()
+    Command::new("open").arg(arg).spawn()
 }
 
 #[cfg(not(target_os = "macos"))]
 fn open(arg: &str) -> io::Result<Child> {
     unimplemented!("The --open flag is not yet available on your platform. In the meantime, `... | squeeze | xargs xdg-open` might be used as a workaround (YMMV).");
-}
-
-// This will not be working with utf8 characters (only the last byte will be trimmed). But this
-// should not cause issues considering the line this function will receive. We will see.
-fn clean_line(line: String) -> String {
-    let mut bytes = line.into_bytes();
-
-    // get the index of all the backspaces starting from the end
-    let mut backspace_indices = vec![];
-    for (idx, &byte) in bytes.iter().enumerate().rev() {
-        if is_backspace(byte) {
-            backspace_indices.push(idx);
-        }
-    }
-
-    let mut idx = 0;
-    bytes.retain(|&byte| {
-        // idx always point to the next character
-        idx += 1;
-        // do not keep when byte == backspace
-        if is_backspace(byte) {
-            return false;
-        }
-        // do not keep when the next character is backspace
-        if let Some(&bs_idx) = backspace_indices.last() {
-            if idx == bs_idx {
-                backspace_indices.pop();
-                return false;
-            }
-        }
-        // otherwise it's good
-        return true;
-    });
-
-    unsafe { String::from_utf8_unchecked(bytes) }
-}
-
-fn is_backspace(b: u8) -> bool {
-    b == 8
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clean_line_should_remove_backspaces() {
-        assert_eq!(
-            "abcd",
-            clean_line(unsafe {
-                String::from_utf8_unchecked(vec![
-                    b'a', b'_', 8, b'b', b'_', 8, b'c', b'_', 8, b'd', b'_', 8,
-                ])
-            }),
-        )
-    }
-
-    #[test]
-    fn clean_line_should_mirror_strings_without_backspaces() {
-        assert_eq!("abcd", clean_line(String::from("abcd")))
-    }
 }

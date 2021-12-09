@@ -4,7 +4,7 @@
 [![github](https://img.shields.io/github/issues/aymericbeaumet/squeeze?style=flat-square&logo=github)](https://github.com/aymericbeaumet/squeeze/issues)
 
 [squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information from any text (raw, JSON, HTML, YAML, man pages, etc).
+information from any text (raw, JSON, HTML, YAML, etc).
 
 Currently supported:
 
@@ -24,7 +24,7 @@ machine._
 
 ```shell
 git clone https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
-cargo install --path=/tmp/squeeze/src/squeeze-cli
+cargo install --path=/tmp/squeeze/squeeze-cli
 ```
 
 ## Getting Started
@@ -128,14 +128,6 @@ Define a `urls` function to list all the URLs in your shell history:
 ```shell
 # ~/.bashrc ~/.zshrc
 urls() { fc -rl 1 | squeeze --url | sort -u; }
-```
-
-### pager (man, etc)
-
-Search the output of any command supporting the `$PAGER` environment variable:
-
-```shell
-env PAGER='squeeze --url' man git
 ```
 
 ## Development

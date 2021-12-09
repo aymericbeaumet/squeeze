@@ -1,2 +1,13 @@
 [workspace]
-members = ["src/*"]
+members = [
+  "squeeze",
+  "squeeze-cli",
+]
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3

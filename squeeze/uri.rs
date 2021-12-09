@@ -4,18 +4,12 @@ use super::Finder;
 use std::collections::HashSet;
 use std::ops::Range;
 
-#[derive(Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 struct SchemeConfig(u8);
 
 impl SchemeConfig {
     fn has(&self, flag: u8) -> bool {
         (self.0 & flag) != 0
-    }
-}
-
-impl Default for SchemeConfig {
-    fn default() -> Self {
-        SchemeConfig(0)
     }
 }
 
@@ -58,7 +52,7 @@ impl Finder for URI {
         while idx < input.len() {
             let start = idx;
 
-            let colon_idx = start + &input[start..].iter().position(|&b| b == b':')?;
+            let colon_idx = start + input[start..].iter().position(|&b| b == b':')?;
             idx = colon_idx + 1;
 
             let scheme_idx = match self.rlook_scheme(&input[start..colon_idx]) {
@@ -149,12 +143,11 @@ impl URI {
         let mut idx = 0;
         idx += self.look_userinfo_at(&input[idx..]).unwrap_or(0);
         idx += self.look_host(&input[idx..]).and_then(|i| {
-            if i == 0 {
-                if sc.has(DISALLOW_EMPTY_HOST) {
-                    return None;
-                }
+            if i == 0 && sc.has(DISALLOW_EMPTY_HOST) {
+                None
+            } else {
+                Some(i)
             }
-            Some(i)
         })?;
         idx += self.look_colon_port(&input[idx..]).unwrap_or(0);
         Some(idx)
@@ -343,7 +336,7 @@ impl URI {
             return Some(2);
         }
 
-        if input.len() >= 1 && self.is_digit(input[0]) {
+        if !input.is_empty() && self.is_digit(input[0]) {
             return Some(1);
         }
 
@@ -392,7 +385,7 @@ impl URI {
     }
 
     fn look_dot(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b'.' {
+        if !input.is_empty() && input[0] == b'.' {
             Some(1)
         } else {
             None
@@ -455,7 +448,7 @@ impl URI {
     // unreserved / pct-encoded / sub-delims / ":" / "@"
     fn look_pchar(&self, input: &[u8]) -> Option<usize> {
         self.look_pct_encoded(input).or_else(|| {
-            if input.len() >= 1
+            if !input.is_empty()
                 && (self.is_unreserved(input[0])
                     || self.is_sub_delim(input[0])
                     || [b':', b'@'].contains(&input[0]))
@@ -481,7 +474,7 @@ impl URI {
     }
 
     fn look_period(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b'.' {
+        if !input.is_empty() && input[0] == b'.' {
             Some(1)
         } else {
             None
@@ -489,7 +482,7 @@ impl URI {
     }
 
     fn look_left_bracket(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b'[' {
+        if !input.is_empty() && input[0] == b'[' {
             Some(1)
         } else {
             None
@@ -497,7 +490,7 @@ impl URI {
     }
 
     fn look_colon(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b':' {
+        if !input.is_empty() && input[0] == b':' {
             Some(1)
         } else {
             None
@@ -505,7 +498,7 @@ impl URI {
     }
 
     fn look_question_mark(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b'?' {
+        if !input.is_empty() && input[0] == b'?' {
             Some(1)
         } else {
             None
@@ -513,7 +506,7 @@ impl URI {
     }
 
     fn look_sharp(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b'#' {
+        if !input.is_empty() && input[0] == b'#' {
             Some(1)
         } else {
             None
@@ -521,7 +514,7 @@ impl URI {
     }
 
     fn look_slash(&self, input: &[u8]) -> Option<usize> {
-        if input.len() >= 1 && input[0] == b'/' {
+        if !input.is_empty() && input[0] == b'/' {
             Some(1)
         } else {
             None
@@ -573,26 +566,26 @@ impl URI {
 
     // ALPHA
     fn is_alpha(&self, c: u8) -> bool {
-        (c >= b'a' && c <= b'z') || (c >= b'A' && c <= b'Z')
+        (b'a'..=b'z').contains(&c) || (b'A'..=b'Z').contains(&c)
     }
 
     // DIGIT
     fn is_digit(&self, c: u8) -> bool {
-        c >= b'0' && c <= b'9'
+        (b'0'..=b'9').contains(&c)
     }
     fn is_digit_1_to_9(&self, c: u8) -> bool {
-        c >= b'1' && c <= b'9'
+        (b'1'..=b'9').contains(&c)
     }
     fn is_digit_0_to_4(&self, c: u8) -> bool {
-        c >= b'0' && c <= b'4'
+        (b'0'..=b'4').contains(&c)
     }
     fn is_digit_0_to_5(&self, c: u8) -> bool {
-        c >= b'0' && c <= b'5'
+        (b'0'..=b'5').contains(&c)
     }
 
     // HEXDIG
     fn is_hexdig(&self, c: u8) -> bool {
-        self.is_digit(c) || (c >= b'a' && c <= b'f') || (c >= b'A' && c <= b'F')
+        self.is_digit(c) || (b'a'..=b'f').contains(&c) || (b'A'..=b'F').contains(&c)
     }
 }
 
