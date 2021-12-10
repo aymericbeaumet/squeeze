@@ -20,7 +20,7 @@ toolchain](https://www.rust-lang.org/tools/install) to be installed on your
 machine._
 
 ```shell
-git clone https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
+git clone --depth=1 https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze
 cargo install --path=/tmp/squeeze/squeeze-cli
 ```
 
@@ -139,14 +139,5 @@ echo 'http://localhost' | cargo run -- --url
 
 ```shell
 cargo test
-# https://github.com/watchexec/watchexec
-watchexec --clear --restart cargo test
-```
-
-### Update dependencies
-
-_Requires [cargo-edit](https://github.com/killercup/cargo-edit)._
-
-```shell
-cargo upgrade --workspace && cargo update
+watchexec --clear --restart 'cargo test'
 ```
