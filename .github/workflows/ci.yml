@@ -1,4 +1,10 @@
-on: push
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  schedule:
+    - cron: '00 00 * * *'
 
 name: ci
 
@@ -31,10 +37,9 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --workspace --all-features
+          args: --release
 
       - name: cargo test
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --workspace --all-features
