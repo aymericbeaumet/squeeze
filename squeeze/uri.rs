@@ -216,7 +216,7 @@ impl URI {
     fn look_ip_literal(&self, input: &[u8]) -> Option<usize> {
         let mut idx = 0;
         idx += self.look_left_bracket(&input[idx..])?;
-        let right_bracket_index = (&input[idx..]).iter().take(64).position(|&b| b == b']')?;
+        let right_bracket_index = input[idx..].iter().take(64).position(|&b| b == b']')?;
         if right_bracket_index > 0 {
             let end = idx + right_bracket_index;
             let slice = &input[idx..end];
@@ -284,9 +284,51 @@ impl URI {
     }
 
     // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
-    fn is_ipvfuture(&self, _input: &[u8]) -> bool {
-        // TODO: implementation
-        false
+    fn is_ipvfuture(&self, input: &[u8]) -> bool {
+        if input.is_empty() || input[0] != b'v' {
+            return false;
+        }
+
+        let mut idx = 1;
+
+        // 1*HEXDIG
+        let hexdig_start = idx;
+        while idx < input.len() && self.is_hexdig(input[idx]) {
+            idx += 1;
+        }
+        if idx == hexdig_start {
+            return false; // Need at least one HEXDIG
+        }
+
+        // "."
+        if idx >= input.len() || input[idx] != b'.' {
+            return false;
+        }
+        idx += 1;
+
+        // 1*( unreserved / sub-delims / ":" )
+        let char_start = idx;
+        while idx < input.len() {
+            let c = input[idx];
+            if self.is_unreserved(c) || self.is_sub_delim_strict(c) || c == b':' {
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        if idx == char_start {
+            return false; // Need at least one character after the dot
+        }
+
+        idx == input.len()
+    }
+
+    // sub-delims for IPvFuture (always strict as per RFC)
+    fn is_sub_delim_strict(&self, c: u8) -> bool {
+        [
+            b'!', b'$', b'&', b'\'', b'(', b')', b'*', b'+', b',', b';', b'=',
+        ]
+        .contains(&c)
     }
 
     // dec-octet "." dec-octet "." dec-octet "." dec-octet
@@ -566,12 +608,12 @@ impl URI {
 
     // ALPHA
     fn is_alpha(&self, c: u8) -> bool {
-        (b'a'..=b'z').contains(&c) || (b'A'..=b'Z').contains(&c)
+        c.is_ascii_lowercase() || c.is_ascii_uppercase()
     }
 
     // DIGIT
     fn is_digit(&self, c: u8) -> bool {
-        (b'0'..=b'9').contains(&c)
+        c.is_ascii_digit()
     }
     fn is_digit_1_to_9(&self, c: u8) -> bool {
         (b'1'..=b'9').contains(&c)
@@ -749,6 +791,225 @@ mod tests {
             "https:///test",
         ] {
             assert_eq!(None, finder.find(input), "{}", input);
+        }
+    }
+
+    #[test]
+    fn is_ipvfuture_should_identify_valid_ipvfutures() {
+        let finder = URI::default();
+        for input in vec![
+            "v1.test",
+            "vFF.a",
+            "v1.fe80",
+            "v1.a:b:c",
+            "vABCDEF.test",
+            "v1.unreserved-chars_here~",
+            "v1.sub!delims$and&more",
+        ] {
+            assert_eq!(true, finder.is_ipvfuture(input.as_bytes()), "{}", input);
+        }
+    }
+
+    #[test]
+    fn is_ipvfuture_should_identify_invalid_ipvfutures() {
+        let finder = URI::default();
+        for input in vec![
+            "", "v", "v1", "v1.", "v.", "v.test", "1.test",
+            "vGG.test", // G is not a valid hex digit
+        ] {
+            assert_eq!(false, finder.is_ipvfuture(input.as_bytes()), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_valid_ipvfuture_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "http://[v1.test]/path",
+            "http://[vFF.fe80]/",
+            "http://[v1.a:b:c]",
+            "http://[v1.test]:8080/path",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_data_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "data:text/plain;base64,SGVsbG8=",
+            "data:image/png;base64,iVBORw0KGgo=",
+            "data:,Hello%2C%20World!",
+            "data:text/html,%3Ch1%3EHello%3C%2Fh1%3E",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_mailto_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "mailto:user@example.com",
+            "mailto:user@example.com?subject=Hello&body=World",
+            "mailto:user@example.com,other@example.com",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_tel_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "tel:+1-816-555-1212",
+            "tel:+1-816-555-1212;ext=1234",
+            "tel:911",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_percent_encoding() {
+        let finder = URI::default();
+        for input in vec![
+            "http://example.com/path%20with%20spaces",
+            "http://example.com/path?q=%E2%9C%93",
+            "http://user%40name:pass%23word@example.com",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_fragments() {
+        let finder = URI::default();
+        for input in vec![
+            "http://example.com#section",
+            "http://example.com/page#",
+            "http://example.com?query#fragment",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_empty_paths() {
+        let finder = URI::default();
+        for input in vec!["http://example.com?query", "http://example.com#fragment"] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_multiple_slashes() {
+        let finder = URI::default();
+        for input in vec![
+            "http://example.com//path",
+            "http://example.com//path///to////resource",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_ipv4_mapped_ipv6_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "http://[::ffff:192.168.1.1]",
+            "http://[::ffff:127.0.0.1]:8080/path",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_punycode_domains() {
+        let finder = URI::default();
+        for input in vec!["http://xn--n3h.com", "http://xn--nxasmq5b.com"] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_hostnames_with_underscores() {
+        let finder = URI::default();
+        for input in vec!["http://my_server.local", "http://_dmarc.example.com"] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_single_label_hostnames() {
+        let finder = URI::default();
+        for input in vec![
+            "http://localhost",
+            "http://intranet",
+            "http://localhost:8080",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
         }
     }
 }

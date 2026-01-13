@@ -4,51 +4,52 @@ use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
 
 #[derive(Parser)]
-#[clap(
+#[command(
     name = "squeeze",
-    version = "1.0",
-    author = "Aymeric Beaumet <hi@aymericbeaumet.com>"
+    version = env!("CARGO_PKG_VERSION"),
+    author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
+    about = "Extract rich information from any text"
 )]
 struct Opts {
     // flags
-    #[clap(short = '1', long = "--first", help = "only show the first result")]
+    #[arg(short = '1', long = "first", help = "only show the first result")]
     first: bool,
-    #[clap(long = "--open", help = "open the results")]
+    #[arg(long = "open", help = "open the results")]
     open: bool,
 
     // codetag
-    #[clap(long = "codetag", help = "search for codetags")]
+    #[arg(long = "codetag", help = "search for codetags")]
     mnemonic: Option<Option<String>>,
-    #[clap(
+    #[arg(
         long = "hide-mnemonic",
         help = "whether to show the mnemonics in the results"
     )]
     hide_mnemonic: bool,
-    #[clap(long = "fixme", help = "alias for: --codetag=fixme")]
+    #[arg(long = "fixme", help = "alias for: --codetag=fixme")]
     fixme: bool,
-    #[clap(long = "todo", help = "alias for: --codetag=todo")]
+    #[arg(long = "todo", help = "alias for: --codetag=todo")]
     todo: bool,
 
     // mirror
-    #[clap(long = "mirror", help = "[debug] mirror the input")]
+    #[arg(long = "mirror", help = "[debug] mirror the input")]
     mirror: bool,
 
     // uri
-    #[clap(long = "uri", help = "search for uris")]
+    #[arg(long = "uri", help = "search for uris")]
     scheme: Option<Option<String>>,
-    #[clap(
+    #[arg(
         long = "strict",
         help = "strictly respect the URI RFC in regards to closing ' and )"
     )]
     strict: bool,
-    #[clap(
+    #[arg(
         long = "url",
         help = "alias for: --uri=data,ftp,ftps,http,https,mailto,sftp,ws,wss"
     )]
     url: bool,
-    #[clap(long = "http", help = "alias for: --uri=http")]
+    #[arg(long = "http", help = "alias for: --uri=http")]
     http: bool,
-    #[clap(long = "https", help = "alias for: --uri=https")]
+    #[arg(long = "https", help = "alias for: --uri=https")]
     https: bool,
 }
 
@@ -128,7 +129,7 @@ impl TryFrom<&Opts> for URI {
 }
 
 fn main() {
-    pretty_env_logger::init();
+    env_logger::init();
 
     let opts = Opts::parse();
     let codetag = TryInto::<Codetag>::try_into(&opts);
@@ -163,7 +164,7 @@ fn main() {
                     if !found.is_empty() {
                         println!("{}", found);
                         if opts.open {
-                            open(found).expect("failed to open result");
+                            open_url(found).expect("failed to open result");
                         }
                         if opts.first {
                             return;
@@ -177,12 +178,6 @@ fn main() {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn open(arg: &str) -> io::Result<std::process::Child> {
-    std::process::Command::new("open").arg(arg).spawn()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn open(_: &str) -> io::Result<std::process::Child> {
-    unimplemented!("The --open flag is not yet available on your platform. In the meantime, `... | squeeze | xargs xdg-open` might be used as a workaround (YMMV).");
+fn open_url(url: &str) -> io::Result<()> {
+    open::that(url).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
 }
