@@ -632,13 +632,16 @@ impl URI {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
+#[allow(clippy::useless_vec)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
     #[test]
     fn is_ipv6address_should_identify_valid_ipv6s() {
         let finder = URI::default();
-        for input in vec![
+        for input in [
             "::",
             "::1",
             "1::",

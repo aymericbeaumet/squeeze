@@ -203,6 +203,8 @@ impl Codetag {
 }
 
 #[cfg(test)]
+#[allow(clippy::useless_vec)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
