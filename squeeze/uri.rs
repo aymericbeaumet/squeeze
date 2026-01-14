@@ -1,4 +1,21 @@
-// https://tools.ietf.org/html/rfc3986#appendix-A
+//! URI finder implementation based on [RFC 3986](https://tools.ietf.org/html/rfc3986#appendix-A).
+//!
+//! This module provides a [`URI`] finder that can extract URIs from text, optionally
+//! filtering by scheme (http, https, mailto, etc.).
+//!
+//! # Example
+//!
+//! ```
+//! use squeeze::{uri::URI, Finder};
+//!
+//! let mut finder = URI::default();
+//! finder.add_scheme("https"); // Only match https URLs
+//!
+//! let text = "Visit https://example.com or http://other.com";
+//! if let Some(range) = finder.find(text) {
+//!     assert_eq!(&text[range], "https://example.com");
+//! }
+//! ```
 
 use super::Finder;
 use std::collections::HashSet;
@@ -33,9 +50,21 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
     "https" => SchemeConfig(DISALLOW_EMPTY_HOST),
 });
 
+/// A finder that extracts URIs from text according to RFC 3986.
+///
+/// By default, all URI schemes are matched. Use [`URI::add_scheme`] to filter
+/// by specific schemes.
+///
+/// # Strict Mode
+///
+/// By default, the finder excludes trailing `'` and `)` characters from URIs
+/// to handle common text patterns like markdown links `[text](url)` or quotes.
+/// Set [`URI::strict`] to `true` to strictly follow RFC 3986.
 #[derive(Default)]
 pub struct URI {
     schemes: HashSet<String>,
+    /// When `true`, strictly follows RFC 3986 and includes trailing `'` and `)` in URIs.
+    /// When `false` (default), excludes these characters for better text extraction.
     pub strict: bool,
 }
 
@@ -78,6 +107,22 @@ impl Finder for URI {
 }
 
 impl URI {
+    /// Adds a scheme to the filter list.
+    ///
+    /// When at least one scheme is added, only URIs with matching schemes will be found.
+    /// Scheme matching is case-insensitive.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use squeeze::{uri::URI, Finder};
+    ///
+    /// let mut finder = URI::default();
+    /// finder.add_scheme("https");
+    /// finder.add_scheme("mailto");
+    ///
+    /// // Will match https:// and mailto: URIs, but not http:// or ftp://
+    /// ```
     pub fn add_scheme(&mut self, s: &str) {
         self.schemes.insert(s.to_lowercase());
     }
@@ -1014,5 +1059,262 @@ mod tests {
                 input
             );
         }
+    }
+
+    // ============================================================================
+    // Edge case tests
+    // ============================================================================
+
+    #[test]
+    fn it_should_handle_empty_string() {
+        let finder = URI::default();
+        assert_eq!(None, finder.find(""));
+    }
+
+    #[test]
+    fn it_should_handle_string_without_uris() {
+        let finder = URI::default();
+        // Note: URIs require scheme:... where scheme starts with ALPHA
+        // So inputs without colons or with only non-alpha before colon won't match
+        for input in vec![
+            "hello world",
+            "no urls here",
+            "just some text",
+            "12345",      // no colon
+            "   ",        // no colon
+            "123:456",    // scheme must start with alpha
+            ":no-scheme", // colon at start
+        ] {
+            assert_eq!(None, finder.find(input), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_handle_very_long_uris() {
+        let finder = URI::default();
+
+        // Long path
+        let long_path = format!("http://example.com/{}", "a".repeat(2000));
+        assert_eq!(
+            Some(long_path.as_str()),
+            finder.find(&long_path).map(|r| &long_path[r])
+        );
+
+        // Long query
+        let long_query = format!("http://example.com?q={}", "b".repeat(2000));
+        assert_eq!(
+            Some(long_query.as_str()),
+            finder.find(&long_query).map(|r| &long_query[r])
+        );
+
+        // Long fragment
+        let long_fragment = format!("http://example.com#{}", "c".repeat(2000));
+        assert_eq!(
+            Some(long_fragment.as_str()),
+            finder.find(&long_fragment).map(|r| &long_fragment[r])
+        );
+    }
+
+    #[test]
+    fn it_should_handle_malformed_percent_encoding() {
+        let finder = URI::default();
+
+        // Valid percent encoding
+        assert!(finder.find("http://example.com/%20").is_some());
+        assert!(finder.find("http://example.com/%2F").is_some());
+
+        // Invalid hex digits - should stop before invalid encoding
+        let input = "http://example.com/path%GG";
+        let result = finder.find(input).map(|r| &input[r]);
+        assert_eq!(Some("http://example.com/path"), result);
+
+        let input2 = "http://example.com/path%ZZ";
+        let result2 = finder.find(input2).map(|r| &input2[r]);
+        assert_eq!(Some("http://example.com/path"), result2);
+    }
+
+    #[test]
+    fn it_should_handle_incomplete_percent_encoding() {
+        let finder = URI::default();
+
+        // Single % at end
+        let input = "http://example.com/path%";
+        let result = finder.find(input).map(|r| &input[r]);
+        assert_eq!(Some("http://example.com/path"), result);
+
+        // % with only one hex digit
+        let input2 = "http://example.com/path%2";
+        let result2 = finder.find(input2).map(|r| &input2[r]);
+        assert_eq!(Some("http://example.com/path"), result2);
+    }
+
+    #[test]
+    fn it_should_handle_unicode_in_hostnames() {
+        let finder = URI::default();
+
+        // Punycode domains (IDN)
+        for input in vec![
+            "http://xn--n3h.com",        // Unicode domain encoded as punycode
+            "http://xn--nxasmq5b.com",   // Another punycode domain
+            "http://xn--80ak6aa92e.com", // Yet another
+        ] {
+            assert!(finder.find(input).is_some(), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_handle_edge_case_ports() {
+        let finder = URI::default();
+
+        // Empty port
+        assert!(finder.find("http://example.com:").is_some());
+
+        // Port 0
+        assert!(finder.find("http://example.com:0").is_some());
+
+        // Very large port number (technically invalid but should parse)
+        assert!(finder.find("http://example.com:99999").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_edge_case_userinfo() {
+        let finder = URI::default();
+
+        // Empty userinfo with @
+        assert!(finder.find("http://@example.com").is_some());
+
+        // Only username
+        assert!(finder.find("http://user@example.com").is_some());
+
+        // Username and empty password
+        assert!(finder.find("http://user:@example.com").is_some());
+
+        // Empty username and password
+        assert!(finder.find("http://:pass@example.com").is_some());
+
+        // Special characters in userinfo (percent-encoded)
+        assert!(finder.find("http://user%40name@example.com").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_consecutive_special_chars() {
+        let finder = URI::default();
+
+        // Multiple query params
+        assert!(finder.find("http://example.com?a=1&b=2&c=3").is_some());
+
+        // Fragment parsing stops at second # (RFC 3986 fragment is *( pchar / "/" / "?" ))
+        let input = "http://example.com#frag#ment";
+        // The # character is not valid in a fragment, so parsing stops at #frag
+        assert_eq!(
+            Some("http://example.com#frag"),
+            finder.find(input).map(|r| &input[r])
+        );
+
+        // Query then fragment
+        assert!(finder.find("http://example.com?query#fragment").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_scheme_edge_cases() {
+        let finder = URI::default();
+
+        // Scheme with numbers
+        assert!(finder.find("h2c://example.com").is_some());
+
+        // Scheme with plus
+        assert!(finder.find("coap+tcp://example.com").is_some());
+
+        // Scheme with dots
+        assert!(finder.find("x.y.z://example.com").is_some());
+
+        // Scheme with hyphens
+        assert!(finder.find("my-scheme://example.com").is_some());
+
+        // Single letter scheme
+        assert!(finder.find("x://example.com").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_ipv4_edge_cases() {
+        let finder = URI::default();
+
+        // Boundary values
+        assert!(finder.find("http://0.0.0.0").is_some());
+        assert!(finder.find("http://255.255.255.255").is_some());
+
+        // Invalid IP (256) - should still find partial
+        let input = "http://256.0.0.1";
+        assert!(finder.find(input).is_some()); // Finds as hostname
+
+        // Leading zeros (valid but unusual)
+        assert!(finder.find("http://192.168.001.001").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_multiple_uris_in_text() {
+        let finder = URI::default();
+
+        let text = "Visit http://first.com and https://second.com today";
+        let result = finder.find(text);
+        assert!(result.is_some());
+        assert_eq!("http://first.com", &text[result.unwrap()]);
+    }
+
+    #[test]
+    fn it_should_handle_uri_at_string_boundaries() {
+        let finder = URI::default();
+
+        // URI at start
+        let input1 = "http://example.com is a URL";
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(input1).map(|r| &input1[r])
+        );
+
+        // URI at end
+        let input2 = "Visit http://example.com";
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(input2).map(|r| &input2[r])
+        );
+
+        // URI alone
+        let input3 = "http://example.com";
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(input3).map(|r| &input3[r])
+        );
+    }
+
+    #[test]
+    fn it_should_filter_by_scheme() {
+        let mut finder = URI::default();
+        finder.add_scheme("https");
+
+        // Should match https
+        let input1 = "https://secure.com";
+        assert_eq!(Some(input1), finder.find(input1).map(|r| &input1[r]));
+
+        // Should skip http, find nothing
+        let input2 = "http://insecure.com";
+        assert_eq!(None, finder.find(input2));
+
+        // Should skip http and find https
+        let input3 = "http://first.com https://second.com";
+        assert_eq!(
+            Some("https://second.com"),
+            finder.find(input3).map(|r| &input3[r])
+        );
+    }
+
+    #[test]
+    fn it_should_handle_scheme_case_insensitivity() {
+        let mut finder = URI::default();
+        finder.add_scheme("HTTP");
+
+        // Should match lowercase http
+        let input = "http://example.com";
+        assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
     }
 }

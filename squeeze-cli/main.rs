@@ -2,6 +2,7 @@ use clap::Parser;
 use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
+use std::process::ExitCode;
 
 #[derive(Parser)]
 #[command(
@@ -74,7 +75,9 @@ impl TryFrom<&Opts> for Codetag {
         if opts.todo {
             finder.add_mnemonic("todo");
         }
-        finder.build_mnemonics_regex().unwrap();
+        finder
+            .build_mnemonics_regex()
+            .expect("failed to build codetag regex");
         Ok(finder)
     }
 }
@@ -128,7 +131,7 @@ impl TryFrom<&Opts> for URI {
     }
 }
 
-fn main() {
+fn main() -> ExitCode {
     env_logger::init();
 
     let opts = Opts::parse();
@@ -146,12 +149,19 @@ fn main() {
     .collect();
 
     if finders.is_empty() {
-        return;
+        return ExitCode::SUCCESS;
     }
 
     for line in io::stdin().lock().lines() {
+        let line = match line {
+            Ok(line) => line,
+            Err(e) => {
+                log::error!("failed to read line: {}", e);
+                continue;
+            }
+        };
+
         for finder in &finders {
-            let line = line.as_ref().unwrap();
             log::debug!("[{}] line \"{}\"", finder.id(), line);
             let mut idx = 0;
             while idx < line.len() {
@@ -164,10 +174,12 @@ fn main() {
                     if !found.is_empty() {
                         println!("{}", found);
                         if opts.open {
-                            open_url(found).expect("failed to open result");
+                            if let Err(e) = open_url(found) {
+                                eprintln!("failed to open '{}': {}", found, e);
+                            }
                         }
                         if opts.first {
-                            return;
+                            return ExitCode::SUCCESS;
                         }
                     }
                 } else {
@@ -176,6 +188,8 @@ fn main() {
             }
         }
     }
+
+    ExitCode::SUCCESS
 }
 
 fn open_url(url: &str) -> io::Result<()> {

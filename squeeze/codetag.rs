@@ -1,4 +1,22 @@
-// https://www.python.org/dev/peps/pep-0350/
+//! Codetag finder implementation based on [PEP 350](https://www.python.org/dev/peps/pep-0350/).
+//!
+//! This module provides a [`Codetag`] finder that extracts codetags (TODO, FIXME, etc.)
+//! from source code comments.
+//!
+//! # Example
+//!
+//! ```
+//! use squeeze::{codetag::Codetag, Finder};
+//!
+//! let mut finder = Codetag::default();
+//! finder.add_mnemonic("TODO");
+//! finder.build_mnemonics_regex().unwrap();
+//!
+//! let text = "// TODO: implement this feature";
+//! if let Some(range) = finder.find(text) {
+//!     assert_eq!(&text[range], "TODO: implement this feature");
+//! }
+//! ```
 
 use super::Finder;
 use regex::Regex;
@@ -114,8 +132,33 @@ fn default_mnemonics() -> &'static HashSet<String> {
     })
 }
 
+/// A finder that extracts codetags (TODO, FIXME, etc.) from text.
+///
+/// Codetags are special comments in source code that mark areas needing attention.
+/// This finder supports all mnemonics defined in PEP 350, plus common variants.
+///
+/// # Usage
+///
+/// 1. Create a default instance or configure with specific mnemonics
+/// 2. Call [`Codetag::build_mnemonics_regex`] before using
+/// 3. Use the [`Finder::find`] method to extract codetags
+///
+/// # Example
+///
+/// ```
+/// use squeeze::{codetag::Codetag, Finder};
+///
+/// let mut finder = Codetag::default();
+/// finder.build_mnemonics_regex().unwrap();
+///
+/// let text = "// FIXME(john): this is broken";
+/// if let Some(range) = finder.find(text) {
+///     println!("Found: {}", &text[range]);
+/// }
+/// ```
 #[derive(Default)]
 pub struct Codetag {
+    /// When `true`, the mnemonic (e.g., "TODO:") is excluded from the result.
     pub hide_mnemonic: bool,
     mnemonics: HashSet<String>,
     mnemonics_regex: Option<Regex>,
@@ -149,10 +192,25 @@ impl Finder for Codetag {
 }
 
 impl Codetag {
+    /// Adds a custom mnemonic to search for.
+    ///
+    /// When at least one mnemonic is added, only those mnemonics will be matched.
+    /// If no mnemonics are added, all default PEP 350 mnemonics are used.
+    ///
+    /// Mnemonic matching is case-insensitive.
     pub fn add_mnemonic(&mut self, mnemonic: &str) {
         self.mnemonics.insert(mnemonic.to_uppercase());
     }
 
+    /// Builds the internal regex for matching mnemonics.
+    ///
+    /// **This must be called before using the finder.** Calling [`Finder::find`]
+    /// without building the regex will panic.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the regex compilation fails (should not happen with
+    /// valid mnemonics).
     pub fn build_mnemonics_regex(&mut self) -> Result<(), regex::Error> {
         let mnemonics = if self.mnemonics.is_empty() {
             default_mnemonics().iter()
@@ -376,5 +434,210 @@ mod tests {
         ] {
             assert!(finder.find(input).is_some(), "{}", input);
         }
+    }
+
+    // ============================================================================
+    // Edge case tests
+    // ============================================================================
+
+    #[test]
+    fn it_should_handle_empty_string() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+        assert_eq!(None, finder.find(""));
+    }
+
+    #[test]
+    fn it_should_handle_mnemonic_only_with_colon() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        // Just the mnemonic with colon, nothing after
+        let input = "TODO:";
+        assert_eq!(Some("TODO:"), finder.find(input).map(|r| &input[r]));
+    }
+
+    #[test]
+    fn it_should_handle_whitespace_only_after_mnemonic() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        // Mnemonic with only whitespace after
+        let input = "TODO:   ";
+        let result = finder.find(input);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn it_should_handle_nested_parentheses_in_field() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        // The field parser captures content up to first )
+        // So nested parens break the field, but simple parens work
+        let input = "TODO(author): description";
+        assert!(finder.find(input).is_some());
+
+        // Nested parentheses - the field regex [^)]* stops at first )
+        // so TODO(a(b)): won't match as the field doesn't close properly
+        let input2 = "TODO(a(b)): description";
+        // This won't match because the regex expects TODO(...)colon pattern
+        // but the nested ( breaks it - this documents the current behavior
+        assert!(finder.find(input2).is_none());
+    }
+
+    #[test]
+    fn it_should_handle_multiple_mnemonics_per_line() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        // Only finds the first one
+        let input = "TODO: first FIXME: second";
+        let result = finder.find(input).map(|r| &input[r]);
+        assert!(result.is_some());
+        // Should find TODO and include the rest of the line
+        assert!(result.unwrap().starts_with("TODO:"));
+    }
+
+    #[test]
+    fn it_should_handle_mnemonic_at_exact_start() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let input = "TODO: at start";
+        let result = finder.find(input);
+        assert!(result.is_some());
+        assert_eq!(0, result.unwrap().start);
+    }
+
+    #[test]
+    fn it_should_handle_mnemonic_at_exact_end() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let input = "comment TODO:";
+        let result = finder.find(input);
+        assert!(result.is_some());
+        // Range should extend to end of string
+        assert_eq!(input.len(), result.unwrap().end);
+    }
+
+    #[test]
+    fn it_should_handle_very_long_description() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let long_desc = "a".repeat(10000);
+        let input = format!("TODO: {}", long_desc);
+        let result = finder.find(&input);
+        assert!(result.is_some());
+        assert_eq!(input.len(), result.unwrap().end);
+    }
+
+    #[test]
+    fn it_should_handle_unicode_in_description() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let input = "TODO: 修复这个问题 🐛";
+        let result = finder.find(input);
+        assert!(result.is_some());
+        assert_eq!(Some("TODO: 修复这个问题 🐛"), result.map(|r| &input[r]));
+    }
+
+    #[test]
+    fn it_should_handle_all_default_mnemonics() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let mnemonics = vec![
+            "TODO", "FIXME", "XXX", "HACK", "BUG", "NOTE", "WARNING", "REVIEW",
+        ];
+
+        for mnemonic in mnemonics {
+            let input = format!("{}: description", mnemonic);
+            assert!(
+                finder.find(&input).is_some(),
+                "Should find mnemonic: {}",
+                mnemonic
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_handle_hide_mnemonic_with_no_content() {
+        let mut finder = Codetag::default();
+        finder.hide_mnemonic = true;
+        finder.build_mnemonics_regex().unwrap();
+
+        // When hiding mnemonic and there's nothing after, should return None
+        let input = "TODO:";
+        assert_eq!(None, finder.find(input));
+    }
+
+    #[test]
+    fn it_should_handle_custom_mnemonic_case_insensitivity() {
+        let mut finder = Codetag::default();
+        finder.add_mnemonic("CUSTOM");
+        finder.build_mnemonics_regex().unwrap();
+
+        // Should match regardless of case
+        assert!(finder.find("custom: test").is_some());
+        assert!(finder.find("CUSTOM: test").is_some());
+        assert!(finder.find("Custom: test").is_some());
+        assert!(finder.find("cUsToM: test").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_multiple_custom_mnemonics() {
+        let mut finder = Codetag::default();
+        finder.add_mnemonic("AAA");
+        finder.add_mnemonic("BBB");
+        finder.add_mnemonic("CCC");
+        finder.build_mnemonics_regex().unwrap();
+
+        assert!(finder.find("AAA: test").is_some());
+        assert!(finder.find("BBB: test").is_some());
+        assert!(finder.find("CCC: test").is_some());
+        assert!(finder.find("TODO: test").is_none()); // Not in custom list
+    }
+
+    #[test]
+    fn it_should_handle_field_with_special_characters() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let inputs = vec![
+            "TODO(@user): mention",
+            "TODO(#123): issue number",
+            "TODO(v1.2.3): version",
+            "TODO(2024-01-01): date",
+        ];
+
+        for input in inputs {
+            assert!(finder.find(input).is_some(), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_not_match_without_colon() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        // Mnemonic without colon should not match
+        assert!(finder.find("TODO is not a codetag").is_none());
+        assert!(finder.find("FIXME this").is_none());
+    }
+
+    #[test]
+    fn it_should_handle_colon_inside_description() {
+        let mut finder = Codetag::default();
+        finder.build_mnemonics_regex().unwrap();
+
+        let input = "TODO: time is 12:30:45";
+        let result = finder.find(input);
+        assert!(result.is_some());
+        // Should capture the entire rest of the line including colons
+        assert_eq!(Some("TODO: time is 12:30:45"), result.map(|r| &input[r]));
     }
 }

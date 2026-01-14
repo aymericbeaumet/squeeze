@@ -7,6 +7,9 @@ rust-version = "1.70"
 license = "MIT"
 description = "Extract rich information from any text (URIs, codetags, etc.)"
 repository = "https://github.com/aymericbeaumet/squeeze"
+readme = "../readme.md"
+keywords = ["uri", "url", "parser", "extractor", "codetag"]
+categories = ["text-processing", "parsing", "command-line-utilities"]
 
 [lib]
 name = "squeeze"
