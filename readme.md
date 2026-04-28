@@ -13,11 +13,24 @@ the install and getting started instructions.
 
 ## Install
 
-### Using git
+### Using Homebrew (macOS/Linux)
+
+```shell
+brew tap aymericbeaumet/tap
+brew install squeeze
+```
+
+### Using Cargo
 
 _This method requires the [Rust
 toolchain](https://www.rust-lang.org/tools/install) to be installed on your
 machine._
+
+```shell
+cargo install --git https://github.com/aymericbeaumet/squeeze squeeze-cli
+```
+
+### From source
 
 ```shell
 git clone --depth=1 https://github.com/aymericbeaumet/squeeze.git /tmp/squeeze

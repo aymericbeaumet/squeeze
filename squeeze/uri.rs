@@ -1,4 +1,21 @@
-// https://tools.ietf.org/html/rfc3986#appendix-A
+//! URI finder implementation based on [RFC 3986](https://tools.ietf.org/html/rfc3986#appendix-A).
+//!
+//! This module provides a [`URI`] finder that can extract URIs from text, optionally
+//! filtering by scheme (http, https, mailto, etc.).
+//!
+//! # Example
+//!
+//! ```
+//! use squeeze::{uri::URI, Finder};
+//!
+//! let mut finder = URI::default();
+//! finder.add_scheme("https"); // Only match https URLs
+//!
+//! let text = "Visit https://example.com or http://other.com";
+//! if let Some(range) = finder.find(text) {
+//!     assert_eq!(&text[range], "https://example.com");
+//! }
+//! ```
 
 use super::Finder;
 use std::collections::HashSet;
@@ -33,9 +50,21 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
     "https" => SchemeConfig(DISALLOW_EMPTY_HOST),
 });
 
+/// A finder that extracts URIs from text according to RFC 3986.
+///
+/// By default, all URI schemes are matched. Use [`URI::add_scheme`] to filter
+/// by specific schemes.
+///
+/// # Strict Mode
+///
+/// By default, the finder excludes trailing `'` and `)` characters from URIs
+/// to handle common text patterns like markdown links `[text](url)` or quotes.
+/// Set [`URI::strict`] to `true` to strictly follow RFC 3986.
 #[derive(Default)]
 pub struct URI {
     schemes: HashSet<String>,
+    /// When `true`, strictly follows RFC 3986 and includes trailing `'` and `)` in URIs.
+    /// When `false` (default), excludes these characters for better text extraction.
     pub strict: bool,
 }
 
@@ -78,6 +107,22 @@ impl Finder for URI {
 }
 
 impl URI {
+    /// Adds a scheme to the filter list.
+    ///
+    /// When at least one scheme is added, only URIs with matching schemes will be found.
+    /// Scheme matching is case-insensitive.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use squeeze::{uri::URI, Finder};
+    ///
+    /// let mut finder = URI::default();
+    /// finder.add_scheme("https");
+    /// finder.add_scheme("mailto");
+    ///
+    /// // Will match https:// and mailto: URIs, but not http:// or ftp://
+    /// ```
     pub fn add_scheme(&mut self, s: &str) {
         self.schemes.insert(s.to_lowercase());
     }
@@ -216,7 +261,7 @@ impl URI {
     fn look_ip_literal(&self, input: &[u8]) -> Option<usize> {
         let mut idx = 0;
         idx += self.look_left_bracket(&input[idx..])?;
-        let right_bracket_index = (&input[idx..]).iter().take(64).position(|&b| b == b']')?;
+        let right_bracket_index = input[idx..].iter().take(64).position(|&b| b == b']')?;
         if right_bracket_index > 0 {
             let end = idx + right_bracket_index;
             let slice = &input[idx..end];
@@ -284,9 +329,51 @@ impl URI {
     }
 
     // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
-    fn is_ipvfuture(&self, _input: &[u8]) -> bool {
-        // TODO: implementation
-        false
+    fn is_ipvfuture(&self, input: &[u8]) -> bool {
+        if input.is_empty() || input[0] != b'v' {
+            return false;
+        }
+
+        let mut idx = 1;
+
+        // 1*HEXDIG
+        let hexdig_start = idx;
+        while idx < input.len() && self.is_hexdig(input[idx]) {
+            idx += 1;
+        }
+        if idx == hexdig_start {
+            return false; // Need at least one HEXDIG
+        }
+
+        // "."
+        if idx >= input.len() || input[idx] != b'.' {
+            return false;
+        }
+        idx += 1;
+
+        // 1*( unreserved / sub-delims / ":" )
+        let char_start = idx;
+        while idx < input.len() {
+            let c = input[idx];
+            if self.is_unreserved(c) || self.is_sub_delim_strict(c) || c == b':' {
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        if idx == char_start {
+            return false; // Need at least one character after the dot
+        }
+
+        idx == input.len()
+    }
+
+    // sub-delims for IPvFuture (always strict as per RFC)
+    fn is_sub_delim_strict(&self, c: u8) -> bool {
+        [
+            b'!', b'$', b'&', b'\'', b'(', b')', b'*', b'+', b',', b';', b'=',
+        ]
+        .contains(&c)
     }
 
     // dec-octet "." dec-octet "." dec-octet "." dec-octet
@@ -566,12 +653,12 @@ impl URI {
 
     // ALPHA
     fn is_alpha(&self, c: u8) -> bool {
-        (b'a'..=b'z').contains(&c) || (b'A'..=b'Z').contains(&c)
+        c.is_ascii_lowercase() || c.is_ascii_uppercase()
     }
 
     // DIGIT
     fn is_digit(&self, c: u8) -> bool {
-        (b'0'..=b'9').contains(&c)
+        c.is_ascii_digit()
     }
     fn is_digit_1_to_9(&self, c: u8) -> bool {
         (b'1'..=b'9').contains(&c)
@@ -590,13 +677,16 @@ impl URI {
 }
 
 #[cfg(test)]
+#[allow(clippy::bool_assert_comparison)]
+#[allow(clippy::useless_vec)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
     #[test]
     fn is_ipv6address_should_identify_valid_ipv6s() {
         let finder = URI::default();
-        for input in vec![
+        for input in [
             "::",
             "::1",
             "1::",
@@ -750,5 +840,481 @@ mod tests {
         ] {
             assert_eq!(None, finder.find(input), "{}", input);
         }
+    }
+
+    #[test]
+    fn is_ipvfuture_should_identify_valid_ipvfutures() {
+        let finder = URI::default();
+        for input in vec![
+            "v1.test",
+            "vFF.a",
+            "v1.fe80",
+            "v1.a:b:c",
+            "vABCDEF.test",
+            "v1.unreserved-chars_here~",
+            "v1.sub!delims$and&more",
+        ] {
+            assert_eq!(true, finder.is_ipvfuture(input.as_bytes()), "{}", input);
+        }
+    }
+
+    #[test]
+    fn is_ipvfuture_should_identify_invalid_ipvfutures() {
+        let finder = URI::default();
+        for input in vec![
+            "", "v", "v1", "v1.", "v.", "v.test", "1.test",
+            "vGG.test", // G is not a valid hex digit
+        ] {
+            assert_eq!(false, finder.is_ipvfuture(input.as_bytes()), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_valid_ipvfuture_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "http://[v1.test]/path",
+            "http://[vFF.fe80]/",
+            "http://[v1.a:b:c]",
+            "http://[v1.test]:8080/path",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_data_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "data:text/plain;base64,SGVsbG8=",
+            "data:image/png;base64,iVBORw0KGgo=",
+            "data:,Hello%2C%20World!",
+            "data:text/html,%3Ch1%3EHello%3C%2Fh1%3E",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_mailto_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "mailto:user@example.com",
+            "mailto:user@example.com?subject=Hello&body=World",
+            "mailto:user@example.com,other@example.com",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_tel_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "tel:+1-816-555-1212",
+            "tel:+1-816-555-1212;ext=1234",
+            "tel:911",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_percent_encoding() {
+        let finder = URI::default();
+        for input in vec![
+            "http://example.com/path%20with%20spaces",
+            "http://example.com/path?q=%E2%9C%93",
+            "http://user%40name:pass%23word@example.com",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_fragments() {
+        let finder = URI::default();
+        for input in vec![
+            "http://example.com#section",
+            "http://example.com/page#",
+            "http://example.com?query#fragment",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_empty_paths() {
+        let finder = URI::default();
+        for input in vec!["http://example.com?query", "http://example.com#fragment"] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_uris_with_multiple_slashes() {
+        let finder = URI::default();
+        for input in vec![
+            "http://example.com//path",
+            "http://example.com//path///to////resource",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_ipv4_mapped_ipv6_uris() {
+        let finder = URI::default();
+        for input in vec![
+            "http://[::ffff:192.168.1.1]",
+            "http://[::ffff:127.0.0.1]:8080/path",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_punycode_domains() {
+        let finder = URI::default();
+        for input in vec!["http://xn--n3h.com", "http://xn--nxasmq5b.com"] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_hostnames_with_underscores() {
+        let finder = URI::default();
+        for input in vec!["http://my_server.local", "http://_dmarc.example.com"] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn it_should_mirror_single_label_hostnames() {
+        let finder = URI::default();
+        for input in vec![
+            "http://localhost",
+            "http://intranet",
+            "http://localhost:8080",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    // ============================================================================
+    // Edge case tests
+    // ============================================================================
+
+    #[test]
+    fn it_should_handle_empty_string() {
+        let finder = URI::default();
+        assert_eq!(None, finder.find(""));
+    }
+
+    #[test]
+    fn it_should_handle_string_without_uris() {
+        let finder = URI::default();
+        // Note: URIs require scheme:... where scheme starts with ALPHA
+        // So inputs without colons or with only non-alpha before colon won't match
+        for input in vec![
+            "hello world",
+            "no urls here",
+            "just some text",
+            "12345",      // no colon
+            "   ",        // no colon
+            "123:456",    // scheme must start with alpha
+            ":no-scheme", // colon at start
+        ] {
+            assert_eq!(None, finder.find(input), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_handle_very_long_uris() {
+        let finder = URI::default();
+
+        // Long path
+        let long_path = format!("http://example.com/{}", "a".repeat(2000));
+        assert_eq!(
+            Some(long_path.as_str()),
+            finder.find(&long_path).map(|r| &long_path[r])
+        );
+
+        // Long query
+        let long_query = format!("http://example.com?q={}", "b".repeat(2000));
+        assert_eq!(
+            Some(long_query.as_str()),
+            finder.find(&long_query).map(|r| &long_query[r])
+        );
+
+        // Long fragment
+        let long_fragment = format!("http://example.com#{}", "c".repeat(2000));
+        assert_eq!(
+            Some(long_fragment.as_str()),
+            finder.find(&long_fragment).map(|r| &long_fragment[r])
+        );
+    }
+
+    #[test]
+    fn it_should_handle_malformed_percent_encoding() {
+        let finder = URI::default();
+
+        // Valid percent encoding
+        assert!(finder.find("http://example.com/%20").is_some());
+        assert!(finder.find("http://example.com/%2F").is_some());
+
+        // Invalid hex digits - should stop before invalid encoding
+        let input = "http://example.com/path%GG";
+        let result = finder.find(input).map(|r| &input[r]);
+        assert_eq!(Some("http://example.com/path"), result);
+
+        let input2 = "http://example.com/path%ZZ";
+        let result2 = finder.find(input2).map(|r| &input2[r]);
+        assert_eq!(Some("http://example.com/path"), result2);
+    }
+
+    #[test]
+    fn it_should_handle_incomplete_percent_encoding() {
+        let finder = URI::default();
+
+        // Single % at end
+        let input = "http://example.com/path%";
+        let result = finder.find(input).map(|r| &input[r]);
+        assert_eq!(Some("http://example.com/path"), result);
+
+        // % with only one hex digit
+        let input2 = "http://example.com/path%2";
+        let result2 = finder.find(input2).map(|r| &input2[r]);
+        assert_eq!(Some("http://example.com/path"), result2);
+    }
+
+    #[test]
+    fn it_should_handle_unicode_in_hostnames() {
+        let finder = URI::default();
+
+        // Punycode domains (IDN)
+        for input in vec![
+            "http://xn--n3h.com",        // Unicode domain encoded as punycode
+            "http://xn--nxasmq5b.com",   // Another punycode domain
+            "http://xn--80ak6aa92e.com", // Yet another
+        ] {
+            assert!(finder.find(input).is_some(), "{}", input);
+        }
+    }
+
+    #[test]
+    fn it_should_handle_edge_case_ports() {
+        let finder = URI::default();
+
+        // Empty port
+        assert!(finder.find("http://example.com:").is_some());
+
+        // Port 0
+        assert!(finder.find("http://example.com:0").is_some());
+
+        // Very large port number (technically invalid but should parse)
+        assert!(finder.find("http://example.com:99999").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_edge_case_userinfo() {
+        let finder = URI::default();
+
+        // Empty userinfo with @
+        assert!(finder.find("http://@example.com").is_some());
+
+        // Only username
+        assert!(finder.find("http://user@example.com").is_some());
+
+        // Username and empty password
+        assert!(finder.find("http://user:@example.com").is_some());
+
+        // Empty username and password
+        assert!(finder.find("http://:pass@example.com").is_some());
+
+        // Special characters in userinfo (percent-encoded)
+        assert!(finder.find("http://user%40name@example.com").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_consecutive_special_chars() {
+        let finder = URI::default();
+
+        // Multiple query params
+        assert!(finder.find("http://example.com?a=1&b=2&c=3").is_some());
+
+        // Fragment parsing stops at second # (RFC 3986 fragment is *( pchar / "/" / "?" ))
+        let input = "http://example.com#frag#ment";
+        // The # character is not valid in a fragment, so parsing stops at #frag
+        assert_eq!(
+            Some("http://example.com#frag"),
+            finder.find(input).map(|r| &input[r])
+        );
+
+        // Query then fragment
+        assert!(finder.find("http://example.com?query#fragment").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_scheme_edge_cases() {
+        let finder = URI::default();
+
+        // Scheme with numbers
+        assert!(finder.find("h2c://example.com").is_some());
+
+        // Scheme with plus
+        assert!(finder.find("coap+tcp://example.com").is_some());
+
+        // Scheme with dots
+        assert!(finder.find("x.y.z://example.com").is_some());
+
+        // Scheme with hyphens
+        assert!(finder.find("my-scheme://example.com").is_some());
+
+        // Single letter scheme
+        assert!(finder.find("x://example.com").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_ipv4_edge_cases() {
+        let finder = URI::default();
+
+        // Boundary values
+        assert!(finder.find("http://0.0.0.0").is_some());
+        assert!(finder.find("http://255.255.255.255").is_some());
+
+        // Invalid IP (256) - should still find partial
+        let input = "http://256.0.0.1";
+        assert!(finder.find(input).is_some()); // Finds as hostname
+
+        // Leading zeros (valid but unusual)
+        assert!(finder.find("http://192.168.001.001").is_some());
+    }
+
+    #[test]
+    fn it_should_handle_multiple_uris_in_text() {
+        let finder = URI::default();
+
+        let text = "Visit http://first.com and https://second.com today";
+        let result = finder.find(text);
+        assert!(result.is_some());
+        assert_eq!("http://first.com", &text[result.unwrap()]);
+    }
+
+    #[test]
+    fn it_should_handle_uri_at_string_boundaries() {
+        let finder = URI::default();
+
+        // URI at start
+        let input1 = "http://example.com is a URL";
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(input1).map(|r| &input1[r])
+        );
+
+        // URI at end
+        let input2 = "Visit http://example.com";
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(input2).map(|r| &input2[r])
+        );
+
+        // URI alone
+        let input3 = "http://example.com";
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(input3).map(|r| &input3[r])
+        );
+    }
+
+    #[test]
+    fn it_should_filter_by_scheme() {
+        let mut finder = URI::default();
+        finder.add_scheme("https");
+
+        // Should match https
+        let input1 = "https://secure.com";
+        assert_eq!(Some(input1), finder.find(input1).map(|r| &input1[r]));
+
+        // Should skip http, find nothing
+        let input2 = "http://insecure.com";
+        assert_eq!(None, finder.find(input2));
+
+        // Should skip http and find https
+        let input3 = "http://first.com https://second.com";
+        assert_eq!(
+            Some("https://second.com"),
+            finder.find(input3).map(|r| &input3[r])
+        );
+    }
+
+    #[test]
+    fn it_should_handle_scheme_case_insensitivity() {
+        let mut finder = URI::default();
+        finder.add_scheme("HTTP");
+
+        // Should match lowercase http
+        let input = "http://example.com";
+        assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
     }
 }
