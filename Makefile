@@ -59,8 +59,8 @@ run:
 
 # MSRV check (Minimum Supported Rust Version)
 msrv:
-	cargo +1.70 build
-	cargo +1.70 test
+	cargo +1.85 build
+	cargo +1.85 test
 
 # Update dependencies
 update:
@@ -92,7 +92,7 @@ help:
 	@echo "  install      - Install binary locally"
 	@echo "  watch        - Watch for changes and run tests"
 	@echo "  watch-check  - Watch for changes and run full check"
-	@echo "  msrv         - Test with minimum supported Rust version (1.70)"
+	@echo "  msrv         - Test with minimum supported Rust version (1.85)"
 	@echo "  update       - Update dependencies"
 	@echo "  outdated     - Show outdated dependencies"
 	@echo "  audit        - Run security audit"

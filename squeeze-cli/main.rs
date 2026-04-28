@@ -193,5 +193,5 @@ fn main() -> ExitCode {
 }
 
 fn open_url(url: &str) -> io::Result<()> {
-    open::that(url).map_err(|e| io::Error::new(io::ErrorKind::Other, e))
+    open::that(url).map_err(io::Error::other)
 }

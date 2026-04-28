@@ -3,7 +3,7 @@ name = "squeeze"
 version = "0.1.0"
 authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.85"
 license = "MIT"
 description = "Extract rich information from any text (URIs, codetags, etc.)"
 repository = "https://github.com/aymericbeaumet/squeeze"
@@ -16,7 +16,7 @@ name = "squeeze"
 path = "lib.rs"
 
 [dependencies]
-phf = { version = "0.11", features = ["macros"] }
+phf = { version = "0.13", features = ["macros"] }
 regex = "1.11"
 regex-syntax = "0.8"
 
