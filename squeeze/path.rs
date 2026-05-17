@@ -40,10 +40,11 @@ impl Path {
                         idx += 1;
                         continue;
                     }
-                    if idx == 0 || Self::is_boundary(input[idx - 1]) {
-                        if idx + 1 < input.len() && !input[idx + 1].is_ascii_whitespace() {
-                            return Some((idx, 1));
-                        }
+                    if (idx == 0 || Self::is_boundary(input[idx - 1]))
+                        && idx + 1 < input.len()
+                        && !input[idx + 1].is_ascii_whitespace()
+                    {
+                        return Some((idx, 1));
                     }
                     idx += 1;
                 }
