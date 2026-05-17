@@ -4,7 +4,21 @@
 //!
 //! This crate provides finders for extracting structured data from text:
 //! - [`uri::URI`] - Extract URIs/URLs/URNs as defined by [RFC 3986](https://tools.ietf.org/html/rfc3986/)
+//! - [`cidr::Cidr`] - Extract CIDR notation (IPv4/IPv6 network ranges)
 //! - [`codetag::Codetag`] - Extract codetags (TODO, FIXME, etc.) as defined by [PEP 350](https://www.python.org/dev/peps/pep-0350/)
+//! - [`color::Color`] - Extract colors (hex, rgb, hsl)
+//! - [`datetime::Datetime`] - Extract ISO 8601 datetimes
+//! - [`email::Email`] - Extract email addresses
+//! - [`env::Env`] - Extract environment variable references
+//! - [`hash::Hash`] - Extract hashes (MD5, SHA-1, SHA-256, SHA-512)
+//! - [`ip::Ip`] - Extract IP addresses (IPv4, IPv6)
+//! - [`json::Json`] - Extract JSON objects and arrays
+//! - [`jwt::Jwt`] - Extract JSON Web Tokens
+//! - [`mac::Mac`] - Extract MAC addresses
+//! - [`path::Path`] - Extract file paths (absolute, relative, and home-relative)
+//! - [`phone::Phone`] - Extract phone numbers
+//! - [`semver::Semver`] - Extract semantic versions
+//! - [`uuid::Uuid`] - Extract UUIDs
 //! - [`mirror::Mirror`] - A passthrough finder that returns the entire input
 //!
 //! ## Example
@@ -20,9 +34,23 @@
 //! }
 //! ```
 
+pub mod cidr;
 pub mod codetag;
+pub mod color;
+pub mod datetime;
+pub mod email;
+pub mod env;
+pub mod hash;
+pub mod ip;
+pub mod json;
+pub mod jwt;
+pub mod mac;
 pub mod mirror;
+pub mod path;
+pub mod phone;
+pub mod semver;
 pub mod uri;
+pub mod uuid;
 
 use std::ops::Range;
 
