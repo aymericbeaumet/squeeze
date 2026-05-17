@@ -103,15 +103,12 @@ impl Cidr {
 
             let start = idx;
             let mut end = idx;
-            while end < input.len()
-                && (input[end].is_ascii_hexdigit() || input[end] == b':')
-            {
+            while end < input.len() && (input[end].is_ascii_hexdigit() || input[end] == b':') {
                 end += 1;
             }
 
             // Strip trailing colons (except ::)
-            while end > start && input[end - 1] == b':' && !(end >= 2 && input[end - 2] == b':')
-            {
+            while end > start && input[end - 1] == b':' && !(end >= 2 && input[end - 2] == b':') {
                 end -= 1;
             }
 
@@ -335,10 +332,7 @@ mod tests {
         let finder = Cidr::default();
         let input = "2001:0db8:85a3:0000:0000:8a2e:0370:7334/64";
         let range = finder.find(input).unwrap();
-        assert_eq!(
-            "2001:0db8:85a3:0000:0000:8a2e:0370:7334/64",
-            &input[range]
-        );
+        assert_eq!("2001:0db8:85a3:0000:0000:8a2e:0370:7334/64", &input[range]);
     }
 
     #[test]

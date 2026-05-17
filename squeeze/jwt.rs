@@ -100,7 +100,9 @@ impl Finder for Jwt {
                 };
 
                 // Boundary after: not followed by base64url chars or dot
-                if sig_end < input.len() && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.') {
+                if sig_end < input.len()
+                    && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.')
+                {
                     idx += 1;
                     continue;
                 }
@@ -164,7 +166,9 @@ mod tests {
     #[test]
     fn find_should_reject_two_segments() {
         let finder = Jwt::default();
-        assert!(finder.find("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0").is_none());
+        assert!(finder
+            .find("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0")
+            .is_none());
     }
 
     #[test]
