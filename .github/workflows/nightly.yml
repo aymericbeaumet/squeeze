@@ -1,0 +1,85 @@
+name: nightly
+
+on:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  update-homebrew-nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update nightly formula in homebrew-tap
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          COMMIT_SHA="${GITHUB_SHA}"
+          SHORT_SHA="${COMMIT_SHA:0:7}"
+          DATE=$(date -u +%Y%m%d)
+          VERSION="nightly-${DATE}-${SHORT_SHA}"
+          ARCHIVE_URL="https://github.com/${{ github.repository }}/archive/${COMMIT_SHA}.tar.gz"
+
+          SHA256=$(curl -sL "${ARCHIVE_URL}" | sha256sum | cut -d' ' -f1)
+
+          FORMULA_CONTENT=$(cat <<RUBY
+          # This formula is automatically updated on every push to master. DO NOT EDIT.
+
+          class SqueezeNightly < Formula
+            desc "Extract rich information from any text (URIs, codetags, etc.) - nightly"
+            homepage "https://github.com/aymericbeaumet/squeeze"
+            url "${ARCHIVE_URL}"
+            version "${VERSION}"
+            sha256 "${SHA256}"
+            license "MIT"
+
+            depends_on "rust" => :build
+
+            conflicts_with "squeeze", because: "squeeze-nightly and squeeze install the same binary"
+
+            def install
+              system "cargo", "install", *std_cargo_args(path: "squeeze-cli")
+            end
+
+            test do
+              output = pipe_output("\#{bin}/squeeze --url", "visit https://example.com today")
+              assert_equal "https://example.com", output.strip
+            end
+          end
+          RUBY
+          )
+
+          # Remove leading whitespace from heredoc
+          FORMULA_CONTENT=$(echo "$FORMULA_CONTENT" | sed 's/^          //')
+
+          ENCODED_CONTENT=$(echo "$FORMULA_CONTENT" | base64 -w 0)
+
+          # Check if the file already exists to get its SHA (required for updates)
+          RESPONSE=$(curl -sf \
+            -H "Authorization: token ${COMMITTER_TOKEN}" \
+            "https://api.github.com/repos/aymericbeaumet/homebrew-tap/contents/Formula/squeeze-nightly.rb" || echo '{}')
+          FILE_SHA=$(echo "$RESPONSE" | jq -r '.sha // empty')
+
+          # Build the request body
+          if [ -n "$FILE_SHA" ]; then
+            BODY=$(jq -n \
+              --arg message "squeeze-nightly ${VERSION}" \
+              --arg content "$ENCODED_CONTENT" \
+              --arg sha "$FILE_SHA" \
+              '{message: $message, content: $content, sha: $sha}')
+          else
+            BODY=$(jq -n \
+              --arg message "squeeze-nightly ${VERSION}" \
+              --arg content "$ENCODED_CONTENT" \
+              '{message: $message, content: $content}')
+          fi
+
+          curl -sf -X PUT \
+            -H "Authorization: token ${COMMITTER_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "https://api.github.com/repos/aymericbeaumet/homebrew-tap/contents/Formula/squeeze-nightly.rb" \
+            -d "$BODY"
