@@ -6,8 +6,7 @@ pub struct Path {}
 
 impl Path {
     fn is_boundary(b: u8) -> bool {
-        b.is_ascii_whitespace()
-            || matches!(b, b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b'`')
+        b.is_ascii_whitespace() || matches!(b, b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b'`')
     }
 
     fn find_prefix(&self, input: &[u8], from: usize) -> Option<(usize, usize)> {

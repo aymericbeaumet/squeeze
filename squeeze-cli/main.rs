@@ -1,5 +1,8 @@
 use clap::Parser;
-use squeeze::{codetag::Codetag, email::Email, mirror::Mirror, path::Path, uri::URI, Finder};
+use squeeze::{
+    codetag::Codetag, color::Color, email::Email, env::Env, hash::Hash, ip::Ip, json::Json,
+    mirror::Mirror, path::Path, phone::Phone, semver::Semver, uri::URI, uuid::Uuid, Finder,
+};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
 use std::process::ExitCode;
@@ -23,10 +26,6 @@ struct Opts {
     #[arg(long = "open", help = "open the results")]
     open: bool,
 
-    // email
-    #[arg(long = "email", help = "search for email addresses")]
-    email: bool,
-
     // codetag
     #[arg(long = "codetag", help = "search for codetags")]
     mnemonic: Option<Option<String>>,
@@ -40,6 +39,42 @@ struct Opts {
     #[arg(long = "todo", help = "alias for: --codetag=todo")]
     todo: bool,
 
+    // color
+    #[arg(long = "color", help = "search for colors")]
+    color: bool,
+
+    // email
+    #[arg(long = "email", help = "search for email addresses")]
+    email: bool,
+
+    // env
+    #[arg(long = "env", help = "search for environment variables")]
+    env: bool,
+
+    // hash
+    #[arg(long = "hash", help = "search for hashes")]
+    hash_algo: Option<Option<String>>,
+    #[arg(long = "md5", help = "alias for: --hash=md5")]
+    md5: bool,
+    #[arg(long = "sha1", help = "alias for: --hash=sha1")]
+    sha1: bool,
+    #[arg(long = "sha256", help = "alias for: --hash=sha256")]
+    sha256: bool,
+    #[arg(long = "sha512", help = "alias for: --hash=sha512")]
+    sha512: bool,
+
+    // ip
+    #[arg(long = "ip", help = "search for IP addresses")]
+    ip: bool,
+    #[arg(long = "ipv4", help = "search for IPv4 addresses")]
+    ipv4: bool,
+    #[arg(long = "ipv6", help = "search for IPv6 addresses")]
+    ipv6: bool,
+
+    // json
+    #[arg(long = "json", help = "search for JSON objects and arrays")]
+    json: bool,
+
     // mirror
     #[arg(long = "mirror", help = "[debug] mirror the input")]
     mirror: bool,
@@ -47,6 +82,14 @@ struct Opts {
     // path
     #[arg(long = "path", help = "search for file paths")]
     path: bool,
+
+    // phone
+    #[arg(long = "phone", help = "search for phone numbers")]
+    phone: bool,
+
+    // semver
+    #[arg(long = "semver", help = "search for semantic versions")]
+    semver: bool,
 
     // uri
     #[arg(long = "uri", help = "search for uris")]
@@ -65,6 +108,22 @@ struct Opts {
     http: bool,
     #[arg(long = "https", help = "alias for: --uri=https")]
     https: bool,
+
+    // uuid
+    #[arg(long = "uuid", help = "search for UUIDs")]
+    uuid: bool,
+}
+
+impl TryFrom<&Opts> for Color {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.color {
+            return Err(());
+        }
+
+        Ok(Color::default())
+    }
 }
 
 impl TryFrom<&Opts> for Email {
@@ -76,6 +135,75 @@ impl TryFrom<&Opts> for Email {
         }
 
         Ok(Email::default())
+    }
+}
+
+impl TryFrom<&Opts> for Env {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.env {
+            return Err(());
+        }
+
+        Ok(Env::default())
+    }
+}
+
+impl TryFrom<&Opts> for Hash {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !(opts.hash_algo.is_some() || opts.md5 || opts.sha1 || opts.sha256 || opts.sha512) {
+            return Err(());
+        }
+
+        let mut finder = Hash::default();
+        if let Some(Some(ref algo)) = opts.hash_algo {
+            for a in algo.split(',') {
+                finder.add_algorithm(a);
+            }
+        }
+        if opts.md5 {
+            finder.add_algorithm("md5");
+        }
+        if opts.sha1 {
+            finder.add_algorithm("sha1");
+        }
+        if opts.sha256 {
+            finder.add_algorithm("sha256");
+        }
+        if opts.sha512 {
+            finder.add_algorithm("sha512");
+        }
+        Ok(finder)
+    }
+}
+
+impl TryFrom<&Opts> for Ip {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !(opts.ip || opts.ipv4 || opts.ipv6) {
+            return Err(());
+        }
+
+        Ok(Ip {
+            ipv4: opts.ip || opts.ipv4,
+            ipv6: opts.ip || opts.ipv6,
+        })
+    }
+}
+
+impl TryFrom<&Opts> for Json {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.json {
+            return Err(());
+        }
+
+        Ok(Json::default())
     }
 }
 
@@ -131,6 +259,30 @@ impl TryFrom<&Opts> for Path {
     }
 }
 
+impl TryFrom<&Opts> for Phone {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.phone {
+            return Err(());
+        }
+
+        Ok(Phone::default())
+    }
+}
+
+impl TryFrom<&Opts> for Semver {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.semver {
+            return Err(());
+        }
+
+        Ok(Semver::default())
+    }
+}
+
 impl TryFrom<&Opts> for URI {
     type Error = ();
 
@@ -167,22 +319,50 @@ impl TryFrom<&Opts> for URI {
     }
 }
 
+impl TryFrom<&Opts> for Uuid {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.uuid {
+            return Err(());
+        }
+
+        Ok(Uuid::default())
+    }
+}
+
 fn main() -> ExitCode {
     env_logger::init();
 
     let opts = Opts::parse();
     let codetag = TryInto::<Codetag>::try_into(&opts);
+    let color = TryInto::<Color>::try_into(&opts);
     let email = TryInto::<Email>::try_into(&opts);
+    let env = TryInto::<Env>::try_into(&opts);
+    let hash = TryInto::<Hash>::try_into(&opts);
+    let ip = TryInto::<Ip>::try_into(&opts);
+    let json = TryInto::<Json>::try_into(&opts);
     let mirror = TryInto::<Mirror>::try_into(&opts);
     let path = TryInto::<Path>::try_into(&opts);
+    let phone = TryInto::<Phone>::try_into(&opts);
+    let semver = TryInto::<Semver>::try_into(&opts);
     let uri = TryInto::<URI>::try_into(&opts);
+    let uuid = TryInto::<Uuid>::try_into(&opts);
 
     let finders: Vec<_> = [
         codetag.as_ref().map(|f| f as &dyn Finder),
+        color.as_ref().map(|f| f as &dyn Finder),
         email.as_ref().map(|f| f as &dyn Finder),
+        env.as_ref().map(|f| f as &dyn Finder),
+        hash.as_ref().map(|f| f as &dyn Finder),
+        ip.as_ref().map(|f| f as &dyn Finder),
+        json.as_ref().map(|f| f as &dyn Finder),
         mirror.as_ref().map(|f| f as &dyn Finder),
         path.as_ref().map(|f| f as &dyn Finder),
+        phone.as_ref().map(|f| f as &dyn Finder),
+        semver.as_ref().map(|f| f as &dyn Finder),
         uri.as_ref().map(|f| f as &dyn Finder),
+        uuid.as_ref().map(|f| f as &dyn Finder),
     ]
     .into_iter()
     .filter_map(|finder| finder.ok())

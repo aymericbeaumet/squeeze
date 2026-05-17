@@ -51,10 +51,7 @@ impl Finder for Email {
             }
 
             // Local part must be non-empty and not start/end with '.'
-            if local_start == at_pos
-                || input[local_start] == b'.'
-                || input[at_pos - 1] == b'.'
-            {
+            if local_start == at_pos || input[local_start] == b'.' || input[at_pos - 1] == b'.' {
                 idx = at_pos + 1;
                 continue;
             }
@@ -76,9 +73,7 @@ impl Finder for Email {
             }
 
             // Strip trailing dots/hyphens
-            while domain_end > domain_start
-                && matches!(input[domain_end - 1], b'.' | b'-')
-            {
+            while domain_end > domain_start && matches!(input[domain_end - 1], b'.' | b'-') {
                 domain_end -= 1;
             }
 
@@ -95,7 +90,9 @@ impl Finder for Email {
                 !label.is_empty()
                     && !label.starts_with('-')
                     && !label.ends_with('-')
-                    && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    && label
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
             });
 
             if !valid {

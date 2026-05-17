@@ -1,15 +1,40 @@
-use squeeze::{codetag::Codetag, email::Email, mirror::Mirror, path::Path, uri::URI, Finder};
+use squeeze::{
+    codetag::Codetag, color::Color, email::Email, env::Env, hash::Hash, ip::Ip, json::Json,
+    mirror::Mirror, path::Path, phone::Phone, semver::Semver, uri::URI, uuid::Uuid, Finder,
+};
 
 #[test]
 fn finder_trait_id_should_be_unique() {
     let uri = URI::default();
     let mut codetag = Codetag::default();
     codetag.build_mnemonics_regex().unwrap();
+    let color = Color::default();
     let email = Email::default();
+    let env = Env::default();
+    let hash = Hash::default();
+    let ip = Ip::default();
+    let json = Json::default();
     let mirror = Mirror::default();
     let path = Path::default();
+    let phone = Phone::default();
+    let semver = Semver::default();
+    let uuid = Uuid::default();
 
-    let ids: Vec<&str> = vec![uri.id(), codetag.id(), email.id(), mirror.id(), path.id()];
+    let ids: Vec<&str> = vec![
+        uri.id(),
+        codetag.id(),
+        color.id(),
+        email.id(),
+        env.id(),
+        hash.id(),
+        ip.id(),
+        json.id(),
+        mirror.id(),
+        path.id(),
+        phone.id(),
+        semver.id(),
+        uuid.id(),
+    ];
     let mut unique_ids = ids.clone();
     unique_ids.sort();
     unique_ids.dedup();
@@ -210,10 +235,7 @@ fn email_finder_should_handle_real_world_formats() {
         ("user@example.com", "user@example.com"),
         ("first.last@company.co.uk", "first.last@company.co.uk"),
         ("user+tag@gmail.com", "user+tag@gmail.com"),
-        (
-            "From: Name <name@example.com>",
-            "name@example.com",
-        ),
+        ("From: Name <name@example.com>", "name@example.com"),
     ];
 
     for (input, expected) in emails {

@@ -290,6 +290,404 @@ fn path_flag_should_extract_multiple_paths() {
 }
 
 // ============================================================================
+// Color extraction tests
+// ============================================================================
+
+#[test]
+fn color_flag_should_extract_hex_color() {
+    squeeze()
+        .arg("--color")
+        .write_stdin("color: #ff00aa\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#ff00aa"));
+}
+
+#[test]
+fn color_flag_should_extract_short_hex() {
+    squeeze()
+        .arg("--color")
+        .write_stdin("color: #f0a\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#f0a"));
+}
+
+#[test]
+fn color_flag_should_extract_rgb() {
+    squeeze()
+        .arg("--color")
+        .write_stdin("color: rgb(255, 0, 170)\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rgb(255, 0, 170)"));
+}
+
+#[test]
+fn color_flag_should_extract_hsl() {
+    squeeze()
+        .arg("--color")
+        .write_stdin("color: hsl(120, 100%, 50%)\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hsl(120, 100%, 50%)"));
+}
+
+#[test]
+fn color_flag_should_extract_multiple_colors() {
+    squeeze()
+        .arg("--color")
+        .write_stdin("#ff0000 and rgb(0, 255, 0)\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#ff0000"))
+        .stdout(predicate::str::contains("rgb(0, 255, 0)"));
+}
+
+// ============================================================================
+// Env extraction tests
+// ============================================================================
+
+#[test]
+fn env_flag_should_extract_simple_var() {
+    squeeze()
+        .arg("--env")
+        .write_stdin("use $HOME for path\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("$HOME"));
+}
+
+#[test]
+fn env_flag_should_extract_braced_var() {
+    squeeze()
+        .arg("--env")
+        .write_stdin("use ${PATH} here\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("${PATH}"));
+}
+
+#[test]
+fn env_flag_should_extract_multiple_vars() {
+    squeeze()
+        .arg("--env")
+        .write_stdin("$HOME and ${PATH}\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("$HOME"))
+        .stdout(predicate::str::contains("${PATH}"));
+}
+
+#[test]
+fn env_flag_should_not_match_bare_dollar() {
+    squeeze()
+        .arg("--env")
+        .write_stdin("costs $5\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// Hash extraction tests
+// ============================================================================
+
+#[test]
+fn hash_flag_should_extract_md5() {
+    squeeze()
+        .arg("--hash")
+        .write_stdin("md5: 5d41402abc4b2a76b9719d911017c592\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5d41402abc4b2a76b9719d911017c592"));
+}
+
+#[test]
+fn hash_flag_should_extract_sha1() {
+    squeeze()
+        .arg("--hash")
+        .write_stdin("sha1: 2aae6c35c94fcfb415dbe95f408b9ce91ee846ed\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed",
+        ));
+}
+
+#[test]
+fn hash_flag_with_algo_filter_should_only_match_specified() {
+    squeeze()
+        .arg("--hash=md5")
+        .write_stdin(
+            "5d41402abc4b2a76b9719d911017c592 and 2aae6c35c94fcfb415dbe95f408b9ce91ee846ed\n",
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5d41402abc4b2a76b9719d911017c592"))
+        .stdout(predicate::str::contains("2aae6c35c94fcfb415dbe95f408b9ce91ee846ed").not());
+}
+
+#[test]
+fn md5_alias_should_only_extract_md5() {
+    squeeze()
+        .arg("--md5")
+        .write_stdin(
+            "5d41402abc4b2a76b9719d911017c592 and 2aae6c35c94fcfb415dbe95f408b9ce91ee846ed\n",
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5d41402abc4b2a76b9719d911017c592"))
+        .stdout(predicate::str::contains("2aae6c35c94fcfb415dbe95f408b9ce91ee846ed").not());
+}
+
+#[test]
+fn sha1_alias_should_only_extract_sha1() {
+    squeeze()
+        .arg("--sha1")
+        .write_stdin(
+            "5d41402abc4b2a76b9719d911017c592 and 2aae6c35c94fcfb415dbe95f408b9ce91ee846ed\n",
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed",
+        ))
+        .stdout(predicate::str::contains("5d41402abc4b2a76b9719d911017c592").not());
+}
+
+// ============================================================================
+// IP extraction tests
+// ============================================================================
+
+#[test]
+fn ip_flag_should_extract_ipv4() {
+    squeeze()
+        .arg("--ip")
+        .write_stdin("server at 192.168.1.1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("192.168.1.1"));
+}
+
+#[test]
+fn ip_flag_should_extract_ipv6_bracketed() {
+    squeeze()
+        .arg("--ip")
+        .write_stdin("connect to [::1]\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[::1]"));
+}
+
+#[test]
+fn ipv4_flag_should_only_extract_ipv4() {
+    squeeze()
+        .arg("--ipv4")
+        .write_stdin("192.168.1.1 and [::1]\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("192.168.1.1"))
+        .stdout(predicate::str::contains("[::1]").not());
+}
+
+#[test]
+fn ipv6_flag_should_only_extract_ipv6() {
+    squeeze()
+        .arg("--ipv6")
+        .write_stdin("192.168.1.1 and [::1]\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[::1]"))
+        .stdout(predicate::str::contains("192.168.1.1").not());
+}
+
+// ============================================================================
+// JSON extraction tests
+// ============================================================================
+
+#[test]
+fn json_flag_should_extract_object() {
+    squeeze()
+        .arg("--json")
+        .write_stdin("data: {\"key\": \"value\"}\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("{\"key\": \"value\"}"));
+}
+
+#[test]
+fn json_flag_should_extract_array() {
+    squeeze()
+        .arg("--json")
+        .write_stdin("data: [1, 2, 3]\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[1, 2, 3]"));
+}
+
+#[test]
+fn json_flag_should_extract_nested() {
+    squeeze()
+        .arg("--json")
+        .write_stdin("{\"a\": {\"b\": [1, 2]}}\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("{\"a\": {\"b\": [1, 2]}}"));
+}
+
+#[test]
+fn json_flag_should_not_match_unclosed() {
+    squeeze()
+        .arg("--json")
+        .write_stdin("{\"key\": \"value\"\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// Phone extraction tests
+// ============================================================================
+
+#[test]
+fn phone_flag_should_extract_e164() {
+    squeeze()
+        .arg("--phone")
+        .write_stdin("call +14155551234\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("+14155551234"));
+}
+
+#[test]
+fn phone_flag_should_extract_parens_format() {
+    squeeze()
+        .arg("--phone")
+        .write_stdin("call (415) 555-1234\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(415) 555-1234"));
+}
+
+#[test]
+fn phone_flag_should_extract_dashed_format() {
+    squeeze()
+        .arg("--phone")
+        .write_stdin("call 415-555-1234\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("415-555-1234"));
+}
+
+#[test]
+fn phone_flag_should_not_match_plain_digits() {
+    squeeze()
+        .arg("--phone")
+        .write_stdin("number 1234567890\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// Semver extraction tests
+// ============================================================================
+
+#[test]
+fn semver_flag_should_extract_version() {
+    squeeze()
+        .arg("--semver")
+        .write_stdin("version 1.0.0 released\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1.0.0"));
+}
+
+#[test]
+fn semver_flag_should_extract_version_with_v() {
+    squeeze()
+        .arg("--semver")
+        .write_stdin("tag v2.3.1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v2.3.1"));
+}
+
+#[test]
+fn semver_flag_should_extract_prerelease() {
+    squeeze()
+        .arg("--semver")
+        .write_stdin("v1.0.0-rc.1\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("v1.0.0-rc.1"));
+}
+
+#[test]
+fn semver_flag_should_extract_with_build_meta() {
+    squeeze()
+        .arg("--semver")
+        .write_stdin("1.0.0+build.42\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1.0.0+build.42"));
+}
+
+#[test]
+fn semver_flag_should_not_match_two_components() {
+    squeeze()
+        .arg("--semver")
+        .write_stdin("version 1.0\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// UUID extraction tests
+// ============================================================================
+
+#[test]
+fn uuid_flag_should_extract_uuid() {
+    squeeze()
+        .arg("--uuid")
+        .write_stdin("id: 550e8400-e29b-41d4-a716-446655440000\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "550e8400-e29b-41d4-a716-446655440000",
+        ));
+}
+
+#[test]
+fn uuid_flag_should_extract_multiple_uuids() {
+    squeeze()
+        .arg("--uuid")
+        .write_stdin(
+            "550e8400-e29b-41d4-a716-446655440000 and 6ba7b810-9dad-11d1-80b4-00c04fd430c8\n",
+        )
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "550e8400-e29b-41d4-a716-446655440000",
+        ))
+        .stdout(predicate::str::contains(
+            "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+        ));
+}
+
+#[test]
+fn uuid_flag_should_not_match_no_dashes() {
+    squeeze()
+        .arg("--uuid")
+        .write_stdin("550e8400e29b41d4a716446655440000\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
 // First flag tests
 // ============================================================================
 
