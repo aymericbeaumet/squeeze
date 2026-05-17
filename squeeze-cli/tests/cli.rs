@@ -170,6 +170,126 @@ fn hide_mnemonic_should_exclude_mnemonic_from_output() {
 }
 
 // ============================================================================
+// Email extraction tests
+// ============================================================================
+
+#[test]
+fn email_flag_should_extract_emails() {
+    squeeze()
+        .arg("--email")
+        .write_stdin("contact user@example.com for info\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("user@example.com"));
+}
+
+#[test]
+fn email_flag_should_extract_multiple_emails() {
+    squeeze()
+        .arg("--email")
+        .write_stdin("cc: alice@one.com and bob@two.org\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alice@one.com"))
+        .stdout(predicate::str::contains("bob@two.org"));
+}
+
+#[test]
+fn email_flag_should_handle_plus_addressing() {
+    squeeze()
+        .arg("--email")
+        .write_stdin("send to user+tag@example.com\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("user+tag@example.com"));
+}
+
+#[test]
+fn email_flag_should_extract_from_angle_brackets() {
+    squeeze()
+        .arg("--email")
+        .write_stdin("From: Author <author@example.com>\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("author@example.com"));
+}
+
+#[test]
+fn email_flag_should_not_match_bare_at() {
+    squeeze()
+        .arg("--email")
+        .write_stdin("user @ example\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// Path extraction tests
+// ============================================================================
+
+#[test]
+fn path_flag_should_extract_absolute_path() {
+    squeeze()
+        .arg("--path")
+        .write_stdin("see /etc/hosts for details\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/etc/hosts"));
+}
+
+#[test]
+fn path_flag_should_extract_relative_path() {
+    squeeze()
+        .arg("--path")
+        .write_stdin("edit ./src/main.rs to fix it\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("./src/main.rs"));
+}
+
+#[test]
+fn path_flag_should_extract_home_path() {
+    squeeze()
+        .arg("--path")
+        .write_stdin("config at ~/.config/app.toml\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("~/.config/app.toml"));
+}
+
+#[test]
+fn path_flag_should_extract_path_with_line_number() {
+    squeeze()
+        .arg("--path")
+        .write_stdin("error in ./src/main.rs:42:10 here\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("./src/main.rs:42:10"));
+}
+
+#[test]
+fn path_flag_should_not_match_uris() {
+    squeeze()
+        .arg("--path")
+        .write_stdin("visit https://example.com/path\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn path_flag_should_extract_multiple_paths() {
+    squeeze()
+        .arg("--path")
+        .write_stdin("copy /etc/hosts to /tmp/hosts\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/etc/hosts"))
+        .stdout(predicate::str::contains("/tmp/hosts"));
+}
+
+// ============================================================================
 // First flag tests
 // ============================================================================
 

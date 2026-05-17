@@ -1,13 +1,15 @@
-use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
+use squeeze::{codetag::Codetag, email::Email, mirror::Mirror, path::Path, uri::URI, Finder};
 
 #[test]
 fn finder_trait_id_should_be_unique() {
     let uri = URI::default();
     let mut codetag = Codetag::default();
     codetag.build_mnemonics_regex().unwrap();
+    let email = Email::default();
     let mirror = Mirror::default();
+    let path = Path::default();
 
-    let ids: Vec<&str> = vec![uri.id(), codetag.id(), mirror.id()];
+    let ids: Vec<&str> = vec![uri.id(), codetag.id(), email.id(), mirror.id(), path.id()];
     let mut unique_ids = ids.clone();
     unique_ids.sort();
     unique_ids.dedup();
@@ -177,4 +179,94 @@ fn codetag_finder_hide_mnemonic_should_exclude_mnemonic_from_result() {
     let extracted = &input[result.unwrap()];
     assert!(!extracted.starts_with("TODO"));
     assert!(extracted.contains("implement this feature"));
+}
+
+#[test]
+fn email_finder_should_extract_emails_from_text() {
+    let finder = Email::default();
+    let text = "Contact alice@example.com or bob@test.org for help";
+
+    let mut results = Vec::new();
+    let mut idx = 0;
+    while idx < text.len() {
+        if let Some(range) = finder.find(&text[idx..]) {
+            results.push(&text[idx + range.start..idx + range.end]);
+            idx += range.end;
+        } else {
+            break;
+        }
+    }
+
+    assert_eq!(2, results.len());
+    assert_eq!("alice@example.com", results[0]);
+    assert_eq!("bob@test.org", results[1]);
+}
+
+#[test]
+fn email_finder_should_handle_real_world_formats() {
+    let finder = Email::default();
+
+    let emails = vec![
+        ("user@example.com", "user@example.com"),
+        ("first.last@company.co.uk", "first.last@company.co.uk"),
+        ("user+tag@gmail.com", "user+tag@gmail.com"),
+        (
+            "From: Name <name@example.com>",
+            "name@example.com",
+        ),
+    ];
+
+    for (input, expected) in emails {
+        let result = finder.find(input);
+        assert!(result.is_some(), "Should find email in: {}", input);
+        assert_eq!(expected, &input[result.unwrap()]);
+    }
+}
+
+#[test]
+fn path_finder_should_extract_paths_from_text() {
+    let finder = Path::default();
+    let text = "copy /etc/hosts to /tmp/backup";
+
+    let mut results = Vec::new();
+    let mut idx = 0;
+    while idx < text.len() {
+        if let Some(range) = finder.find(&text[idx..]) {
+            results.push(&text[idx + range.start..idx + range.end]);
+            idx += range.end;
+        } else {
+            break;
+        }
+    }
+
+    assert_eq!(2, results.len());
+    assert_eq!("/etc/hosts", results[0]);
+    assert_eq!("/tmp/backup", results[1]);
+}
+
+#[test]
+fn path_finder_should_handle_various_prefixes() {
+    let finder = Path::default();
+
+    let cases = vec![
+        ("/usr/local/bin/app", "/usr/local/bin/app"),
+        ("./src/main.rs", "./src/main.rs"),
+        ("../README.md", "../README.md"),
+        ("~/.bashrc", "~/.bashrc"),
+    ];
+
+    for (input, expected) in cases {
+        let result = finder.find(input);
+        assert!(result.is_some(), "Should find path in: {}", input);
+        assert_eq!(expected, &input[result.unwrap()]);
+    }
+}
+
+#[test]
+fn path_finder_should_handle_compiler_output() {
+    let finder = Path::default();
+    let input = "error at ./src/main.rs:42:10 something";
+    let result = finder.find(input);
+    assert!(result.is_some());
+    assert_eq!("./src/main.rs:42:10", &input[result.unwrap()]);
 }

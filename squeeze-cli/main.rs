@@ -1,13 +1,18 @@
 use clap::Parser;
-use squeeze::{codetag::Codetag, mirror::Mirror, uri::URI, Finder};
+use squeeze::{codetag::Codetag, email::Email, mirror::Mirror, path::Path, uri::URI, Finder};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead};
 use std::process::ExitCode;
 
+const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 #[derive(Parser)]
 #[command(
     name = "squeeze",
-    version = env!("CARGO_PKG_VERSION"),
+    version = VERSION,
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
     about = "Extract rich information from any text"
 )]
@@ -17,6 +22,10 @@ struct Opts {
     first: bool,
     #[arg(long = "open", help = "open the results")]
     open: bool,
+
+    // email
+    #[arg(long = "email", help = "search for email addresses")]
+    email: bool,
 
     // codetag
     #[arg(long = "codetag", help = "search for codetags")]
@@ -35,6 +44,10 @@ struct Opts {
     #[arg(long = "mirror", help = "[debug] mirror the input")]
     mirror: bool,
 
+    // path
+    #[arg(long = "path", help = "search for file paths")]
+    path: bool,
+
     // uri
     #[arg(long = "uri", help = "search for uris")]
     scheme: Option<Option<String>>,
@@ -52,6 +65,18 @@ struct Opts {
     http: bool,
     #[arg(long = "https", help = "alias for: --uri=https")]
     https: bool,
+}
+
+impl TryFrom<&Opts> for Email {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.email {
+            return Err(());
+        }
+
+        Ok(Email::default())
+    }
 }
 
 impl TryFrom<&Opts> for Codetag {
@@ -90,8 +115,19 @@ impl TryFrom<&Opts> for Mirror {
             return Err(());
         }
 
-        let finder = Mirror::default();
-        Ok(finder)
+        Ok(Mirror::default())
+    }
+}
+
+impl TryFrom<&Opts> for Path {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.path {
+            return Err(());
+        }
+
+        Ok(Path::default())
     }
 }
 
@@ -136,12 +172,16 @@ fn main() -> ExitCode {
 
     let opts = Opts::parse();
     let codetag = TryInto::<Codetag>::try_into(&opts);
+    let email = TryInto::<Email>::try_into(&opts);
     let mirror = TryInto::<Mirror>::try_into(&opts);
+    let path = TryInto::<Path>::try_into(&opts);
     let uri = TryInto::<URI>::try_into(&opts);
 
     let finders: Vec<_> = [
         codetag.as_ref().map(|f| f as &dyn Finder),
+        email.as_ref().map(|f| f as &dyn Finder),
         mirror.as_ref().map(|f| f as &dyn Finder),
+        path.as_ref().map(|f| f as &dyn Finder),
         uri.as_ref().map(|f| f as &dyn Finder),
     ]
     .into_iter()

@@ -5,6 +5,8 @@
 //! This crate provides finders for extracting structured data from text:
 //! - [`uri::URI`] - Extract URIs/URLs/URNs as defined by [RFC 3986](https://tools.ietf.org/html/rfc3986/)
 //! - [`codetag::Codetag`] - Extract codetags (TODO, FIXME, etc.) as defined by [PEP 350](https://www.python.org/dev/peps/pep-0350/)
+//! - [`email::Email`] - Extract email addresses
+//! - [`path::Path`] - Extract file paths (absolute, relative, and home-relative)
 //! - [`mirror::Mirror`] - A passthrough finder that returns the entire input
 //!
 //! ## Example
@@ -21,7 +23,9 @@
 //! ```
 
 pub mod codetag;
+pub mod email;
 pub mod mirror;
+pub mod path;
 pub mod uri;
 
 use std::ops::Range;

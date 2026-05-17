@@ -42,6 +42,7 @@ jobs:
             conflicts_with "squeeze", because: "squeeze-nightly and squeeze install the same binary"
 
             def install
+              ENV["SQUEEZE_VERSION"] = version.to_s
               system "cargo", "install", *std_cargo_args(path: "squeeze-cli")
             end
 
