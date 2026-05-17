@@ -5,8 +5,24 @@ information from any text (raw, JSON, HTML, YAML, etc).
 
 Currently supported:
 
-- Codetags (as defined per [PEP 350](https://www.python.org/dev/peps/pep-0350/))
-- URIs/URLs/URNs (as defined per [RFC 3986](https://tools.ietf.org/html/rfc3986/))
+| Finder | Flag | Examples |
+|--------|------|----------|
+| CIDR | `--cidr` | `192.168.1.0/24`, `2001:db8::/32` |
+| Codetags | `--codetag`, `--todo`, `--fixme` | `TODO: fix this`, `FIXME(#42): bug` |
+| Colors | `--color` | `#ff0000`, `rgb(255, 0, 0)`, `hsl(0, 100%, 50%)` |
+| Datetimes | `--datetime` | `2024-01-15`, `2024-01-15T10:30:00Z` |
+| Emails | `--email` | `user@example.com`, `first.last+tag@company.co.uk` |
+| Env vars | `--env` | `$HOME`, `${PATH}` |
+| Hashes | `--hash`, `--md5`, `--sha256` | `5d41402abc4b2a76b9719d911017c592` |
+| IPs | `--ip`, `--ipv4`, `--ipv6` | `192.168.1.1`, `::1`, `2001:db8::1` |
+| JSON | `--json` | `{"key": "value"}`, `[1, 2, 3]` |
+| JWTs | `--jwt` | `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOi...` |
+| MACs | `--mac` | `00:1A:2B:3C:4D:5E`, `001A.2B3C.4D5E` |
+| Paths | `--path` | `/etc/hosts`, `./src/main.rs:42:10` |
+| Phones | `--phone` | `+14155551234`, `(415) 555-1234` |
+| Semver | `--semver` | `1.0.0`, `v2.3.1-rc.1+build.42` |
+| URIs | `--uri`, `--url`, `--http`, `--https` | `https://example.com`, `ftp://host/file` |
+| UUIDs | `--uuid` | `550e8400-e29b-41d4-a716-446655440000` |
 
 See [integrations](#integrations) for some practical uses. Continue reading for
 the install and getting started instructions.
@@ -66,46 +82,37 @@ https://aymericbeaumet.com
 https://wikipedia.com
 ```
 
-It is also possible to extract other types of information, like codetags
-(`TODO:`, `FIXME:`, etc). The usage remains very similar:
+Extract other types of information the same way:
 
 ```shell
-squeeze --codetag=todo << EOF
-// TODO: implement the main function
-fn main {}
-EOF
+echo '2024-01-15T10:30:00Z server at 192.168.1.0/24' | squeeze --datetime --cidr
 ```
 
 ```
-TODO: implement the main function
+2024-01-15T10:30:00Z
+192.168.1.0/24
 ```
 
-> Note that for convenience some aliases are defined. In this case, you can use
-`--todo` instead of `--codetag=todo`. In the same vein, `--url` is an alias to
-limit the search to specific URI schemes.
-
-It is possible to enable several finders at the same time, they will be run
-sequentially for each line:
+Enable several finders at the same time:
 
 ```shell
-squeeze --uri=http,https --codetag=todo,fixme << EOF
-// TODO: update with a better example
-// FIXME: all of https://github.com/aymericbeaumet/squeeze/issues
-// Some random comment to be ignored
-ftp://localhost
+squeeze --url --email --todo << EOF
+// TODO: email alice@example.com about https://example.com
 http://localhost
 EOF
 ```
 
 ```
-TODO: update with a better example
-FIXME: all of https://github.com/aymericbeaumet/squeeze/issues
-https://github.com/aymericbeaumet/squeeze/issues
+TODO: email alice@example.com about https://example.com
+alice@example.com
+https://example.com
 http://localhost
 ```
 
-This getting started should give you an overview of what's possible with
-`squeeze`. Have a look at all the possibilities with `squeeze --help`.
+Some finders support sub-filters. For example `--codetag=todo` or its alias
+`--todo`, `--uri=https`, `--hash=sha256`, etc.
+
+See all the possibilities with `squeeze --help`.
 
 ## Integrations
 
@@ -133,11 +140,12 @@ bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url --open
 
 ### shell (bash, zsh)
 
-Define a `urls` function to list all the URLs in your shell history:
+Define convenience functions:
 
 ```shell
 # ~/.bashrc ~/.zshrc
 urls() { fc -rl 1 | squeeze --url | sort -u; }
+ips() { squeeze --ip; }
 ```
 
 ## Development

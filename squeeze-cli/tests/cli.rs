@@ -688,6 +688,163 @@ fn uuid_flag_should_not_match_no_dashes() {
 }
 
 // ============================================================================
+// CIDR extraction tests
+// ============================================================================
+
+#[test]
+fn cidr_flag_should_extract_ipv4_cidr() {
+    squeeze()
+        .arg("--cidr")
+        .write_stdin("network 192.168.1.0/24 configured\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("192.168.1.0/24"));
+}
+
+#[test]
+fn cidr_flag_should_extract_multiple_cidrs() {
+    squeeze()
+        .arg("--cidr")
+        .write_stdin("10.0.0.0/8 and 172.16.0.0/12\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10.0.0.0/8"))
+        .stdout(predicate::str::contains("172.16.0.0/12"));
+}
+
+#[test]
+fn cidr_flag_should_extract_ipv6_cidr() {
+    squeeze()
+        .arg("--cidr")
+        .write_stdin("subnet 2001:db8::/32 here\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2001:db8::/32"));
+}
+
+#[test]
+fn cidr_flag_should_not_match_plain_ip() {
+    squeeze()
+        .arg("--cidr")
+        .write_stdin("host 192.168.1.1 only\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// Datetime extraction tests
+// ============================================================================
+
+#[test]
+fn datetime_flag_should_extract_date() {
+    squeeze()
+        .arg("--datetime")
+        .write_stdin("created on 2024-01-15 by admin\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2024-01-15"));
+}
+
+#[test]
+fn datetime_flag_should_extract_iso8601() {
+    squeeze()
+        .arg("--datetime")
+        .write_stdin("timestamp: 2024-01-15T10:30:00Z\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2024-01-15T10:30:00Z"));
+}
+
+#[test]
+fn datetime_flag_should_extract_with_offset() {
+    squeeze()
+        .arg("--datetime")
+        .write_stdin("2024-01-15T10:30:00+05:30\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2024-01-15T10:30:00+05:30"));
+}
+
+#[test]
+fn datetime_flag_should_not_match_invalid_date() {
+    squeeze()
+        .arg("--datetime")
+        .write_stdin("2024-13-01\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// JWT extraction tests
+// ============================================================================
+
+#[test]
+fn jwt_flag_should_extract_jwt() {
+    squeeze()
+        .arg("--jwt")
+        .write_stdin("token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"));
+}
+
+#[test]
+fn jwt_flag_should_not_match_non_jwt() {
+    squeeze()
+        .arg("--jwt")
+        .write_stdin("abc.def.ghi\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// MAC address extraction tests
+// ============================================================================
+
+#[test]
+fn mac_flag_should_extract_colon_format() {
+    squeeze()
+        .arg("--mac")
+        .write_stdin("device 00:1A:2B:3C:4D:5E connected\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("00:1A:2B:3C:4D:5E"));
+}
+
+#[test]
+fn mac_flag_should_extract_dash_format() {
+    squeeze()
+        .arg("--mac")
+        .write_stdin("device 00-1A-2B-3C-4D-5E connected\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("00-1A-2B-3C-4D-5E"));
+}
+
+#[test]
+fn mac_flag_should_extract_dot_format() {
+    squeeze()
+        .arg("--mac")
+        .write_stdin("device 001A.2B3C.4D5E connected\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("001A.2B3C.4D5E"));
+}
+
+#[test]
+fn mac_flag_should_not_match_short_hex() {
+    squeeze()
+        .arg("--mac")
+        .write_stdin("00:1A:2B:3C:4D\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
 // First flag tests
 // ============================================================================
 

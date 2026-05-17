@@ -1,19 +1,24 @@
 use squeeze::{
-    codetag::Codetag, color::Color, email::Email, env::Env, hash::Hash, ip::Ip, json::Json,
-    mirror::Mirror, path::Path, phone::Phone, semver::Semver, uri::URI, uuid::Uuid, Finder,
+    cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email, env::Env,
+    hash::Hash, ip::Ip, json::Json, jwt::Jwt, mac::Mac, mirror::Mirror, path::Path, phone::Phone,
+    semver::Semver, uri::URI, uuid::Uuid, Finder,
 };
 
 #[test]
 fn finder_trait_id_should_be_unique() {
+    let cidr = Cidr::default();
     let uri = URI::default();
     let mut codetag = Codetag::default();
     codetag.build_mnemonics_regex().unwrap();
     let color = Color::default();
+    let datetime = Datetime::default();
     let email = Email::default();
     let env = Env::default();
     let hash = Hash::default();
     let ip = Ip::default();
     let json = Json::default();
+    let jwt = Jwt::default();
+    let mac = Mac::default();
     let mirror = Mirror::default();
     let path = Path::default();
     let phone = Phone::default();
@@ -21,14 +26,18 @@ fn finder_trait_id_should_be_unique() {
     let uuid = Uuid::default();
 
     let ids: Vec<&str> = vec![
+        cidr.id(),
         uri.id(),
         codetag.id(),
         color.id(),
+        datetime.id(),
         email.id(),
         env.id(),
         hash.id(),
         ip.id(),
         json.id(),
+        jwt.id(),
+        mac.id(),
         mirror.id(),
         path.id(),
         phone.id(),
