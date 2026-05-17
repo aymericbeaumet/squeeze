@@ -11,6 +11,8 @@ class Squeeze < Formula
 
   depends_on "rust" => :build
 
+  conflicts_with "squeeze-nightly", because: "squeeze-nightly and squeeze install the same binary"
+
   def install
     system "cargo", "install", *std_cargo_args(path: "squeeze-cli")
   end
