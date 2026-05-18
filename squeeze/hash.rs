@@ -37,7 +37,11 @@ impl Hash {
             SHA512_LEN => SHA512_BIT,
             _ => return false,
         };
-        let mask = if self.lengths == 0 { ALL_BITS } else { self.lengths };
+        let mask = if self.lengths == 0 {
+            ALL_BITS
+        } else {
+            self.lengths
+        };
         (mask & bit) != 0
     }
 

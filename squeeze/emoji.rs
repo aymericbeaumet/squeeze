@@ -270,8 +270,7 @@ mod tests {
     #[test]
     fn find_should_extract_tag_sequence() {
         let finder = Emoji::default();
-        let input =
-            "flag 🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F} end";
+        let input = "flag 🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F} end";
         let range = finder.find(input).unwrap();
         assert_eq!(
             "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}",

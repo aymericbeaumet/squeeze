@@ -35,7 +35,6 @@
 //! }
 //! ```
 
-pub(crate) mod ipv6;
 pub mod cidr;
 pub mod codetag;
 pub mod color;
@@ -45,6 +44,7 @@ pub mod emoji;
 pub mod env;
 pub mod hash;
 pub mod ip;
+pub(crate) mod ipv6;
 pub mod json;
 pub mod jwt;
 pub mod mac;

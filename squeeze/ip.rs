@@ -51,8 +51,8 @@ impl Ip {
             }
 
             let mut value: u16 = 0;
-            for i in octet_start..pos {
-                value = value * 10 + (input[i] - b'0') as u16;
+            for &b in &input[octet_start..pos] {
+                value = value * 10 + (b - b'0') as u16;
             }
             if value > 255 {
                 return None;
@@ -126,7 +126,6 @@ impl Ip {
             None
         }
     }
-
 }
 
 impl Finder for Ip {
@@ -140,8 +139,7 @@ impl Finder for Ip {
 
     fn could_start_at(&self, byte: u8) -> bool {
         (self.ipv4 && byte.is_ascii_digit())
-            || (self.ipv6
-                && (byte.is_ascii_hexdigit() || byte == b':' || byte == b'['))
+            || (self.ipv6 && (byte.is_ascii_hexdigit() || byte == b':' || byte == b'['))
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

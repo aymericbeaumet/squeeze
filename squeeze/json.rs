@@ -1,4 +1,5 @@
 use super::Finder;
+use memchr::memchr2;
 use std::ops::Range;
 
 const MAX_DEPTH: usize = 256;
@@ -67,17 +68,14 @@ impl Finder for Json {
         let input = s.as_bytes();
         let mut idx = 0;
 
-        while idx < input.len() {
-            if input[idx] == b'{' || input[idx] == b'[' {
-                match Self::try_extract(input, idx) {
-                    Ok(range) => return Some(range),
-                    Err(scanned_to) => {
-                        idx = scanned_to;
-                        continue;
-                    }
+        while let Some(offset) = memchr2(b'{', b'[', &input[idx..]) {
+            idx += offset;
+            match Self::try_extract(input, idx) {
+                Ok(range) => return Some(range),
+                Err(scanned_to) => {
+                    idx = scanned_to.min(input.len());
                 }
             }
-            idx += 1;
         }
 
         None

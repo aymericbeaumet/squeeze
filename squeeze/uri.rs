@@ -18,6 +18,7 @@
 //! ```
 
 use super::Finder;
+use memchr::memchr;
 use std::collections::HashSet;
 use std::ops::Range;
 
@@ -81,7 +82,7 @@ impl Finder for URI {
         while idx < input.len() {
             let start = idx;
 
-            let colon_idx = start + input[start..].iter().position(|&b| b == b':')?;
+            let colon_idx = start + memchr(b':', &input[start..])?;
             idx = colon_idx + 1;
 
             let scheme_idx = match self.rlook_scheme(&input[start..colon_idx]) {

@@ -1,12 +1,13 @@
 use super::Finder;
+use memchr::memchr;
 use std::ops::Range;
 
-#[derive(Default)]
-pub struct Email {}
-
-impl Email {
-    fn is_local_char(b: u8) -> bool {
-        b.is_ascii_alphanumeric()
+const LOCAL_CHARS: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut i = 0u16;
+    while i < 256 {
+        let b = i as u8;
+        table[i as usize] = b.is_ascii_alphanumeric()
             || matches!(
                 b,
                 b'.' | b'!'
@@ -28,9 +29,14 @@ impl Email {
                     | b'}'
                     | b'~'
                     | b'-'
-            )
+            );
+        i += 1;
     }
-}
+    table
+};
+
+#[derive(Default)]
+pub struct Email {}
 
 impl Finder for Email {
     fn id(&self) -> &'static str {
@@ -42,11 +48,10 @@ impl Finder for Email {
         let mut idx = 0;
 
         while idx < input.len() {
-            let at_pos = idx + input[idx..].iter().position(|&b| b == b'@')?;
+            let at_pos = idx + memchr(b'@', &input[idx..])?;
 
-            // Walk backwards for local part
             let mut local_start = at_pos;
-            while local_start > idx && Self::is_local_char(input[local_start - 1]) {
+            while local_start > idx && LOCAL_CHARS[input[local_start - 1] as usize] {
                 local_start -= 1;
             }
 

@@ -756,6 +756,7 @@ name = "squeeze"
 version = "0.1.0"
 dependencies = [
  "glob",
+ "memchr",
  "phf",
  "proptest",
  "regex",

@@ -78,10 +78,7 @@ impl Finder for Path {
                 }
                 2
             }
-            b'.' if pos + 2 < input.len()
-                && input[pos + 1] == b'.'
-                && input[pos + 2] == b'/' =>
-            {
+            b'.' if pos + 2 < input.len() && input[pos + 1] == b'.' && input[pos + 2] == b'/' => {
                 if pos > 0 && !Self::is_boundary(input[pos - 1]) {
                     return None;
                 }

@@ -481,19 +481,24 @@ fn main() -> ExitCode {
 
     let stdout = io::stdout().lock();
     let mut out = BufWriter::new(stdout);
+    let mut stdin = io::stdin().lock();
+    let mut line = String::new();
 
-    for line in io::stdin().lock().lines() {
-        let line = match line {
-            Ok(line) => line,
+    loop {
+        line.clear();
+        match stdin.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
             Err(e) => {
                 log::error!("failed to read line: {}", e);
                 continue;
             }
-        };
+        }
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
 
         if opts.first {
-            if let Some(m) = scanner.scan_line_first(&line) {
-                let found = &line[m.range];
+            if let Some(m) = scanner.scan_line_first(trimmed) {
+                let found = &trimmed[m.range];
                 if !found.is_empty() {
                     let _ = writeln!(out, "{}", found);
                     if opts.open {
@@ -505,8 +510,8 @@ fn main() -> ExitCode {
                 }
             }
         } else {
-            for m in scanner.scan_line(&line) {
-                let found = &line[m.range];
+            for m in scanner.scan_line(trimmed) {
+                let found = &trimmed[m.range];
                 if !found.is_empty() {
                     let _ = writeln!(out, "{}", found);
                     if opts.open {

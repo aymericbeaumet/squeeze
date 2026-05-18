@@ -231,10 +231,7 @@ fn scanner_multibyte_multi_finder() {
     ];
     let input = "🌐192.168.1.1 📧user@example.com 📂$HOME";
     let results = scan(finders, input);
-    assert_eq!(
-        results,
-        vec!["192.168.1.1", "user@example.com", "$HOME"]
-    );
+    assert_eq!(results, vec!["192.168.1.1", "user@example.com", "$HOME"]);
 }
 
 #[test]
@@ -271,9 +268,7 @@ fn scanner_pure_unicode_no_panic() {
 
 #[test]
 fn scanner_many_matches_interspersed_with_unicode() {
-    let finders: Vec<Box<dyn Finder>> = vec![
-        Box::new(squeeze::hash::Hash::default()),
-    ];
+    let finders: Vec<Box<dyn Finder>> = vec![Box::new(squeeze::hash::Hash::default())];
     let hash = "5d41402abc4b2a76b9719d911017c592";
     let input = format!("🔑{}🔑{}🔑{}", hash, hash, hash);
     let results = scan(finders, &input);
@@ -285,9 +280,7 @@ fn scanner_many_matches_interspersed_with_unicode() {
 
 #[test]
 fn scanner_mirror_preserves_unicode() {
-    let finders: Vec<Box<dyn Finder>> = vec![
-        Box::new(squeeze::mirror::Mirror::default()),
-    ];
+    let finders: Vec<Box<dyn Finder>> = vec![Box::new(squeeze::mirror::Mirror::default())];
     let input = "日本語 🎉 café";
     let results = scan(finders, input);
     assert_eq!(results, vec!["日本語 🎉 café"]);
@@ -309,14 +302,14 @@ fn finders_dont_match_utf8_continuation_bytes_as_hex() {
 fn uuid_not_found_in_pure_unicode() {
     let finder = squeeze::uuid::Uuid::default();
     let input = "文字列データ漢字テスト";
-    assert!(finder.find(&input).is_none());
+    assert!(finder.find(input).is_none());
 }
 
 #[test]
 fn ip_not_found_in_pure_unicode() {
     let finder = squeeze::ip::Ip::default();
     let input = "日本語テキストのみ";
-    assert!(finder.find(&input).is_none());
+    assert!(finder.find(input).is_none());
 }
 
 // --- Mixed byte length contexts ---

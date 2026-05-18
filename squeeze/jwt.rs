@@ -58,30 +58,19 @@ impl Finder for Jwt {
         if pos > 0 && Self::is_base64url(input[pos - 1]) {
             return None;
         }
-        let header_end = match Self::read_segment(input, pos) {
-            Some(end) => end,
-            None => return None,
-        };
+        let header_end = Self::read_segment(input, pos)?;
         if !Self::looks_like_jwt_header(input, pos, header_end) {
             return None;
         }
         if header_end >= input.len() || input[header_end] != b'.' {
             return None;
         }
-        let payload_end = match Self::read_segment(input, header_end + 1) {
-            Some(end) => end,
-            None => return None,
-        };
+        let payload_end = Self::read_segment(input, header_end + 1)?;
         if payload_end >= input.len() || input[payload_end] != b'.' {
             return None;
         }
-        let sig_end = match Self::read_segment(input, payload_end + 1) {
-            Some(end) => end,
-            None => return None,
-        };
-        if sig_end < input.len()
-            && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.')
-        {
+        let sig_end = Self::read_segment(input, payload_end + 1)?;
+        if sig_end < input.len() && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.') {
             return None;
         }
         Some(pos..sig_end)

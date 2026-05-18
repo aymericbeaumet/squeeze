@@ -41,8 +41,8 @@ impl Cidr {
             }
 
             let mut value: u16 = 0;
-            for i in octet_start..pos {
-                value = value * 10 + (input[i] - b'0') as u16;
+            for &b in &input[octet_start..pos] {
+                value = value * 10 + (b - b'0') as u16;
             }
             if value > 255 {
                 return None;
@@ -70,8 +70,8 @@ impl Cidr {
         }
 
         let mut prefix: u8 = 0;
-        for i in prefix_start..pos {
-            prefix = prefix * 10 + (input[i] - b'0') as u8;
+        for &b in &input[prefix_start..pos] {
+            prefix = prefix * 10 + (b - b'0');
         }
         if prefix > 32 {
             return None;
@@ -146,8 +146,8 @@ impl Cidr {
         }
 
         let mut prefix: u16 = 0;
-        for i in prefix_start..pos {
-            prefix = prefix * 10 + (input[i] - b'0') as u16;
+        for &b in &input[prefix_start..pos] {
+            prefix = prefix * 10 + (b - b'0') as u16;
         }
         if prefix > 128 {
             return None;
@@ -160,7 +160,6 @@ impl Cidr {
 
         Some(ip_start..pos)
     }
-
 }
 
 impl Finder for Cidr {
