@@ -16,7 +16,6 @@ name = "squeeze"
 path = "lib.rs"
 
 [dependencies]
-memchr = "2"
 phf = { version = "0.13", features = ["macros"] }
 regex = "1.11"
 regex-syntax = "0.8"

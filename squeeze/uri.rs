@@ -18,7 +18,6 @@
 //! ```
 
 use super::Finder;
-use memchr::memchr;
 use std::ops::Range;
 
 const SUB_DELIMS_STRICT: [bool; 256] = {
@@ -113,7 +112,7 @@ impl Finder for URI {
         while idx < input.len() {
             let start = idx;
 
-            let colon_idx = start + memchr(b':', &input[start..])?;
+            let colon_idx = start + input[start..].iter().position(|&b| b == b':')?;
             idx = colon_idx + 1;
 
             let scheme_idx = match self.rlook_scheme(&input[start..colon_idx]) {

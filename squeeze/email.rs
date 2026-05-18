@@ -1,5 +1,4 @@
 use super::Finder;
-use memchr::memchr;
 use std::ops::Range;
 
 const LOCAL_CHARS: [bool; 256] = {
@@ -48,7 +47,7 @@ impl Finder for Email {
         let mut idx = 0;
 
         while idx < input.len() {
-            let at_pos = idx + memchr(b'@', &input[idx..])?;
+            let at_pos = idx + input[idx..].iter().position(|&b| b == b'@')?;
 
             let mut local_start = at_pos;
             while local_start > idx && LOCAL_CHARS[input[local_start - 1] as usize] {
