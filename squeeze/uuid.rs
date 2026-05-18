@@ -141,9 +141,11 @@ mod tests {
     #[test]
     fn find_should_reject_wrong_dash_positions() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e840-0e29b-41d4-a716-446655440000")
-            .is_none());
+        assert!(
+            finder
+                .find("550e840-0e29b-41d4-a716-446655440000")
+                .is_none()
+        );
     }
 
     #[test]
@@ -155,25 +157,31 @@ mod tests {
     #[test]
     fn find_should_reject_non_hex() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e8400-e29b-41d4-a716-44665544000g")
-            .is_none());
+        assert!(
+            finder
+                .find("550e8400-e29b-41d4-a716-44665544000g")
+                .is_none()
+        );
     }
 
     #[test]
     fn find_should_not_match_within_longer_hex() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("ff550e8400-e29b-41d4-a716-446655440000")
-            .is_none());
+        assert!(
+            finder
+                .find("ff550e8400-e29b-41d4-a716-446655440000")
+                .is_none()
+        );
     }
 
     #[test]
     fn find_should_not_match_with_trailing_hex() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e8400-e29b-41d4-a716-446655440000ff")
-            .is_none());
+        assert!(
+            finder
+                .find("550e8400-e29b-41d4-a716-446655440000ff")
+                .is_none()
+        );
     }
 
     #[test]
@@ -254,9 +262,11 @@ mod tests {
     #[test]
     fn find_should_reject_extra_dash_at_end() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e8400-e29b-41d4-a716-446655440000-")
-            .is_none());
+        assert!(
+            finder
+                .find("550e8400-e29b-41d4-a716-446655440000-")
+                .is_none()
+        );
     }
 
     #[test]

@@ -329,12 +329,12 @@ impl URI {
             }
 
             if last_is_colon || idx == 0 {
-                if bytes_count == 12 || double_colon_found {
-                    if let Some(i) = self.look_ipv4_address(&input[idx..]) {
-                        bytes_count += 4;
-                        idx += i;
-                        break;
-                    }
+                if (bytes_count == 12 || double_colon_found)
+                    && let Some(i) = self.look_ipv4_address(&input[idx..])
+                {
+                    bytes_count += 4;
+                    idx += i;
+                    break;
                 }
                 if let Some(i) = self.look_h16(&input[idx..]) {
                     bytes_count += 2;
@@ -356,11 +356,7 @@ impl URI {
             .take_while(|&&b| Self::is_hexdig(b))
             .take(4)
             .count();
-        if idx >= 1 {
-            Some(idx)
-        } else {
-            None
-        }
+        if idx >= 1 { Some(idx) } else { None }
     }
 
     // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )

@@ -54,12 +54,13 @@ impl Datetime {
         let mut end = idx + 10;
 
         // Optional time component: T or space followed by HH:MM
-        if end < input.len() && (input[end] == b'T' || input[end] == b' ') {
-            if let Some(time_end) = Self::try_time(input, end + 1) {
-                // Only accept space separator if it's 'T' or if followed by valid time
-                if input[end] == b'T' || time_end > end + 1 {
-                    end = time_end;
-                }
+        if end < input.len()
+            && (input[end] == b'T' || input[end] == b' ')
+            && let Some(time_end) = Self::try_time(input, end + 1)
+        {
+            // Only accept space separator if it's 'T' or if followed by valid time
+            if input[end] == b'T' || time_end > end + 1 {
+                end = time_end;
             }
         }
 
@@ -180,10 +181,10 @@ impl Finder for Datetime {
         let mut idx = 0;
 
         while idx + 10 <= input.len() {
-            if input[idx].is_ascii_digit() {
-                if let Some(range) = Self::try_date(input, idx) {
-                    return Some(range);
-                }
+            if input[idx].is_ascii_digit()
+                && let Some(range) = Self::try_date(input, idx)
+            {
+                return Some(range);
             }
             idx += 1;
         }

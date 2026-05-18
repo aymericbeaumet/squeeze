@@ -1,6 +1,6 @@
 use proptest::prelude::*;
-use squeeze::scanner::Scanner;
 use squeeze::Finder;
+use squeeze::scanner::Scanner;
 use std::ops::Range;
 
 fn all_finders() -> Vec<Box<dyn Finder>> {

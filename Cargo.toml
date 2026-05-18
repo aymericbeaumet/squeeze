@@ -3,7 +3,7 @@ members = [
   "squeeze",
   "squeeze-cli",
 ]
-resolver = "2"
+resolver = "3"
 
 [profile.dev]
 opt-level = 0

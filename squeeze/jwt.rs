@@ -199,9 +199,11 @@ mod tests {
     #[test]
     fn find_should_reject_two_segments() {
         let finder = Jwt::default();
-        assert!(finder
-            .find("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0")
-            .is_none());
+        assert!(
+            finder
+                .find("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0")
+                .is_none()
+        );
     }
 
     #[test]

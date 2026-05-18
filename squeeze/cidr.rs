@@ -176,15 +176,15 @@ impl Finder for Cidr {
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
-        if input[pos].is_ascii_digit() {
-            if let Some(range) = Self::try_ipv4_cidr(input, pos) {
-                return Some(range);
-            }
+        if input[pos].is_ascii_digit()
+            && let Some(range) = Self::try_ipv4_cidr(input, pos)
+        {
+            return Some(range);
         }
-        if input[pos] == b'[' || input[pos].is_ascii_hexdigit() || input[pos] == b':' {
-            if let Some(range) = Self::try_ipv6_cidr(input, pos) {
-                return Some(range);
-            }
+        if (input[pos] == b'[' || input[pos].is_ascii_hexdigit() || input[pos] == b':')
+            && let Some(range) = Self::try_ipv6_cidr(input, pos)
+        {
+            return Some(range);
         }
         None
     }
@@ -194,16 +194,16 @@ impl Finder for Cidr {
         let mut idx = 0;
 
         while idx < input.len() {
-            if input[idx].is_ascii_digit() {
-                if let Some(range) = Self::try_ipv4_cidr(input, idx) {
-                    return Some(range);
-                }
+            if input[idx].is_ascii_digit()
+                && let Some(range) = Self::try_ipv4_cidr(input, idx)
+            {
+                return Some(range);
             }
 
-            if input[idx] == b'[' || input[idx].is_ascii_hexdigit() || input[idx] == b':' {
-                if let Some(range) = Self::try_ipv6_cidr(input, idx) {
-                    return Some(range);
-                }
+            if (input[idx] == b'[' || input[idx].is_ascii_hexdigit() || input[idx] == b':')
+                && let Some(range) = Self::try_ipv6_cidr(input, idx)
+            {
+                return Some(range);
             }
 
             idx += 1;

@@ -78,10 +78,10 @@ impl Emoji {
         let mut end = first.len_utf8();
 
         if Self::is_regional_indicator(first) {
-            if let Some(&(pos, c)) = iter.peek() {
-                if Self::is_regional_indicator(c) {
-                    end = pos + c.len_utf8();
-                }
+            if let Some(&(pos, c)) = iter.peek()
+                && Self::is_regional_indicator(c)
+            {
+                end = pos + c.len_utf8();
             }
             return end;
         }
@@ -113,32 +113,33 @@ impl Emoji {
         }
 
         loop {
-            if let Some(&(pos, c)) = iter.peek() {
-                if Self::is_variation_selector(c) {
-                    end = pos + c.len_utf8();
-                    iter.next();
-                }
+            if let Some(&(pos, c)) = iter.peek()
+                && Self::is_variation_selector(c)
+            {
+                end = pos + c.len_utf8();
+                iter.next();
             }
 
-            if let Some(&(pos, c)) = iter.peek() {
-                if Self::is_skin_tone(c) {
-                    end = pos + c.len_utf8();
-                    iter.next();
-                }
+            if let Some(&(pos, c)) = iter.peek()
+                && Self::is_skin_tone(c)
+            {
+                end = pos + c.len_utf8();
+                iter.next();
             }
 
-            if let Some(&(_, c)) = iter.peek() {
-                if Self::is_zwj(c) {
-                    let mut peek = iter.clone();
+            if let Some(&(_, c)) = iter.peek()
+                && Self::is_zwj(c)
+            {
+                let mut peek = iter.clone();
+                peek.next();
+                if let Some(&(pos, c)) = peek.peek()
+                    && Self::is_emoji(c)
+                    && !Self::is_zwj(c)
+                {
+                    end = pos + c.len_utf8();
                     peek.next();
-                    if let Some(&(pos, c)) = peek.peek() {
-                        if Self::is_emoji(c) && !Self::is_zwj(c) {
-                            end = pos + c.len_utf8();
-                            peek.next();
-                            iter = peek;
-                            continue;
-                        }
-                    }
+                    iter = peek;
+                    continue;
                 }
             }
 
@@ -170,22 +171,16 @@ impl Finder for Emoji {
             return None;
         }
 
-        if pos > 0 {
-            if let Ok(before) = std::str::from_utf8(&input[..pos]) {
-                if let Some(prev) = before.chars().last() {
-                    if Self::is_zwj(prev) {
-                        return None;
-                    }
-                }
-            }
+        if pos > 0
+            && let Ok(before) = std::str::from_utf8(&input[..pos])
+            && let Some(prev) = before.chars().last()
+            && Self::is_zwj(prev)
+        {
+            return None;
         }
 
         let end = Self::consume_sequence(s);
-        if end > 0 {
-            Some(pos..pos + end)
-        } else {
-            None
-        }
+        if end > 0 { Some(pos..pos + end) } else { None }
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {

@@ -1,8 +1,8 @@
 use clap::Parser;
 use squeeze::{
-    cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email, emoji::Emoji,
-    env::Env, hash::Hash, ip::Ip, json::Json, jwt::Jwt, mac::Mac, mirror::Mirror, path::Path,
-    phone::Phone, scanner::Scanner, semver::Semver, uri::URI, uuid::Uuid, Finder,
+    Finder, cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email,
+    emoji::Emoji, env::Env, hash::Hash, ip::Ip, json::Json, jwt::Jwt, mac::Mac, mirror::Mirror,
+    path::Path, phone::Phone, scanner::Scanner, semver::Semver, uri::URI, uuid::Uuid,
 };
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, BufRead, BufWriter, Write};
@@ -502,10 +502,10 @@ fn main() -> ExitCode {
                 let found = &trimmed[m.range];
                 if !found.is_empty() {
                     let _ = writeln!(out, "{}", found);
-                    if opts.open {
-                        if let Err(e) = open_url(found) {
-                            eprintln!("failed to open '{}': {}", found, e);
-                        }
+                    if opts.open
+                        && let Err(e) = open_url(found)
+                    {
+                        eprintln!("failed to open '{}': {}", found, e);
                     }
                     return ExitCode::SUCCESS;
                 }
@@ -516,10 +516,10 @@ fn main() -> ExitCode {
                 let found = &trimmed[m.range.clone()];
                 if !found.is_empty() {
                     let _ = writeln!(out, "{}", found);
-                    if opts.open {
-                        if let Err(e) = open_url(found) {
-                            eprintln!("failed to open '{}': {}", found, e);
-                        }
+                    if opts.open
+                        && let Err(e) = open_url(found)
+                    {
+                        eprintln!("failed to open '{}': {}", found, e);
                     }
                 }
             }

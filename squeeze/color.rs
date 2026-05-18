@@ -79,11 +79,7 @@ impl Color {
             end += 1;
         }
 
-        if depth == 0 {
-            Some(pos..end)
-        } else {
-            None
-        }
+        if depth == 0 { Some(pos..end) } else { None }
     }
 }
 
@@ -101,15 +97,15 @@ impl Finder for Color {
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
-        if input[pos] == b'#' {
-            if let Some(range) = Self::try_hex_color(input, pos) {
-                return Some(range);
-            }
+        if input[pos] == b'#'
+            && let Some(range) = Self::try_hex_color(input, pos)
+        {
+            return Some(range);
         }
-        if matches!(input[pos], b'r' | b'R' | b'h' | b'H') {
-            if let Some(range) = Self::try_css_function(input, pos) {
-                return Some(range);
-            }
+        if matches!(input[pos], b'r' | b'R' | b'h' | b'H')
+            && let Some(range) = Self::try_css_function(input, pos)
+        {
+            return Some(range);
         }
         None
     }
@@ -119,16 +115,16 @@ impl Finder for Color {
         let mut idx = 0;
 
         while idx < input.len() {
-            if input[idx] == b'#' {
-                if let Some(range) = Self::try_hex_color(input, idx) {
-                    return Some(range);
-                }
+            if input[idx] == b'#'
+                && let Some(range) = Self::try_hex_color(input, idx)
+            {
+                return Some(range);
             }
 
-            if matches!(input[idx], b'r' | b'R' | b'h' | b'H') {
-                if let Some(range) = Self::try_css_function(input, idx) {
-                    return Some(range);
-                }
+            if matches!(input[idx], b'r' | b'R' | b'h' | b'H')
+                && let Some(range) = Self::try_css_function(input, idx)
+            {
+                return Some(range);
             }
 
             idx += 1;

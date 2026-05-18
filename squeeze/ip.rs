@@ -144,21 +144,22 @@ impl Finder for Ip {
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         if self.ipv6 {
-            if input[pos] == b'[' {
-                if let Some(range) = Self::try_bracketed_ipv6(input, pos) {
-                    return Some(range);
-                }
-            }
-            if input[pos].is_ascii_hexdigit() || input[pos] == b':' {
-                if let Some(range) = Self::try_bare_ipv6(input, pos) {
-                    return Some(range);
-                }
-            }
-        }
-        if self.ipv4 && input[pos].is_ascii_digit() {
-            if let Some(range) = Self::try_ipv4(input, pos) {
+            if input[pos] == b'['
+                && let Some(range) = Self::try_bracketed_ipv6(input, pos)
+            {
                 return Some(range);
             }
+            if (input[pos].is_ascii_hexdigit() || input[pos] == b':')
+                && let Some(range) = Self::try_bare_ipv6(input, pos)
+            {
+                return Some(range);
+            }
+        }
+        if self.ipv4
+            && input[pos].is_ascii_digit()
+            && let Some(range) = Self::try_ipv4(input, pos)
+        {
+            return Some(range);
         }
         None
     }
@@ -169,23 +170,24 @@ impl Finder for Ip {
 
         while idx < input.len() {
             if self.ipv6 {
-                if input[idx] == b'[' {
-                    if let Some(range) = Self::try_bracketed_ipv6(input, idx) {
-                        return Some(range);
-                    }
+                if input[idx] == b'['
+                    && let Some(range) = Self::try_bracketed_ipv6(input, idx)
+                {
+                    return Some(range);
                 }
 
-                if input[idx].is_ascii_hexdigit() || input[idx] == b':' {
-                    if let Some(range) = Self::try_bare_ipv6(input, idx) {
-                        return Some(range);
-                    }
+                if (input[idx].is_ascii_hexdigit() || input[idx] == b':')
+                    && let Some(range) = Self::try_bare_ipv6(input, idx)
+                {
+                    return Some(range);
                 }
             }
 
-            if self.ipv4 && input[idx].is_ascii_digit() {
-                if let Some(range) = Self::try_ipv4(input, idx) {
-                    return Some(range);
-                }
+            if self.ipv4
+                && input[idx].is_ascii_digit()
+                && let Some(range) = Self::try_ipv4(input, idx)
+            {
+                return Some(range);
             }
 
             idx += 1;

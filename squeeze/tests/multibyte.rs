@@ -1,5 +1,5 @@
-use squeeze::scanner::Scanner;
 use squeeze::Finder;
+use squeeze::scanner::Scanner;
 
 fn scan(finders: Vec<Box<dyn Finder>>, input: &str) -> Vec<String> {
     let scanner = Scanner::new(finders);
