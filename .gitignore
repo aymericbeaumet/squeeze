@@ -11,5 +11,8 @@ target/
 .DS_Store
 Thumbs.db
 
+# Proptest
+proptest-regressions/
+
 # Cargo lock for libraries (keep for binaries)
 # Cargo.lock

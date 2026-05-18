@@ -19,6 +19,45 @@ impl Finder for Env {
         "env"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte == b'$'
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if input[pos] != b'$' {
+            return None;
+        }
+        let after = pos + 1;
+        if after >= input.len() {
+            return None;
+        }
+        if input[after] == b'{' {
+            let name_start = after + 1;
+            if name_start < input.len() && Self::is_name_start(input[name_start]) {
+                let mut name_end = name_start + 1;
+                while name_end < input.len() && Self::is_name_char(input[name_end]) {
+                    name_end += 1;
+                }
+                if name_end < input.len() && input[name_end] == b'}' {
+                    return Some(pos..name_end + 1);
+                }
+            }
+            return None;
+        }
+        if Self::is_name_start(input[after]) {
+            let mut name_end = after + 1;
+            while name_end < input.len() && Self::is_name_char(input[name_end]) {
+                name_end += 1;
+            }
+            return Some(pos..name_end);
+        }
+        None
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -194,5 +233,70 @@ mod tests {
         let input = r#"echo "$HOME""#;
         let range = finder.find(input).unwrap();
         assert_eq!("$HOME", &input[range]);
+    }
+
+    #[test]
+    fn try_at_simple_var() {
+        let finder = Env::default();
+        assert_eq!(finder.try_at(b"$HOME rest", 0), Some(0..5));
+    }
+
+    #[test]
+    fn try_at_braced_var() {
+        let finder = Env::default();
+        assert_eq!(finder.try_at(b"${PATH}", 0), Some(0..7));
+    }
+
+    #[test]
+    fn try_at_rejects_non_dollar() {
+        let finder = Env::default();
+        assert!(finder.try_at(b"HOME", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_dollar_at_end() {
+        let finder = Env::default();
+        assert!(finder.try_at(b"$", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_dollar_digit() {
+        let finder = Env::default();
+        assert!(finder.try_at(b"$1", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_unclosed_brace() {
+        let finder = Env::default();
+        assert!(finder.try_at(b"${FOO", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_empty_brace() {
+        let finder = Env::default();
+        assert!(finder.try_at(b"${}", 0).is_none());
+    }
+
+    #[test]
+    fn find_adjacent_vars() {
+        let finder = Env::default();
+        let input = "$A$B";
+        let mut results = Vec::new();
+        let mut idx = 0;
+        while idx < input.len() {
+            if let Some(range) = finder.find(&input[idx..]) {
+                results.push(&input[idx + range.start..idx + range.end]);
+                idx += range.end;
+            } else {
+                break;
+            }
+        }
+        assert_eq!(results, vec!["$A", "$B"]);
+    }
+
+    #[test]
+    fn find_dollar_space_dollar() {
+        let finder = Env::default();
+        assert!(finder.find("$ $").is_none());
     }
 }

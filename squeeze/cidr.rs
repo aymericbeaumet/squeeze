@@ -40,8 +40,10 @@ impl Cidr {
                 return None;
             }
 
-            let octet_str = std::str::from_utf8(&input[octet_start..pos]).ok()?;
-            let value: u16 = octet_str.parse().ok()?;
+            let mut value: u16 = 0;
+            for &b in &input[octet_start..pos] {
+                value = value * 10 + (b - b'0') as u16;
+            }
             if value > 255 {
                 return None;
             }
@@ -67,8 +69,10 @@ impl Cidr {
             return None;
         }
 
-        let prefix_str = std::str::from_utf8(&input[prefix_start..pos]).ok()?;
-        let prefix: u8 = prefix_str.parse().ok()?;
+        let mut prefix: u8 = 0;
+        for &b in &input[prefix_start..pos] {
+            prefix = prefix * 10 + (b - b'0');
+        }
         if prefix > 32 {
             return None;
         }
@@ -88,7 +92,7 @@ impl Cidr {
             let close = input[idx..].iter().position(|&b| b == b']')?;
             let close_pos = idx + close;
             let inner = &input[idx + 1..close_pos];
-            if !Self::is_valid_ipv6(inner) {
+            if !crate::ipv6::is_valid_ipv6(inner) {
                 return None;
             }
             (idx, close_pos + 1)
@@ -116,7 +120,7 @@ impl Cidr {
             if !candidate.contains(&b':') {
                 return None;
             }
-            if !Self::is_valid_ipv6(candidate) {
+            if !crate::ipv6::is_valid_ipv6(candidate) {
                 return None;
             }
             (start, end)
@@ -141,8 +145,10 @@ impl Cidr {
             return None;
         }
 
-        let prefix_str = std::str::from_utf8(&input[prefix_start..pos]).ok()?;
-        let prefix: u16 = prefix_str.parse().ok()?;
+        let mut prefix: u16 = 0;
+        for &b in &input[prefix_start..pos] {
+            prefix = prefix * 10 + (b - b'0') as u16;
+        }
         if prefix > 128 {
             return None;
         }
@@ -154,54 +160,6 @@ impl Cidr {
 
         Some(ip_start..pos)
     }
-
-    fn is_valid_ipv6(bytes: &[u8]) -> bool {
-        let s = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        if s == "::" {
-            return true;
-        }
-
-        let has_double_colon = s.contains("::");
-
-        if has_double_colon {
-            let parts: Vec<&str> = s.splitn(2, "::").collect();
-            if parts.len() != 2 {
-                return false;
-            }
-
-            let left: Vec<&str> = if parts[0].is_empty() {
-                vec![]
-            } else {
-                parts[0].split(':').collect()
-            };
-
-            let right: Vec<&str> = if parts[1].is_empty() {
-                vec![]
-            } else {
-                parts[1].split(':').collect()
-            };
-
-            let total = left.len() + right.len();
-            if total >= 8 {
-                return false;
-            }
-
-            left.iter()
-                .chain(right.iter())
-                .all(|g| Self::is_valid_hex_group(g))
-        } else {
-            let groups: Vec<&str> = s.split(':').collect();
-            groups.len() == 8 && groups.iter().all(|g| Self::is_valid_hex_group(g))
-        }
-    }
-
-    fn is_valid_hex_group(g: &str) -> bool {
-        !g.is_empty() && g.len() <= 4 && g.bytes().all(|b| b.is_ascii_hexdigit())
-    }
 }
 
 impl Finder for Cidr {
@@ -209,21 +167,43 @@ impl Finder for Cidr {
         "cidr"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte.is_ascii_hexdigit() || byte == b':' || byte == b'['
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if input[pos].is_ascii_digit()
+            && let Some(range) = Self::try_ipv4_cidr(input, pos)
+        {
+            return Some(range);
+        }
+        if (input[pos] == b'[' || input[pos].is_ascii_hexdigit() || input[pos] == b':')
+            && let Some(range) = Self::try_ipv6_cidr(input, pos)
+        {
+            return Some(range);
+        }
+        None
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
 
         while idx < input.len() {
-            if input[idx].is_ascii_digit() {
-                if let Some(range) = Self::try_ipv4_cidr(input, idx) {
-                    return Some(range);
-                }
+            if input[idx].is_ascii_digit()
+                && let Some(range) = Self::try_ipv4_cidr(input, idx)
+            {
+                return Some(range);
             }
 
-            if input[idx] == b'[' || input[idx].is_ascii_hexdigit() || input[idx] == b':' {
-                if let Some(range) = Self::try_ipv6_cidr(input, idx) {
-                    return Some(range);
-                }
+            if (input[idx] == b'[' || input[idx].is_ascii_hexdigit() || input[idx] == b':')
+                && let Some(range) = Self::try_ipv6_cidr(input, idx)
+            {
+                return Some(range);
             }
 
             idx += 1;
@@ -397,5 +377,116 @@ mod tests {
         let input = "subnet is 172.16.0.0/12";
         let range = finder.find(input).unwrap();
         assert_eq!("172.16.0.0/12", &input[range]);
+    }
+
+    #[test]
+    fn try_at_ipv4_cidr() {
+        let finder = Cidr::default();
+        let input = b"192.168.1.0/24 rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..14));
+    }
+
+    #[test]
+    fn try_at_ipv6_cidr() {
+        let finder = Cidr::default();
+        let input = b"2001:db8::/32 rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..13));
+    }
+
+    #[test]
+    fn try_at_no_prefix() {
+        let finder = Cidr::default();
+        let input = b"192.168.1.0 no prefix";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_non_digit() {
+        let finder = Cidr::default();
+        assert!(finder.try_at(b"abc", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_single_digit() {
+        let finder = Cidr::default();
+        assert!(finder.try_at(b"1", 0).is_none());
+    }
+
+    #[test]
+    fn find_prefix_zero() {
+        let finder = Cidr::default();
+        let input = "0.0.0.0/0";
+        let range = finder.find(input).unwrap();
+        assert_eq!("0.0.0.0/0", &input[range]);
+    }
+
+    #[test]
+    fn find_prefix_32() {
+        let finder = Cidr::default();
+        let input = "10.0.0.1/32";
+        let range = finder.find(input).unwrap();
+        assert_eq!("10.0.0.1/32", &input[range]);
+    }
+
+    #[test]
+    fn find_rejects_prefix_with_leading_zero() {
+        let finder = Cidr::default();
+        assert!(finder.find("10.0.0.0/08").is_none());
+    }
+
+    #[test]
+    fn find_ipv6_prefix_128() {
+        let finder = Cidr::default();
+        let input = "::1/128";
+        let range = finder.find(input).unwrap();
+        assert_eq!("::1/128", &input[range]);
+    }
+
+    #[test]
+    fn find_ipv6_prefix_zero() {
+        let finder = Cidr::default();
+        let input = "::/0";
+        let range = finder.find(input).unwrap();
+        assert_eq!("::/0", &input[range]);
+    }
+
+    // --- Regression: could_start_at without redundant digit check ---
+
+    #[test]
+    fn could_start_at_digit() {
+        let finder = Cidr::default();
+        for b in b'0'..=b'9' {
+            assert!(
+                finder.could_start_at(b),
+                "should start at digit {}",
+                b as char
+            );
+        }
+    }
+
+    #[test]
+    fn could_start_at_hex_alpha() {
+        let finder = Cidr::default();
+        for b in b'a'..=b'f' {
+            assert!(finder.could_start_at(b), "should start at {}", b as char);
+        }
+        for b in b'A'..=b'F' {
+            assert!(finder.could_start_at(b), "should start at {}", b as char);
+        }
+    }
+
+    #[test]
+    fn could_start_at_colon_bracket() {
+        let finder = Cidr::default();
+        assert!(finder.could_start_at(b':'));
+        assert!(finder.could_start_at(b'['));
+    }
+
+    #[test]
+    fn could_not_start_at_non_hex() {
+        let finder = Cidr::default();
+        assert!(!finder.could_start_at(b'g'));
+        assert!(!finder.could_start_at(b' '));
+        assert!(!finder.could_start_at(b'/'));
     }
 }

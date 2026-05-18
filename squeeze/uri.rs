@@ -18,8 +18,39 @@
 //! ```
 
 use super::Finder;
-use std::collections::HashSet;
 use std::ops::Range;
+
+const SUB_DELIMS_STRICT: [bool; 256] = {
+    let mut table = [false; 256];
+    table[b'!' as usize] = true;
+    table[b'$' as usize] = true;
+    table[b'&' as usize] = true;
+    table[b'\'' as usize] = true;
+    table[b'(' as usize] = true;
+    table[b')' as usize] = true;
+    table[b'*' as usize] = true;
+    table[b'+' as usize] = true;
+    table[b',' as usize] = true;
+    table[b';' as usize] = true;
+    table[b'=' as usize] = true;
+    table
+};
+
+const SUB_DELIMS_LAX: [bool; 256] = {
+    let mut table = [false; 256];
+    table[b'!' as usize] = true;
+    table[b'$' as usize] = true;
+    table[b'&' as usize] = true;
+    table[b'(' as usize] = true;
+    table[b'*' as usize] = true;
+    table[b'+' as usize] = true;
+    table[b',' as usize] = true;
+    table[b';' as usize] = true;
+    table[b'=' as usize] = true;
+    table
+};
+
+const MAX_SCHEME_LEN: usize = 32;
 
 #[derive(Default, Clone, Copy)]
 struct SchemeConfig(u8);
@@ -62,7 +93,7 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
 /// Set [`URI::strict`] to `true` to strictly follow RFC 3986.
 #[derive(Default)]
 pub struct URI {
-    schemes: HashSet<String>,
+    schemes: Vec<String>,
     /// When `true`, strictly follows RFC 3986 and includes trailing `'` and `)` in URIs.
     /// When `false` (default), excludes these characters for better text extraction.
     pub strict: bool,
@@ -97,7 +128,7 @@ impl Finder for URI {
 
             // we cannot early exit as soon as we know the scheme as we need to advance idx even if the
             // uri should be discarded
-            if self.schemes.is_empty() || self.schemes.contains(scheme) {
+            if self.schemes.is_empty() || self.schemes.iter().any(|s| s == scheme) {
                 return Some(scheme_idx..idx);
             }
         }
@@ -124,16 +155,20 @@ impl URI {
     /// // Will match https:// and mailto: URIs, but not http:// or ftp://
     /// ```
     pub fn add_scheme(&mut self, s: &str) {
-        self.schemes.insert(s.to_lowercase());
+        let lower = s.to_lowercase();
+        if let Err(pos) = self.schemes.binary_search(&lower) {
+            self.schemes.insert(pos, lower);
+        }
     }
 
     // ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
     fn rlook_scheme(&self, input: &[u8]) -> Option<usize> {
+        let start = input.len().saturating_sub(MAX_SCHEME_LEN);
         let mut idx = None;
-        for (i, &c) in input.iter().enumerate().rev() {
-            if self.is_alpha(c) {
-                idx = Some(i);
-            } else if self.is_digit(c) || [b'+', b'-', b'.'].contains(&c) {
+        for (i, &c) in input[start..].iter().enumerate().rev() {
+            if Self::is_alpha(c) {
+                idx = Some(start + i);
+            } else if Self::is_digit(c) || c == b'+' || c == b'-' || c == b'.' {
                 // noop
             } else {
                 break;
@@ -294,12 +329,12 @@ impl URI {
             }
 
             if last_is_colon || idx == 0 {
-                if bytes_count == 12 || double_colon_found {
-                    if let Some(i) = self.look_ipv4_address(&input[idx..]) {
-                        bytes_count += 4;
-                        idx += i;
-                        break;
-                    }
+                if (bytes_count == 12 || double_colon_found)
+                    && let Some(i) = self.look_ipv4_address(&input[idx..])
+                {
+                    bytes_count += 4;
+                    idx += i;
+                    break;
                 }
                 if let Some(i) = self.look_h16(&input[idx..]) {
                     bytes_count += 2;
@@ -318,14 +353,10 @@ impl URI {
     fn look_h16(&self, input: &[u8]) -> Option<usize> {
         let idx = input
             .iter()
-            .take_while(|&&b| self.is_hexdig(b))
+            .take_while(|&&b| Self::is_hexdig(b))
             .take(4)
             .count();
-        if idx >= 1 {
-            Some(idx)
-        } else {
-            None
-        }
+        if idx >= 1 { Some(idx) } else { None }
     }
 
     // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
@@ -338,7 +369,7 @@ impl URI {
 
         // 1*HEXDIG
         let hexdig_start = idx;
-        while idx < input.len() && self.is_hexdig(input[idx]) {
+        while idx < input.len() && Self::is_hexdig(input[idx]) {
             idx += 1;
         }
         if idx == hexdig_start {
@@ -355,7 +386,7 @@ impl URI {
         let char_start = idx;
         while idx < input.len() {
             let c = input[idx];
-            if self.is_unreserved(c) || self.is_sub_delim_strict(c) || c == b':' {
+            if Self::is_unreserved(c) || Self::is_sub_delim_strict(c) || c == b':' {
                 idx += 1;
             } else {
                 break;
@@ -368,12 +399,9 @@ impl URI {
         idx == input.len()
     }
 
-    // sub-delims for IPvFuture (always strict as per RFC)
-    fn is_sub_delim_strict(&self, c: u8) -> bool {
-        [
-            b'!', b'$', b'&', b'\'', b'(', b')', b'*', b'+', b',', b';', b'=',
-        ]
-        .contains(&c)
+    #[inline]
+    fn is_sub_delim_strict(c: u8) -> bool {
+        SUB_DELIMS_STRICT[c as usize]
     }
 
     // dec-octet "." dec-octet "." dec-octet "." dec-octet
@@ -398,32 +426,32 @@ impl URI {
         if input.len() >= 3
             && input[0] == b'2'
             && input[1] == b'5'
-            && self.is_digit_0_to_5(input[2])
+            && Self::is_digit_0_to_5(input[2])
         {
             return Some(3);
         }
 
         if input.len() >= 3
             && input[0] == b'2'
-            && self.is_digit_0_to_4(input[1])
-            && self.is_digit(input[2])
+            && Self::is_digit_0_to_4(input[1])
+            && Self::is_digit(input[2])
         {
             return Some(3);
         }
 
         if input.len() >= 3
             && input[0] == b'1'
-            && self.is_digit(input[1])
-            && self.is_digit(input[2])
+            && Self::is_digit(input[1])
+            && Self::is_digit(input[2])
         {
             return Some(3);
         }
 
-        if input.len() >= 2 && self.is_digit_1_to_9(input[0]) && self.is_digit(input[1]) {
+        if input.len() >= 2 && Self::is_digit_1_to_9(input[0]) && Self::is_digit(input[1]) {
             return Some(2);
         }
 
-        if !input.is_empty() && self.is_digit(input[0]) {
+        if !input.is_empty() && Self::is_digit(input[0]) {
             return Some(1);
         }
 
@@ -453,7 +481,7 @@ impl URI {
     fn look_label(&self, input: &[u8]) -> Option<usize> {
         let mut idx = 0;
         if idx < input.len()
-            && (self.is_alpha(input[idx]) || self.is_digit(input[idx]) || input[idx] == b'_')
+            && (Self::is_alpha(input[idx]) || Self::is_digit(input[idx]) || input[idx] == b'_')
         {
             idx += 1;
         } else {
@@ -461,8 +489,8 @@ impl URI {
         }
         while idx < input.len()
             && idx < 62
-            && (self.is_alpha(input[idx])
-                || self.is_digit(input[idx])
+            && (Self::is_alpha(input[idx])
+                || Self::is_digit(input[idx])
                 || input[idx] == b'_'
                 || input[idx] == b'-')
         {
@@ -481,7 +509,7 @@ impl URI {
 
     // *DIGIT
     fn look_port(&self, input: &[u8]) -> usize {
-        input.iter().take_while(|&&c| self.is_digit(c)).count()
+        input.iter().take_while(|&&c| Self::is_digit(c)).count()
     }
 
     fn look_question_mark_query(&self, input: &[u8]) -> Option<usize> {
@@ -495,12 +523,13 @@ impl URI {
     fn look_query(&self, input: &[u8]) -> usize {
         let mut idx = 0;
         while idx < input.len() {
-            if let Some(i) = self.look_pchar(&input[idx..]) {
-                idx += i;
+            let b = input[idx];
+            if b == b'/' || b == b'?' {
+                idx += 1;
                 continue;
             }
-            if [b'/', b'?'].contains(&input[idx]) {
-                idx += 1;
+            if let Some(i) = self.look_pchar(&input[idx..]) {
+                idx += i;
                 continue;
             }
             break;
@@ -519,12 +548,13 @@ impl URI {
     fn look_fragment(&self, input: &[u8]) -> usize {
         let mut idx = 0;
         while idx < input.len() {
-            if let Some(i) = self.look_pchar(&input[idx..]) {
-                idx += i;
+            let b = input[idx];
+            if b == b'/' || b == b'?' {
+                idx += 1;
                 continue;
             }
-            if [b'/', b'?'].contains(&input[idx]) {
-                idx += 1;
+            if let Some(i) = self.look_pchar(&input[idx..]) {
+                idx += i;
                 continue;
             }
             break;
@@ -533,26 +563,24 @@ impl URI {
     }
 
     // unreserved / pct-encoded / sub-delims / ":" / "@"
+    #[inline]
     fn look_pchar(&self, input: &[u8]) -> Option<usize> {
-        self.look_pct_encoded(input).or_else(|| {
-            if !input.is_empty()
-                && (self.is_unreserved(input[0])
-                    || self.is_sub_delim(input[0])
-                    || [b':', b'@'].contains(&input[0]))
-            {
-                Some(1)
-            } else {
-                None
+        if !input.is_empty() {
+            let b = input[0];
+            if Self::is_unreserved(b) || self.is_sub_delim(b) || b == b':' || b == b'@' {
+                return Some(1);
             }
-        })
+        }
+        self.look_pct_encoded(input)
     }
 
     // "%" HEXDIG HEXDIG
+    #[inline]
     fn look_pct_encoded(&self, input: &[u8]) -> Option<usize> {
         if input.len() >= 3
             && input[0] == b'%'
-            && self.is_hexdig(input[1])
-            && self.is_hexdig(input[2])
+            && Self::is_hexdig(input[1])
+            && Self::is_hexdig(input[2])
         {
             Some(3)
         } else {
@@ -560,6 +588,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_period(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() && input[0] == b'.' {
             Some(1)
@@ -568,6 +597,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_left_bracket(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() && input[0] == b'[' {
             Some(1)
@@ -576,6 +606,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_colon(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() && input[0] == b':' {
             Some(1)
@@ -584,6 +615,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_question_mark(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() && input[0] == b'?' {
             Some(1)
@@ -592,6 +624,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_sharp(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() && input[0] == b'#' {
             Some(1)
@@ -600,6 +633,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_slash(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() && input[0] == b'/' {
             Some(1)
@@ -608,6 +642,7 @@ impl URI {
         }
     }
 
+    #[inline]
     fn look_slash_slash(&self, input: &[u8]) -> Option<usize> {
         if input.len() >= 2 && input[0] == b'/' && input[1] == b'/' {
             Some(2)
@@ -620,13 +655,13 @@ impl URI {
     fn is_userinfo(&self, input: &[u8]) -> bool {
         let mut idx = 0;
         while idx < input.len() {
-            if let Some(i) = self.look_pct_encoded(&input[idx..]) {
-                idx += i;
+            let c = input[idx];
+            if Self::is_unreserved(c) || self.is_sub_delim(c) || c == b':' {
+                idx += 1;
                 continue;
             }
-            let c = input[idx];
-            if self.is_unreserved(c) || self.is_sub_delim(c) || c == b':' {
-                idx += 1;
+            if let Some(i) = self.look_pct_encoded(&input[idx..]) {
+                idx += i;
                 continue;
             }
             return false;
@@ -635,44 +670,49 @@ impl URI {
     }
 
     // ALPHA / DIGIT / "-" / "." / "_" / "~"
-    fn is_unreserved(&self, c: u8) -> bool {
-        self.is_alpha(c) || self.is_digit(c) || c == b'-' || c == b'.' || c == b'_' || c == b'~'
+    #[inline]
+    fn is_unreserved(c: u8) -> bool {
+        c.is_ascii_alphanumeric() || c == b'-' || c == b'.' || c == b'_' || c == b'~'
     }
 
     // "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
+    #[inline]
     fn is_sub_delim(&self, c: u8) -> bool {
         if self.strict {
-            [
-                b'!', b'$', b'&', b'\'', b'(', b')', b'*', b'+', b',', b';', b'=',
-            ]
-            .contains(&c)
+            SUB_DELIMS_STRICT[c as usize]
         } else {
-            [b'!', b'$', b'&', b'(', b'*', b'+', b',', b';', b'='].contains(&c) // without ' and )
+            SUB_DELIMS_LAX[c as usize]
         }
     }
 
-    // ALPHA
-    fn is_alpha(&self, c: u8) -> bool {
-        c.is_ascii_lowercase() || c.is_ascii_uppercase()
+    #[inline]
+    fn is_alpha(c: u8) -> bool {
+        c.is_ascii_alphabetic()
     }
 
-    // DIGIT
-    fn is_digit(&self, c: u8) -> bool {
+    #[inline]
+    fn is_digit(c: u8) -> bool {
         c.is_ascii_digit()
     }
-    fn is_digit_1_to_9(&self, c: u8) -> bool {
+
+    #[inline]
+    fn is_digit_1_to_9(c: u8) -> bool {
         (b'1'..=b'9').contains(&c)
     }
-    fn is_digit_0_to_4(&self, c: u8) -> bool {
+
+    #[inline]
+    fn is_digit_0_to_4(c: u8) -> bool {
         (b'0'..=b'4').contains(&c)
     }
-    fn is_digit_0_to_5(&self, c: u8) -> bool {
+
+    #[inline]
+    fn is_digit_0_to_5(c: u8) -> bool {
         (b'0'..=b'5').contains(&c)
     }
 
-    // HEXDIG
-    fn is_hexdig(&self, c: u8) -> bool {
-        self.is_digit(c) || (b'a'..=b'f').contains(&c) || (b'A'..=b'F').contains(&c)
+    #[inline]
+    fn is_hexdig(c: u8) -> bool {
+        c.is_ascii_hexdigit()
     }
 }
 
@@ -1316,5 +1356,123 @@ mod tests {
         // Should match lowercase http
         let input = "http://example.com";
         assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
+    }
+
+    // --- Regression: sorted Vec scheme dedup ---
+
+    #[test]
+    fn add_scheme_deduplicates() {
+        let mut finder = URI::default();
+        finder.add_scheme("http");
+        finder.add_scheme("http");
+        finder.add_scheme("HTTP");
+        assert_eq!(finder.schemes.len(), 1);
+    }
+
+    #[test]
+    fn add_scheme_multiple_sorted() {
+        let mut finder = URI::default();
+        finder.add_scheme("https");
+        finder.add_scheme("ftp");
+        finder.add_scheme("http");
+        assert_eq!(finder.schemes, vec!["ftp", "http", "https"]);
+    }
+
+    // --- Regression: look_pchar branch order ---
+
+    #[test]
+    fn look_pchar_unreserved_chars() {
+        let finder = URI::default();
+        for input in [
+            "http://example.com/path-with-dashes_and_underscores.and.dots~tilde",
+            "http://example.com/ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "http://example.com/abcdefghijklmnopqrstuvwxyz",
+            "http://example.com/0123456789",
+        ] {
+            assert_eq!(
+                Some(input),
+                finder.find(input).map(|r| &input[r]),
+                "{}",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn look_pchar_pct_encoded() {
+        let finder = URI::default();
+        let input = "http://example.com/%20%2F%3A";
+        assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
+    }
+
+    #[test]
+    fn look_pchar_sub_delims() {
+        let finder = URI::default();
+        let input = "http://example.com/path!$&(*+,;=";
+        assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
+    }
+
+    // --- Regression: rlook_scheme cap ---
+
+    #[test]
+    fn rlook_scheme_very_long_prefix() {
+        let finder = URI::default();
+        let long_prefix = " ".repeat(1000);
+        let input = format!("{}http://example.com", long_prefix);
+        assert_eq!(
+            Some("http://example.com"),
+            finder.find(&input).map(|r| &input[r])
+        );
+    }
+
+    #[test]
+    fn rlook_scheme_just_within_cap() {
+        let finder = URI::default();
+        let scheme = "a".repeat(30);
+        let input = format!("{}://host", scheme);
+        assert_eq!(Some(input.as_str()), finder.find(&input).map(|r| &input[r]));
+    }
+
+    #[test]
+    fn rlook_scheme_exceeds_cap() {
+        let finder = URI::default();
+        let scheme = "a".repeat(40);
+        let input = format!("{}://host", scheme);
+        // Scheme longer than MAX_SCHEME_LEN gets truncated, but the URI
+        // is still found with a shorter scheme prefix
+        let result = finder.find(&input);
+        assert!(result.is_some());
+    }
+
+    // --- Regression: sub-delim lookup table ---
+
+    #[test]
+    fn sub_delim_strict_vs_lax() {
+        let strict = {
+            let mut f = URI::default();
+            f.strict = true;
+            f
+        };
+        let lax = URI::default();
+
+        let with_apos = "http://example.com/it's";
+        assert_eq!(
+            Some("http://example.com/it's"),
+            strict.find(with_apos).map(|r| &with_apos[r])
+        );
+        assert_eq!(
+            Some("http://example.com/it"),
+            lax.find(with_apos).map(|r| &with_apos[r])
+        );
+
+        let with_paren = "http://example.com/path)";
+        assert_eq!(
+            Some("http://example.com/path)"),
+            strict.find(with_paren).map(|r| &with_paren[r])
+        );
+        assert_eq!(
+            Some("http://example.com/path"),
+            lax.find(with_paren).map(|r| &with_paren[r])
+        );
     }
 }

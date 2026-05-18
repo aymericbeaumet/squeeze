@@ -2,8 +2,8 @@
 name = "squeeze-cli"
 version = "0.1.0"
 authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
-edition = "2021"
-rust-version = "1.85"
+edition = "2024"
+rust-version = "1.95"
 license = "MIT"
 description = "CLI tool to extract rich information from any text"
 repository = "https://github.com/aymericbeaumet/squeeze"
@@ -16,7 +16,7 @@ name = "squeeze"
 path = "main.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
 open = "5"

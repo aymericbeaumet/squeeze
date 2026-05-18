@@ -1,12 +1,12 @@
 use super::Finder;
 use std::ops::Range;
 
-#[derive(Default)]
-pub struct Email {}
-
-impl Email {
-    fn is_local_char(b: u8) -> bool {
-        b.is_ascii_alphanumeric()
+const LOCAL_CHARS: [bool; 256] = {
+    let mut table = [false; 256];
+    let mut i = 0u16;
+    while i < 256 {
+        let b = i as u8;
+        table[i as usize] = b.is_ascii_alphanumeric()
             || matches!(
                 b,
                 b'.' | b'!'
@@ -28,9 +28,14 @@ impl Email {
                     | b'}'
                     | b'~'
                     | b'-'
-            )
+            );
+        i += 1;
     }
-}
+    table
+};
+
+#[derive(Default)]
+pub struct Email {}
 
 impl Finder for Email {
     fn id(&self) -> &'static str {
@@ -44,9 +49,8 @@ impl Finder for Email {
         while idx < input.len() {
             let at_pos = idx + input[idx..].iter().position(|&b| b == b'@')?;
 
-            // Walk backwards for local part
             let mut local_start = at_pos;
-            while local_start > idx && Self::is_local_char(input[local_start - 1]) {
+            while local_start > idx && LOCAL_CHARS[input[local_start - 1] as usize] {
                 local_start -= 1;
             }
 
@@ -56,53 +60,78 @@ impl Finder for Email {
                 continue;
             }
 
-            // Walk forwards for domain
+            // Walk forwards for domain, validating in a single pass
             let domain_start = at_pos + 1;
             let mut domain_end = domain_start;
-            while domain_end < input.len()
-                && (input[domain_end].is_ascii_alphanumeric()
-                    || input[domain_end] == b'-'
-                    || input[domain_end] == b'.')
-            {
-                domain_end += 1;
+            let mut dot_count = 0u32;
+            let mut last_dot = 0usize;
+            let mut label_start = domain_start;
+            let mut label_valid = true;
+
+            while domain_end < input.len() {
+                let b = input[domain_end];
+                if b == b'.' {
+                    let label_len = domain_end - label_start;
+                    if label_len == 0 || input[label_start] == b'-' || input[domain_end - 1] == b'-'
+                    {
+                        label_valid = false;
+                        break;
+                    }
+                    dot_count += 1;
+                    last_dot = domain_end;
+                    label_start = domain_end + 1;
+                    domain_end += 1;
+                } else if b.is_ascii_alphanumeric() || b == b'-' {
+                    domain_end += 1;
+                } else {
+                    break;
+                }
             }
 
-            if domain_end == domain_start {
+            if domain_end == domain_start || !label_valid {
                 idx = at_pos + 1;
                 continue;
             }
 
             // Strip trailing dots/hyphens
             while domain_end > domain_start && matches!(input[domain_end - 1], b'.' | b'-') {
+                if input[domain_end - 1] == b'.' && domain_end - 1 == last_dot {
+                    dot_count -= 1;
+                    if dot_count > 0 {
+                        // Recalculate last_dot
+                        last_dot = input[domain_start..domain_end - 1]
+                            .iter()
+                            .rposition(|&b| b == b'.')
+                            .map(|p| domain_start + p)
+                            .unwrap_or(0);
+                    }
+                }
                 domain_end -= 1;
             }
 
-            let domain = &s[domain_start..domain_end];
-
-            // Must have at least one dot
-            if !domain.contains('.') {
+            if dot_count == 0 {
                 idx = at_pos + 1;
                 continue;
             }
 
-            // Validate each label
-            let valid = domain.split('.').all(|label| {
-                !label.is_empty()
-                    && !label.starts_with('-')
-                    && !label.ends_with('-')
-                    && label
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-            });
-
-            if !valid {
+            // Validate final label (after last strip)
+            let final_label_start = if last_dot >= domain_start {
+                last_dot + 1
+            } else {
+                domain_start
+            };
+            let final_label_len = domain_end - final_label_start;
+            if final_label_len == 0
+                || input[final_label_start] == b'-'
+                || input[domain_end - 1] == b'-'
+            {
                 idx = at_pos + 1;
                 continue;
             }
 
             // TLD must be >= 2 chars and all alpha
-            let tld = domain.rsplit('.').next().unwrap();
-            if tld.len() < 2 || !tld.bytes().all(|b| b.is_ascii_alphabetic()) {
+            let tld = &input[last_dot + 1..domain_end];
+            if tld.len() < 2 || !tld.iter().all(|b| b.is_ascii_alphabetic()) {
                 idx = at_pos + 1;
                 continue;
             }
@@ -287,5 +316,65 @@ mod tests {
         let input = "@invalid then real@example.com";
         let range = finder.find(input).unwrap();
         assert_eq!("real@example.com", &input[range]);
+    }
+
+    // --- Regression: single-pass domain validation ---
+
+    #[test]
+    fn find_should_handle_domain_with_many_labels() {
+        let finder = Email::default();
+        let input = "user@a.b.c.d.example.com";
+        let range = finder.find(input).unwrap();
+        assert_eq!("user@a.b.c.d.example.com", &input[range]);
+    }
+
+    #[test]
+    fn find_should_reject_consecutive_dots_in_domain() {
+        let finder = Email::default();
+        assert!(finder.find("user@example..com").is_none());
+    }
+
+    #[test]
+    fn find_should_strip_trailing_dot_from_domain() {
+        let finder = Email::default();
+        let input = "user@example.com.";
+        let range = finder.find(input).unwrap();
+        assert_eq!("user@example.com", &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_trailing_dot_strip_and_still_validate() {
+        let finder = Email::default();
+        let input = "user@example.com. next";
+        let range = finder.find(input).unwrap();
+        assert_eq!("user@example.com", &input[range]);
+    }
+
+    #[test]
+    fn find_should_reject_label_starting_with_hyphen_deep() {
+        let finder = Email::default();
+        assert!(finder.find("user@sub.-example.com").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_label_ending_with_hyphen_deep() {
+        let finder = Email::default();
+        assert!(finder.find("user@sub.example-.com").is_none());
+    }
+
+    #[test]
+    fn find_should_handle_max_length_tld() {
+        let finder = Email::default();
+        let input = "user@example.museum";
+        let range = finder.find(input).unwrap();
+        assert_eq!("user@example.museum", &input[range]);
+    }
+
+    #[test]
+    fn find_should_extract_email_adjacent_to_punctuation() {
+        let finder = Email::default();
+        let input = "email:user@example.com,next";
+        let range = finder.find(input).unwrap();
+        assert_eq!("user@example.com", &input[range]);
     }
 }

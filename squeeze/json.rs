@@ -1,41 +1,55 @@
 use super::Finder;
 use std::ops::Range;
 
+fn memchr2(n1: u8, n2: u8, haystack: &[u8]) -> Option<usize> {
+    haystack.iter().position(|&b| b == n1 || b == n2)
+}
+
 const MAX_DEPTH: usize = 256;
 
 #[derive(Default)]
 pub struct Json {}
 
 impl Json {
-    fn try_extract(input: &[u8], start: usize) -> Option<Range<usize>> {
+    fn try_extract(input: &[u8], start: usize) -> Result<Range<usize>, usize> {
         if !matches!(input[start], b'{' | b'[') {
-            return None;
+            return Err(start + 1);
         }
 
         let mut depth: usize = 1;
         let mut pos = start + 1;
+        let mut first_inner_open: Option<usize> = None;
 
         while pos < input.len() && depth > 0 {
             match input[pos] {
                 b'"' => {
                     pos += 1;
                     while pos < input.len() {
-                        if input[pos] == b'\\' {
-                            pos += 2;
-                            continue;
+                        match memchr2(b'"', b'\\', &input[pos..]) {
+                            Some(offset) => {
+                                pos += offset;
+                                if input[pos] == b'\\' {
+                                    pos += 2;
+                                } else {
+                                    pos += 1;
+                                    break;
+                                }
+                            }
+                            None => {
+                                pos = input.len();
+                                break;
+                            }
                         }
-                        if input[pos] == b'"' {
-                            pos += 1;
-                            break;
-                        }
-                        pos += 1;
                     }
                     continue;
                 }
                 b'{' | b'[' => {
+                    if first_inner_open.is_none() {
+                        first_inner_open = Some(pos);
+                    }
                     depth += 1;
                     if depth > MAX_DEPTH {
-                        return None;
+                        return Err(pos);
                     }
                 }
                 b'}' | b']' => {
@@ -47,9 +61,9 @@ impl Json {
         }
 
         if depth == 0 {
-            Some(start..pos)
+            Ok(start..pos)
         } else {
-            None
+            Err(first_inner_open.unwrap_or(pos))
         }
     }
 }
@@ -63,13 +77,14 @@ impl Finder for Json {
         let input = s.as_bytes();
         let mut idx = 0;
 
-        while idx < input.len() {
-            if input[idx] == b'{' || input[idx] == b'[' {
-                if let Some(range) = Self::try_extract(input, idx) {
-                    return Some(range);
+        while let Some(offset) = memchr2(b'{', b'[', &input[idx..]) {
+            idx += offset;
+            match Self::try_extract(input, idx) {
+                Ok(range) => return Some(range),
+                Err(scanned_to) => {
+                    idx = scanned_to.min(input.len());
                 }
             }
-            idx += 1;
         }
 
         None
@@ -246,5 +261,56 @@ mod tests {
         let input = r#"{unclosed and {"valid": true}"#;
         let range = finder.find(input).unwrap();
         assert_eq!(r#"{"valid": true}"#, &input[range]);
+    }
+
+    // --- Regression: memchr-accelerated string scanning ---
+
+    #[test]
+    fn find_should_handle_long_string_value() {
+        let finder = Json::default();
+        let long_val = "a".repeat(10000);
+        let input = format!(r#"{{"key": "{}"}}"#, long_val);
+        let range = finder.find(&input).unwrap();
+        assert_eq!(&input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_string_with_many_escapes() {
+        let finder = Json::default();
+        let escapes = r#"\\\\\\\\\\\\\\\\\\\\\"end"#;
+        let input = format!(r#"{{"key": "{}"}}"#, escapes);
+        let range = finder.find(&input).unwrap();
+        assert_eq!(&input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_string_with_braces_inside() {
+        let finder = Json::default();
+        let input = r#"{"template": "{{not nested}}"}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_unclosed_string_in_object() {
+        let finder = Json::default();
+        let input = r#"{"key": "unterminated"#;
+        assert!(finder.find(input).is_none());
+    }
+
+    #[test]
+    fn find_should_handle_empty_strings() {
+        let finder = Json::default();
+        let input = r#"{"": ""}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(r#"{"": ""}"#, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_escape_at_string_end() {
+        let finder = Json::default();
+        let input = r#"{"key": "val\\"}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
     }
 }

@@ -1,11 +1,11 @@
 use clap::Parser;
 use squeeze::{
-    cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email, env::Env,
-    hash::Hash, ip::Ip, json::Json, jwt::Jwt, mac::Mac, mirror::Mirror, path::Path, phone::Phone,
-    semver::Semver, uri::URI, uuid::Uuid, Finder,
+    Finder, cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email,
+    emoji::Emoji, env::Env, hash::Hash, ip::Ip, json::Json, jwt::Jwt, mac::Mac, mirror::Mirror,
+    path::Path, phone::Phone, scanner::Scanner, semver::Semver, uri::URI, uuid::Uuid,
 };
 use std::convert::{TryFrom, TryInto};
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::process::ExitCode;
 
 const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
@@ -55,6 +55,10 @@ struct Opts {
     // email
     #[arg(long = "email", help = "search for email addresses")]
     email: bool,
+
+    // emoji
+    #[arg(long = "emoji", help = "search for emojis")]
+    emoji: bool,
 
     // env
     #[arg(long = "env", help = "search for environment variables")]
@@ -176,6 +180,18 @@ impl TryFrom<&Opts> for Email {
         }
 
         Ok(Email::default())
+    }
+}
+
+impl TryFrom<&Opts> for Emoji {
+    type Error = ();
+
+    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+        if !opts.emoji {
+            return Err(());
+        }
+
+        Ok(Emoji::default())
     }
 }
 
@@ -400,83 +416,111 @@ fn main() -> ExitCode {
     env_logger::init();
 
     let opts = Opts::parse();
-    let cidr = TryInto::<Cidr>::try_into(&opts);
-    let codetag = TryInto::<Codetag>::try_into(&opts);
-    let color = TryInto::<Color>::try_into(&opts);
-    let datetime = TryInto::<Datetime>::try_into(&opts);
-    let email = TryInto::<Email>::try_into(&opts);
-    let env = TryInto::<Env>::try_into(&opts);
-    let hash = TryInto::<Hash>::try_into(&opts);
-    let ip = TryInto::<Ip>::try_into(&opts);
-    let json = TryInto::<Json>::try_into(&opts);
-    let jwt = TryInto::<Jwt>::try_into(&opts);
-    let mac = TryInto::<Mac>::try_into(&opts);
-    let mirror = TryInto::<Mirror>::try_into(&opts);
-    let path = TryInto::<Path>::try_into(&opts);
-    let phone = TryInto::<Phone>::try_into(&opts);
-    let semver = TryInto::<Semver>::try_into(&opts);
-    let uri = TryInto::<URI>::try_into(&opts);
-    let uuid = TryInto::<Uuid>::try_into(&opts);
 
-    let finders: Vec<_> = [
-        cidr.as_ref().map(|f| f as &dyn Finder),
-        codetag.as_ref().map(|f| f as &dyn Finder),
-        color.as_ref().map(|f| f as &dyn Finder),
-        datetime.as_ref().map(|f| f as &dyn Finder),
-        email.as_ref().map(|f| f as &dyn Finder),
-        env.as_ref().map(|f| f as &dyn Finder),
-        hash.as_ref().map(|f| f as &dyn Finder),
-        ip.as_ref().map(|f| f as &dyn Finder),
-        json.as_ref().map(|f| f as &dyn Finder),
-        jwt.as_ref().map(|f| f as &dyn Finder),
-        mac.as_ref().map(|f| f as &dyn Finder),
-        mirror.as_ref().map(|f| f as &dyn Finder),
-        path.as_ref().map(|f| f as &dyn Finder),
-        phone.as_ref().map(|f| f as &dyn Finder),
-        semver.as_ref().map(|f| f as &dyn Finder),
-        uri.as_ref().map(|f| f as &dyn Finder),
-        uuid.as_ref().map(|f| f as &dyn Finder),
-    ]
-    .into_iter()
-    .filter_map(|finder| finder.ok())
-    .collect();
+    let mut finders: Vec<Box<dyn Finder>> = Vec::new();
+    if let Ok(f) = TryInto::<Cidr>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Codetag>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Color>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Datetime>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Email>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Emoji>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Env>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Hash>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Ip>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Json>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Jwt>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Mac>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Mirror>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Path>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Phone>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Semver>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<URI>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
+    if let Ok(f) = TryInto::<Uuid>::try_into(&opts) {
+        finders.push(Box::new(f));
+    }
 
     if finders.is_empty() {
         return ExitCode::SUCCESS;
     }
 
-    for line in io::stdin().lock().lines() {
-        let line = match line {
-            Ok(line) => line,
+    let scanner = Scanner::new(finders);
+
+    let stdout = io::stdout().lock();
+    let mut out = BufWriter::new(stdout);
+    let mut stdin = io::stdin().lock();
+    let mut line = String::new();
+    let mut matches_buf = Vec::new();
+
+    loop {
+        line.clear();
+        match stdin.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
             Err(e) => {
                 log::error!("failed to read line: {}", e);
                 continue;
             }
-        };
+        }
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
 
-        for finder in &finders {
-            log::debug!("[{}] line \"{}\"", finder.id(), line);
-            let mut idx = 0;
-            while idx < line.len() {
-                let segment = &line[idx..];
-                log::debug!("[{}] searching in \"{}\"", finder.id(), segment);
-                if let Some(range) = finder.find(segment) {
-                    log::debug!("[{}] found at [{};{}[", finder.id(), range.start, range.end);
-                    idx += range.end;
-                    let found = &segment[range].trim();
-                    if !found.is_empty() {
-                        println!("{}", found);
-                        if opts.open {
-                            if let Err(e) = open_url(found) {
-                                eprintln!("failed to open '{}': {}", found, e);
-                            }
-                        }
-                        if opts.first {
-                            return ExitCode::SUCCESS;
-                        }
+        if opts.first {
+            if let Some(m) = scanner.scan_line_first(trimmed) {
+                let found = &trimmed[m.range];
+                if !found.is_empty() {
+                    let _ = writeln!(out, "{}", found);
+                    if opts.open
+                        && let Err(e) = open_url(found)
+                    {
+                        eprintln!("failed to open '{}': {}", found, e);
                     }
-                } else {
-                    break;
+                    return ExitCode::SUCCESS;
+                }
+            }
+        } else {
+            scanner.scan_line_into(trimmed, &mut matches_buf);
+            for m in &matches_buf {
+                let found = &trimmed[m.range.clone()];
+                if !found.is_empty() {
+                    let _ = writeln!(out, "{}", found);
+                    if opts.open
+                        && let Err(e) = open_url(found)
+                    {
+                        eprintln!("failed to open '{}': {}", found, e);
+                    }
                 }
             }
         }

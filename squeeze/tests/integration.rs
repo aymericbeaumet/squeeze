@@ -1,7 +1,7 @@
 use squeeze::{
-    cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email, env::Env,
+    Finder, cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, email::Email, env::Env,
     hash::Hash, ip::Ip, json::Json, jwt::Jwt, mac::Mac, mirror::Mirror, path::Path, phone::Phone,
-    semver::Semver, uri::URI, uuid::Uuid, Finder,
+    semver::Semver, uri::URI, uuid::Uuid,
 };
 
 #[test]
