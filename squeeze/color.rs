@@ -92,6 +92,28 @@ impl Finder for Color {
         "color"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte == b'#' || matches!(byte, b'r' | b'R' | b'h' | b'H')
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if input[pos] == b'#' {
+            if let Some(range) = Self::try_hex_color(input, pos) {
+                return Some(range);
+            }
+        }
+        if matches!(input[pos], b'r' | b'R' | b'h' | b'H') {
+            if let Some(range) = Self::try_css_function(input, pos) {
+                return Some(range);
+            }
+        }
+        None
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -262,5 +284,68 @@ mod tests {
         let input = "background-color: #333;";
         let range = finder.find(input).unwrap();
         assert_eq!("#333", &input[range]);
+    }
+
+    #[test]
+    fn try_at_hex_color() {
+        let finder = Color::default();
+        let input = b"#ff00aa rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..7));
+    }
+
+    #[test]
+    fn try_at_rgb_function() {
+        let finder = Color::default();
+        let input = b"rgb(255, 0, 0) rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..14));
+    }
+
+    #[test]
+    fn try_at_hsl_function() {
+        let finder = Color::default();
+        let input = b"hsl(120, 100%, 50%) rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..19));
+    }
+
+    #[test]
+    fn try_at_rejects_bare_hash() {
+        let finder = Color::default();
+        let input = b"# not a color";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_rejects_too_many_hex() {
+        let finder = Color::default();
+        let input = b"#123456789";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn find_css_case_insensitive() {
+        let finder = Color::default();
+        let input = "RGB(1, 2, 3)";
+        assert!(finder.find(input).is_some());
+        let input = "HSL(0, 0%, 0%)";
+        assert!(finder.find(input).is_some());
+    }
+
+    #[test]
+    fn find_hash_only() {
+        let finder = Color::default();
+        assert!(finder.find("#").is_none());
+    }
+
+    #[test]
+    fn find_hash_two_hex() {
+        let finder = Color::default();
+        assert!(finder.find("#ab").is_none());
+    }
+
+    #[test]
+    fn try_at_non_color_byte() {
+        let finder = Color::default();
+        let input = b"xyz";
+        assert!(finder.try_at(input, 0).is_none());
     }
 }

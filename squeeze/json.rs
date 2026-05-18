@@ -7,13 +7,14 @@ const MAX_DEPTH: usize = 256;
 pub struct Json {}
 
 impl Json {
-    fn try_extract(input: &[u8], start: usize) -> Option<Range<usize>> {
+    fn try_extract(input: &[u8], start: usize) -> Result<Range<usize>, usize> {
         if !matches!(input[start], b'{' | b'[') {
-            return None;
+            return Err(start + 1);
         }
 
         let mut depth: usize = 1;
         let mut pos = start + 1;
+        let mut first_inner_open: Option<usize> = None;
 
         while pos < input.len() && depth > 0 {
             match input[pos] {
@@ -33,9 +34,12 @@ impl Json {
                     continue;
                 }
                 b'{' | b'[' => {
+                    if first_inner_open.is_none() {
+                        first_inner_open = Some(pos);
+                    }
                     depth += 1;
                     if depth > MAX_DEPTH {
-                        return None;
+                        return Err(pos);
                     }
                 }
                 b'}' | b']' => {
@@ -47,9 +51,9 @@ impl Json {
         }
 
         if depth == 0 {
-            Some(start..pos)
+            Ok(start..pos)
         } else {
-            None
+            Err(first_inner_open.unwrap_or(pos))
         }
     }
 }
@@ -65,8 +69,12 @@ impl Finder for Json {
 
         while idx < input.len() {
             if input[idx] == b'{' || input[idx] == b'[' {
-                if let Some(range) = Self::try_extract(input, idx) {
-                    return Some(range);
+                match Self::try_extract(input, idx) {
+                    Ok(range) => return Some(range),
+                    Err(scanned_to) => {
+                        idx = scanned_to;
+                        continue;
+                    }
                 }
             }
             idx += 1;

@@ -52,6 +52,65 @@ impl Finder for Semver {
         "semver"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte.is_ascii_digit() || byte == b'v' || byte == b'V'
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        let start = pos;
+        let mut p = pos;
+
+        if p < input.len() && (input[p] == b'v' || input[p] == b'V') {
+            if p + 1 < input.len() && input[p + 1].is_ascii_digit() {
+                p += 1;
+            } else {
+                return None;
+            }
+        } else if p < input.len() && input[p].is_ascii_digit() {
+            // ok
+        } else {
+            return None;
+        }
+
+        if !Self::is_boundary_before(input, start) {
+            return None;
+        }
+
+        let major_end = Self::parse_digits(input, p)?;
+        if major_end >= input.len() || input[major_end] != b'.' {
+            return None;
+        }
+        let minor_end = Self::parse_digits(input, major_end + 1)?;
+        if minor_end >= input.len() || input[minor_end] != b'.' {
+            return None;
+        }
+        let patch_end = Self::parse_digits(input, minor_end + 1)?;
+
+        let mut end = patch_end;
+        if end < input.len() && input[end] == b'-' {
+            let pre_end = Self::parse_prerelease_or_build(input, end + 1);
+            if pre_end > end + 1 {
+                end = pre_end;
+            }
+        }
+        if end < input.len() && input[end] == b'+' {
+            let build_end = Self::parse_prerelease_or_build(input, end + 1);
+            if build_end > end + 1 {
+                end = build_end;
+            }
+        }
+
+        if Self::is_boundary_after(input, end) {
+            Some(start..end)
+        } else {
+            None
+        }
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -303,5 +362,76 @@ mod tests {
     fn find_should_not_match_ip_address() {
         let finder = Semver::default();
         assert!(finder.find("192.168.1.1").is_none());
+    }
+
+    #[test]
+    fn try_at_simple() {
+        let finder = Semver::default();
+        let input = b"1.2.3 rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..5));
+    }
+
+    #[test]
+    fn try_at_with_v_prefix() {
+        let finder = Semver::default();
+        let input = b"v1.2.3 rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..6));
+    }
+
+    #[test]
+    fn try_at_preceded_by_alpha() {
+        let finder = Semver::default();
+        let input = b"a1.2.3";
+        assert!(finder.try_at(input, 1).is_none());
+    }
+
+    #[test]
+    fn try_at_preceded_by_dot() {
+        let finder = Semver::default();
+        let input = b".1.2.3";
+        assert!(finder.try_at(input, 1).is_none());
+    }
+
+    #[test]
+    fn try_at_v_without_digit() {
+        let finder = Semver::default();
+        let input = b"vx";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_single_digit() {
+        let finder = Semver::default();
+        let input = b"1";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn find_prerelease_with_dots() {
+        let finder = Semver::default();
+        let input = "1.0.0-alpha.1.2";
+        let range = finder.find(input).unwrap();
+        assert_eq!("1.0.0-alpha.1.2", &input[range]);
+    }
+
+    #[test]
+    fn find_build_with_dots() {
+        let finder = Semver::default();
+        let input = "1.0.0+build.1.2";
+        let range = finder.find(input).unwrap();
+        assert_eq!("1.0.0+build.1.2", &input[range]);
+    }
+
+    #[test]
+    fn find_rejects_trailing_dot_in_prerelease() {
+        let finder = Semver::default();
+        assert!(finder.find("1.0.0-beta.").is_none());
+    }
+
+    #[test]
+    fn find_prerelease_with_trailing_dot_in_text() {
+        let finder = Semver::default();
+        let input = "use 1.0.0-beta. done";
+        assert!(finder.find(input).is_none());
     }
 }

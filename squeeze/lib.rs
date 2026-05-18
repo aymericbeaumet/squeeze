@@ -9,6 +9,7 @@
 //! - [`color::Color`] - Extract colors (hex, rgb, hsl)
 //! - [`datetime::Datetime`] - Extract ISO 8601 datetimes
 //! - [`email::Email`] - Extract email addresses
+//! - [`emoji::Emoji`] - Extract emojis and emoji sequences
 //! - [`env::Env`] - Extract environment variable references
 //! - [`hash::Hash`] - Extract hashes (MD5, SHA-1, SHA-256, SHA-512)
 //! - [`ip::Ip`] - Extract IP addresses (IPv4, IPv6)
@@ -34,11 +35,13 @@
 //! }
 //! ```
 
+pub(crate) mod ipv6;
 pub mod cidr;
 pub mod codetag;
 pub mod color;
 pub mod datetime;
 pub mod email;
+pub mod emoji;
 pub mod env;
 pub mod hash;
 pub mod ip;
@@ -48,6 +51,7 @@ pub mod mac;
 pub mod mirror;
 pub mod path;
 pub mod phone;
+pub mod scanner;
 pub mod semver;
 pub mod uri;
 pub mod uuid;
@@ -83,8 +87,6 @@ use std::ops::Range;
 /// ```
 pub trait Finder {
     /// Returns a unique identifier for this finder.
-    ///
-    /// This is used for logging and debugging purposes.
     fn id(&self) -> &'static str;
 
     /// Finds the first match in the given string.
@@ -92,4 +94,21 @@ pub trait Finder {
     /// Returns `Some(range)` containing the byte range of the match, or `None` if no match is found.
     /// The range is relative to the input string slice.
     fn find(&self, s: &str) -> Option<Range<usize>>;
+
+    /// Whether this finder supports dispatch-mode scanning via [`try_at`](Finder::try_at).
+    fn dispatchable(&self) -> bool {
+        false
+    }
+
+    /// Whether the given byte could be the first byte of a match.
+    /// Only meaningful when [`dispatchable`](Finder::dispatchable) returns true.
+    fn could_start_at(&self, _byte: u8) -> bool {
+        true
+    }
+
+    /// Try to find a match starting exactly at `pos` in the full input.
+    /// Only called when [`dispatchable`](Finder::dispatchable) returns true.
+    fn try_at(&self, _input: &[u8], _pos: usize) -> Option<Range<usize>> {
+        None
+    }
 }

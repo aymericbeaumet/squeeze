@@ -78,6 +78,31 @@ impl Finder for Mac {
         "mac"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte.is_ascii_hexdigit()
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if !Self::is_hex(input[pos]) {
+            return None;
+        }
+        if pos > 0
+            && (Self::is_hex(input[pos - 1])
+                || input[pos - 1] == b':'
+                || input[pos - 1] == b'-'
+                || input[pos - 1] == b'.')
+        {
+            return None;
+        }
+        Self::try_mac_colon(input, pos)
+            .or_else(|| Self::try_mac_dash(input, pos))
+            .or_else(|| Self::try_mac_dot(input, pos))
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -247,5 +272,62 @@ mod tests {
         let input = "00:00:00:00:00:00";
         let range = finder.find(input).unwrap();
         assert_eq!("00:00:00:00:00:00", &input[range]);
+    }
+
+    #[test]
+    fn try_at_colon_mac() {
+        let finder = Mac::default();
+        let input = b"00:1A:2B:3C:4D:5E rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..17));
+    }
+
+    #[test]
+    fn try_at_dash_mac() {
+        let finder = Mac::default();
+        let input = b"00-1A-2B-3C-4D-5E rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..17));
+    }
+
+    #[test]
+    fn try_at_dot_mac() {
+        let finder = Mac::default();
+        let input = b"001A.2B3C.4D5E rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..14));
+    }
+
+    #[test]
+    fn try_at_preceded_by_hex() {
+        let finder = Mac::default();
+        let input = b"ff00:1A:2B:3C:4D:5E";
+        assert!(finder.try_at(input, 2).is_none());
+    }
+
+    #[test]
+    fn try_at_preceded_by_colon() {
+        let finder = Mac::default();
+        let input = b":00:1A:2B:3C:4D:5E";
+        assert!(finder.try_at(input, 1).is_none());
+    }
+
+    #[test]
+    fn try_at_short_input() {
+        let finder = Mac::default();
+        let input = b"00:1A";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_non_hex() {
+        let finder = Mac::default();
+        let input = b"zz";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn find_should_extract_mac_at_end() {
+        let finder = Mac::default();
+        let input = "addr 00:1A:2B:3C:4D:5E";
+        let range = finder.find(input).unwrap();
+        assert_eq!("00:1A:2B:3C:4D:5E", &input[range]);
     }
 }

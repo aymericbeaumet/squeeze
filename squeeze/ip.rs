@@ -50,8 +50,10 @@ impl Ip {
                 return None;
             }
 
-            let octet_str = std::str::from_utf8(&input[octet_start..pos]).ok()?;
-            let value: u16 = octet_str.parse().ok()?;
+            let mut value: u16 = 0;
+            for i in octet_start..pos {
+                value = value * 10 + (input[i] - b'0') as u16;
+            }
             if value > 255 {
                 return None;
             }
@@ -74,7 +76,7 @@ impl Ip {
         let close_pos = idx + close;
         let inner = &input[idx + 1..close_pos];
 
-        if Self::is_valid_ipv6(inner) {
+        if crate::ipv6::is_valid_ipv6(inner) {
             Some(idx..close_pos + 1)
         } else {
             None
@@ -118,106 +120,49 @@ impl Ip {
             return None;
         }
 
-        if Self::is_valid_ipv6(candidate) {
+        if crate::ipv6::is_valid_ipv6(candidate) {
             Some(start..end)
         } else {
             None
         }
     }
 
-    fn is_valid_ipv6(bytes: &[u8]) -> bool {
-        let s = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-
-        // Handle IPv4-mapped IPv6 (e.g., ::ffff:192.168.1.1)
-        if let Some(last_colon) = s.rfind(':') {
-            let suffix = &s[last_colon + 1..];
-            if suffix.contains('.') {
-                let prefix = &s[..last_colon + 1];
-                let prefix_bytes = prefix.as_bytes();
-                // Validate the IPv4 part
-                let parts: Vec<&str> = suffix.split('.').collect();
-                if parts.len() == 4 {
-                    let ipv4_valid = parts.iter().all(|p| {
-                        if p.is_empty() || p.len() > 3 {
-                            return false;
-                        }
-                        if p.len() > 1 && p.starts_with('0') {
-                            return false;
-                        }
-                        p.parse::<u16>().is_ok_and(|v| v <= 255)
-                    });
-                    if ipv4_valid {
-                        // Validate the prefix as IPv6 groups (should end with :)
-                        // Count the groups in prefix
-                        let trimmed = prefix.trim_end_matches(':');
-                        if trimmed.is_empty() {
-                            // Just "::" prefix — valid
-                            return prefix_bytes.windows(2).any(|w| w == b"::");
-                        }
-                        // Validate prefix groups
-                        return Self::validate_ipv6_groups(trimmed, true);
-                    }
-                }
-            }
-        }
-
-        Self::validate_ipv6_groups(s, false)
-    }
-
-    fn validate_ipv6_groups(s: &str, has_ipv4_suffix: bool) -> bool {
-        let max_groups = if has_ipv4_suffix { 6 } else { 8 };
-
-        if s == "::" {
-            return true;
-        }
-
-        let has_double_colon = s.contains("::");
-
-        // Split on :: first
-        if has_double_colon {
-            let parts: Vec<&str> = s.splitn(2, "::").collect();
-            if parts.len() != 2 {
-                return false;
-            }
-
-            let left_groups: Vec<&str> = if parts[0].is_empty() {
-                vec![]
-            } else {
-                parts[0].split(':').collect()
-            };
-
-            let right_groups: Vec<&str> = if parts[1].is_empty() {
-                vec![]
-            } else {
-                parts[1].split(':').collect()
-            };
-
-            let total = left_groups.len() + right_groups.len();
-            if total >= max_groups {
-                return false;
-            }
-
-            left_groups
-                .iter()
-                .chain(right_groups.iter())
-                .all(|g| Self::is_valid_hex_group(g))
-        } else {
-            let groups: Vec<&str> = s.split(':').collect();
-            groups.len() == max_groups && groups.iter().all(|g| Self::is_valid_hex_group(g))
-        }
-    }
-
-    fn is_valid_hex_group(g: &str) -> bool {
-        !g.is_empty() && g.len() <= 4 && g.bytes().all(|b| b.is_ascii_hexdigit())
-    }
 }
 
 impl Finder for Ip {
     fn id(&self) -> &'static str {
         "ip"
+    }
+
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        (self.ipv4 && byte.is_ascii_digit())
+            || (self.ipv6
+                && (byte.is_ascii_hexdigit() || byte == b':' || byte == b'['))
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if self.ipv6 {
+            if input[pos] == b'[' {
+                if let Some(range) = Self::try_bracketed_ipv6(input, pos) {
+                    return Some(range);
+                }
+            }
+            if input[pos].is_ascii_hexdigit() || input[pos] == b':' {
+                if let Some(range) = Self::try_bare_ipv6(input, pos) {
+                    return Some(range);
+                }
+            }
+        }
+        if self.ipv4 && input[pos].is_ascii_digit() {
+            if let Some(range) = Self::try_ipv4(input, pos) {
+                return Some(range);
+            }
+        }
+        None
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
@@ -443,5 +388,60 @@ mod tests {
     fn find_should_handle_no_ip() {
         let finder = Ip::default();
         assert!(finder.find("just some text").is_none());
+    }
+
+    #[test]
+    fn try_at_ipv4_at_start() {
+        let finder = Ip::default();
+        let input = b"192.168.1.1 rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..11));
+    }
+
+    #[test]
+    fn try_at_ipv4_mid_string() {
+        let finder = Ip::default();
+        let input = b"host 10.0.0.1 port";
+        assert_eq!(finder.try_at(input, 5), Some(5..13));
+    }
+
+    #[test]
+    fn try_at_rejects_non_digit() {
+        let finder = Ip::default();
+        let input = b"abc";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_single_digit() {
+        let finder = Ip::default();
+        let input = b"1";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_empty_octets() {
+        let finder = Ip::default();
+        assert!(finder.find("192..1.1").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_all_dots() {
+        let finder = Ip::default();
+        assert!(finder.find("...").is_none());
+    }
+
+    #[test]
+    fn try_at_bracketed_ipv6() {
+        let finder = Ip::default();
+        let input = b"[::1]";
+        assert_eq!(finder.try_at(input, 0), Some(0..5));
+    }
+
+    #[test]
+    fn find_ipv6_link_local() {
+        let finder = Ip::default();
+        let input = "addr fe80::1 here";
+        let range = finder.find(input).unwrap();
+        assert_eq!("fe80::1", &input[range]);
     }
 }

@@ -62,6 +62,79 @@ impl Finder for Path {
         "path"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        matches!(byte, b'/' | b'.' | b'~')
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        let prefix_len = match input[pos] {
+            b'~' if pos + 1 < input.len() && input[pos + 1] == b'/' => {
+                if pos > 0 && !Self::is_boundary(input[pos - 1]) {
+                    return None;
+                }
+                2
+            }
+            b'.' if pos + 2 < input.len()
+                && input[pos + 1] == b'.'
+                && input[pos + 2] == b'/' =>
+            {
+                if pos > 0 && !Self::is_boundary(input[pos - 1]) {
+                    return None;
+                }
+                3
+            }
+            b'.' if pos + 1 < input.len() && input[pos + 1] == b'/' => {
+                if pos > 0 && !Self::is_boundary(input[pos - 1]) {
+                    return None;
+                }
+                2
+            }
+            b'/' => {
+                if pos > 0 && input[pos - 1] == b':' {
+                    return None;
+                }
+                if pos > 0 && !Self::is_boundary(input[pos - 1]) {
+                    return None;
+                }
+                if pos + 1 >= input.len() || input[pos + 1].is_ascii_whitespace() {
+                    return None;
+                }
+                1
+            }
+            _ => return None,
+        };
+
+        let start = pos;
+        let mut end = pos + prefix_len;
+        while end < input.len() && !input[end].is_ascii_whitespace() {
+            end += 1;
+        }
+        while end > start + prefix_len
+            && matches!(
+                input[end - 1],
+                b',' | b';' | b')' | b']' | b'}' | b'>' | b'\'' | b'"' | b'`'
+            )
+        {
+            end -= 1;
+        }
+        while end > start + prefix_len && input[end - 1] == b':' {
+            end -= 1;
+        }
+        while end > start + prefix_len && input[end - 1] == b'.' {
+            end -= 1;
+        }
+
+        if end > start + prefix_len {
+            Some(start..end)
+        } else {
+            None
+        }
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut search_from = 0;
@@ -329,5 +402,85 @@ mod tests {
     fn find_should_not_match_slash_space() {
         let finder = Path::default();
         assert!(finder.find("/ foo").is_none());
+    }
+
+    #[test]
+    fn try_at_absolute_path() {
+        let finder = Path::default();
+        let input = b"/etc/hosts rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..10));
+    }
+
+    #[test]
+    fn try_at_relative_path() {
+        let finder = Path::default();
+        let input = b"./src/main.rs rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..13));
+    }
+
+    #[test]
+    fn try_at_parent_path() {
+        let finder = Path::default();
+        let input = b"../README.md rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..12));
+    }
+
+    #[test]
+    fn try_at_home_path() {
+        let finder = Path::default();
+        let input = b"~/.bashrc rest";
+        assert_eq!(finder.try_at(input, 0), Some(0..9));
+    }
+
+    #[test]
+    fn try_at_rejects_mid_word() {
+        let finder = Path::default();
+        let input = b"and/or";
+        assert!(finder.try_at(input, 3).is_none());
+    }
+
+    #[test]
+    fn try_at_slash_at_end() {
+        let finder = Path::default();
+        let input = b"/";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_tilde_no_slash() {
+        let finder = Path::default();
+        let input = b"~x";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_dot_no_slash() {
+        let finder = Path::default();
+        let input = b".x";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn find_strips_trailing_multiple_periods() {
+        let finder = Path::default();
+        let input = "/etc/hosts...";
+        let range = finder.find(input).unwrap();
+        assert_eq!("/etc/hosts", &input[range]);
+    }
+
+    #[test]
+    fn find_preserves_internal_dots() {
+        let finder = Path::default();
+        let input = "/path/to/file.tar.gz more";
+        let range = finder.find(input).unwrap();
+        assert_eq!("/path/to/file.tar.gz", &input[range]);
+    }
+
+    #[test]
+    fn find_strips_trailing_colons() {
+        let finder = Path::default();
+        let input = "/etc/hosts: error";
+        let range = finder.find(input).unwrap();
+        assert_eq!("/etc/hosts", &input[range]);
     }
 }
