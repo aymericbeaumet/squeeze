@@ -172,7 +172,7 @@ impl Finder for Cidr {
     }
 
     fn could_start_at(&self, byte: u8) -> bool {
-        byte.is_ascii_digit() || byte.is_ascii_hexdigit() || byte == b':' || byte == b'['
+        byte.is_ascii_hexdigit() || byte == b':' || byte == b'['
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
@@ -448,5 +448,45 @@ mod tests {
         let input = "::/0";
         let range = finder.find(input).unwrap();
         assert_eq!("::/0", &input[range]);
+    }
+
+    // --- Regression: could_start_at without redundant digit check ---
+
+    #[test]
+    fn could_start_at_digit() {
+        let finder = Cidr::default();
+        for b in b'0'..=b'9' {
+            assert!(
+                finder.could_start_at(b),
+                "should start at digit {}",
+                b as char
+            );
+        }
+    }
+
+    #[test]
+    fn could_start_at_hex_alpha() {
+        let finder = Cidr::default();
+        for b in b'a'..=b'f' {
+            assert!(finder.could_start_at(b), "should start at {}", b as char);
+        }
+        for b in b'A'..=b'F' {
+            assert!(finder.could_start_at(b), "should start at {}", b as char);
+        }
+    }
+
+    #[test]
+    fn could_start_at_colon_bracket() {
+        let finder = Cidr::default();
+        assert!(finder.could_start_at(b':'));
+        assert!(finder.could_start_at(b'['));
+    }
+
+    #[test]
+    fn could_not_start_at_non_hex() {
+        let finder = Cidr::default();
+        assert!(!finder.could_start_at(b'g'));
+        assert!(!finder.could_start_at(b' '));
+        assert!(!finder.could_start_at(b'/'));
     }
 }

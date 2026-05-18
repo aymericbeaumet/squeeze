@@ -22,15 +22,21 @@ impl Json {
                 b'"' => {
                     pos += 1;
                     while pos < input.len() {
-                        if input[pos] == b'\\' {
-                            pos += 2;
-                            continue;
+                        match memchr2(b'"', b'\\', &input[pos..]) {
+                            Some(offset) => {
+                                pos += offset;
+                                if input[pos] == b'\\' {
+                                    pos += 2;
+                                } else {
+                                    pos += 1;
+                                    break;
+                                }
+                            }
+                            None => {
+                                pos = input.len();
+                                break;
+                            }
                         }
-                        if input[pos] == b'"' {
-                            pos += 1;
-                            break;
-                        }
-                        pos += 1;
                     }
                     continue;
                 }
@@ -252,5 +258,56 @@ mod tests {
         let input = r#"{unclosed and {"valid": true}"#;
         let range = finder.find(input).unwrap();
         assert_eq!(r#"{"valid": true}"#, &input[range]);
+    }
+
+    // --- Regression: memchr-accelerated string scanning ---
+
+    #[test]
+    fn find_should_handle_long_string_value() {
+        let finder = Json::default();
+        let long_val = "a".repeat(10000);
+        let input = format!(r#"{{"key": "{}"}}"#, long_val);
+        let range = finder.find(&input).unwrap();
+        assert_eq!(&input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_string_with_many_escapes() {
+        let finder = Json::default();
+        let escapes = r#"\\\\\\\\\\\\\\\\\\\\\"end"#;
+        let input = format!(r#"{{"key": "{}"}}"#, escapes);
+        let range = finder.find(&input).unwrap();
+        assert_eq!(&input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_string_with_braces_inside() {
+        let finder = Json::default();
+        let input = r#"{"template": "{{not nested}}"}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_unclosed_string_in_object() {
+        let finder = Json::default();
+        let input = r#"{"key": "unterminated"#;
+        assert!(finder.find(input).is_none());
+    }
+
+    #[test]
+    fn find_should_handle_empty_strings() {
+        let finder = Json::default();
+        let input = r#"{"": ""}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(r#"{"": ""}"#, &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_escape_at_string_end() {
+        let finder = Json::default();
+        let input = r#"{"key": "val\\"}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
     }
 }

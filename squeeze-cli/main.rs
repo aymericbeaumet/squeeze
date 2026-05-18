@@ -483,6 +483,7 @@ fn main() -> ExitCode {
     let mut out = BufWriter::new(stdout);
     let mut stdin = io::stdin().lock();
     let mut line = String::new();
+    let mut matches_buf = Vec::new();
 
     loop {
         line.clear();
@@ -510,8 +511,9 @@ fn main() -> ExitCode {
                 }
             }
         } else {
-            for m in scanner.scan_line(trimmed) {
-                let found = &trimmed[m.range];
+            scanner.scan_line_into(trimmed, &mut matches_buf);
+            for m in &matches_buf {
+                let found = &trimmed[m.range.clone()];
                 if !found.is_empty() {
                     let _ = writeln!(out, "{}", found);
                     if opts.open {

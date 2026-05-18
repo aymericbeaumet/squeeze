@@ -381,4 +381,67 @@ mod tests {
         let range = finder.find(input).unwrap();
         assert_eq!("😀", &input[range]);
     }
+
+    // --- Regression: try_at with unchecked UTF-8 ---
+
+    #[test]
+    fn try_at_simple_emoji() {
+        let finder = Emoji::default();
+        let input = "😀 rest".as_bytes();
+        let range = finder.try_at(input, 0).unwrap();
+        assert_eq!(range, 0..4);
+    }
+
+    #[test]
+    fn try_at_emoji_after_ascii() {
+        let finder = Emoji::default();
+        let input = "hi 😀 rest";
+        let bytes = input.as_bytes();
+        let range = finder.try_at(bytes, 3).unwrap();
+        assert_eq!(&input[range], "😀");
+    }
+
+    #[test]
+    fn try_at_emoji_with_skin_tone() {
+        let finder = Emoji::default();
+        let input = "👋🏽";
+        let bytes = input.as_bytes();
+        let range = finder.try_at(bytes, 0).unwrap();
+        assert_eq!(&input[range], "👋🏽");
+    }
+
+    #[test]
+    fn try_at_non_emoji_multibyte() {
+        let finder = Emoji::default();
+        let input = "héllo";
+        let bytes = input.as_bytes();
+        assert!(finder.try_at(bytes, 0).is_none());
+    }
+
+    #[test]
+    fn try_at_zwj_sequence_via_dispatch() {
+        let finder = Emoji::default();
+        let input = "👨\u{200D}👩\u{200D}👧";
+        let bytes = input.as_bytes();
+        let range = finder.try_at(bytes, 0).unwrap();
+        assert_eq!(&input[range], "👨\u{200D}👩\u{200D}👧");
+    }
+
+    #[test]
+    fn try_at_flag_sequence() {
+        let finder = Emoji::default();
+        let input = "🇺🇸";
+        let bytes = input.as_bytes();
+        let range = finder.try_at(bytes, 0).unwrap();
+        assert_eq!(&input[range], "🇺🇸");
+    }
+
+    #[test]
+    fn try_at_does_not_start_mid_zwj() {
+        let finder = Emoji::default();
+        let input = "👨\u{200D}👩";
+        let bytes = input.as_bytes();
+        let emoji2_start = "👨\u{200D}".len();
+        assert!(finder.try_at(bytes, emoji2_start).is_none());
+    }
 }

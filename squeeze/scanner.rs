@@ -17,6 +17,7 @@ const CL_PLUS: u16 = 1 << 12;
 const CL_OPEN_PAREN: u16 = 1 << 13;
 const CL_DASH: u16 = 1 << 14;
 
+const CL_ALL_USED: u16 = (1 << 15) - 1;
 const CL_HEX: u16 = CL_DIGIT | CL_HEX_ALPHA;
 
 const fn build_byte_class_table() -> [u16; 256] {
@@ -81,25 +82,22 @@ static BYTE_CLASSES: [u16; 256] = build_byte_class_table();
 #[inline]
 fn prescan(input: &[u8]) -> u16 {
     let mut classes = 0u16;
-    let (prefix, chunks, suffix) = unsafe { input.align_to::<u64>() };
-    for &b in prefix {
-        classes |= BYTE_CLASSES[b as usize];
-    }
-    for &chunk in chunks {
-        let bytes = chunk.to_ne_bytes();
-        classes |= BYTE_CLASSES[bytes[0] as usize]
-            | BYTE_CLASSES[bytes[1] as usize]
-            | BYTE_CLASSES[bytes[2] as usize]
-            | BYTE_CLASSES[bytes[3] as usize]
-            | BYTE_CLASSES[bytes[4] as usize]
-            | BYTE_CLASSES[bytes[5] as usize]
-            | BYTE_CLASSES[bytes[6] as usize]
-            | BYTE_CLASSES[bytes[7] as usize];
-        if classes == u16::MAX {
+    let chunks = input.chunks_exact(8);
+    let remainder = chunks.remainder();
+    for chunk in chunks {
+        classes |= BYTE_CLASSES[chunk[0] as usize]
+            | BYTE_CLASSES[chunk[1] as usize]
+            | BYTE_CLASSES[chunk[2] as usize]
+            | BYTE_CLASSES[chunk[3] as usize]
+            | BYTE_CLASSES[chunk[4] as usize]
+            | BYTE_CLASSES[chunk[5] as usize]
+            | BYTE_CLASSES[chunk[6] as usize]
+            | BYTE_CLASSES[chunk[7] as usize];
+        if classes == CL_ALL_USED {
             return classes;
         }
     }
-    for &b in suffix {
+    for &b in remainder {
         classes |= BYTE_CLASSES[b as usize];
     }
     classes
@@ -133,7 +131,7 @@ fn required_classes(id: &str) -> &'static [(u16, bool)] {
 fn can_skip_with_mask(cl: u16, required: &[(u16, bool)]) -> bool {
     for &(mask, all_required) in required {
         if all_required {
-            if (cl & mask) == 0 {
+            if cl & mask != mask {
                 return true;
             }
         } else if (cl & mask) == 0 {
@@ -208,18 +206,24 @@ impl Scanner {
     }
 
     pub fn scan_line(&self, line: &str) -> Vec<Match> {
+        let mut matches = Vec::new();
+        self.scan_line_into(line, &mut matches);
+        matches
+    }
+
+    pub fn scan_line_into(&self, line: &str, matches: &mut Vec<Match>) {
+        matches.clear();
+
         let input = line.as_bytes();
         if input.is_empty() {
-            return Vec::new();
+            return;
         }
 
         let line_classes = prescan(input);
         let active = self.compute_active(line_classes);
         if active == 0 {
-            return Vec::new();
+            return;
         }
-
-        let mut matches = Vec::new();
 
         let active_scan = active & self.scan_mask;
         if active_scan != 0 {
@@ -273,8 +277,6 @@ impl Scanner {
                 .cmp(&b.range.start)
                 .then(a.finder_index.cmp(&b.finder_index))
         });
-
-        matches
     }
 
     pub fn scan_line_first(&self, line: &str) -> Option<Match> {
@@ -847,5 +849,161 @@ mod tests {
         let finders: Vec<Box<dyn Finder>> = vec![Box::new(crate::email::Email::default())];
         let scanner = Scanner::new(finders);
         assert!(scanner.scan_line_first("no matches possible").is_none());
+    }
+
+    // --- Regression: prescan early exit with all classes ---
+
+    #[test]
+    fn prescan_early_exit_fires_with_all_classes() {
+        let input = b"09afAF gZ@$#{}[]:./~+(- ";
+        let cl = prescan(input);
+        assert_eq!(cl, CL_ALL_USED);
+    }
+
+    #[test]
+    fn prescan_early_exit_on_long_input() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"09afAF gZ@$#{}[]:./~+(- ");
+        buf.extend_from_slice(&[b'x'; 10000]);
+        let cl = prescan(&buf);
+        assert_eq!(cl, CL_ALL_USED);
+    }
+
+    // --- Regression: can_skip_with_mask all_required distinction ---
+
+    #[test]
+    fn can_skip_all_required_single_bit_present() {
+        let cl = CL_DIGIT | CL_SLASH;
+        assert!(!can_skip_with_mask(
+            cl,
+            &[(CL_DIGIT, true), (CL_SLASH, true)]
+        ));
+    }
+
+    #[test]
+    fn can_skip_all_required_missing_one() {
+        let cl = CL_DIGIT;
+        assert!(can_skip_with_mask(
+            cl,
+            &[(CL_DIGIT, true), (CL_SLASH, true)]
+        ));
+    }
+
+    #[test]
+    fn can_skip_any_required_at_least_one() {
+        let cl = CL_HASH;
+        assert!(!can_skip_with_mask(
+            cl,
+            &[(CL_HASH | CL_ALPHA_OTHER, false)]
+        ));
+    }
+
+    #[test]
+    fn can_skip_any_required_none_present() {
+        let cl = CL_DIGIT;
+        assert!(can_skip_with_mask(cl, &[(CL_HASH | CL_ALPHA_OTHER, false)]));
+    }
+
+    #[test]
+    fn can_skip_cidr_with_digit_but_no_slash() {
+        let cl = CL_DIGIT | CL_DOT;
+        assert!(can_skip_with_mask(cl, required_classes("cidr")));
+    }
+
+    #[test]
+    fn can_skip_semver_with_digit_but_no_dot() {
+        let cl = CL_DIGIT;
+        assert!(can_skip_with_mask(cl, required_classes("semver")));
+    }
+
+    #[test]
+    fn cannot_skip_semver_with_digit_and_dot() {
+        let cl = CL_DIGIT | CL_DOT;
+        assert!(!can_skip_with_mask(cl, required_classes("semver")));
+    }
+
+    // --- Regression: scan_line_into reuses buffer ---
+
+    #[test]
+    fn scan_line_into_reuses_buffer() {
+        let finders: Vec<Box<dyn Finder>> = vec![Box::new(crate::env::Env::default())];
+        let scanner = Scanner::new(finders);
+        let mut buf = Vec::new();
+
+        scanner.scan_line_into("$HOME here", &mut buf);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].range, 0..5);
+
+        scanner.scan_line_into("$PATH and $USER", &mut buf);
+        assert_eq!(buf.len(), 2);
+
+        scanner.scan_line_into("no vars", &mut buf);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn scan_line_into_matches_scan_line() {
+        let finders: Vec<Box<dyn Finder>> = vec![
+            Box::new(crate::hash::Hash::default()),
+            Box::new(crate::email::Email::default()),
+            Box::new(crate::env::Env::default()),
+        ];
+        let scanner = Scanner::new(finders);
+        let input = "user@example.com $HOME 5d41402abc4b2a76b9719d911017c592";
+
+        let from_scan_line = scanner.scan_line(input);
+        let mut buf = Vec::new();
+        scanner.scan_line_into(input, &mut buf);
+
+        assert_eq!(from_scan_line.len(), buf.len());
+        for (a, b) in from_scan_line.iter().zip(buf.iter()) {
+            assert_eq!(a.range, b.range);
+            assert_eq!(a.finder_index, b.finder_index);
+        }
+    }
+
+    // --- Regression: all finders combined ---
+
+    #[test]
+    fn scanner_all_finders_no_panic() {
+        let mut codetag = crate::codetag::Codetag::default();
+        codetag.build_mnemonics_regex().unwrap();
+        let finders: Vec<Box<dyn Finder>> = vec![
+            Box::new(crate::cidr::Cidr::default()),
+            Box::new(codetag),
+            Box::new(crate::color::Color::default()),
+            Box::new(crate::datetime::Datetime::default()),
+            Box::new(crate::email::Email::default()),
+            Box::new(crate::emoji::Emoji::default()),
+            Box::new(crate::env::Env::default()),
+            Box::new(crate::hash::Hash::default()),
+            Box::new(crate::ip::Ip::default()),
+            Box::new(crate::json::Json::default()),
+            Box::new(crate::jwt::Jwt::default()),
+            Box::new(crate::mac::Mac::default()),
+            Box::new(crate::path::Path::default()),
+            Box::new(crate::phone::Phone::default()),
+            Box::new(crate::semver::Semver::default()),
+            Box::new(crate::uri::URI::default()),
+            Box::new(crate::uuid::Uuid::default()),
+        ];
+        let scanner = Scanner::new(finders);
+
+        for input in [
+            "",
+            " ",
+            "hello world",
+            "user@example.com",
+            "http://example.com",
+            "$HOME /etc/hosts 192.168.1.0/24",
+            "550e8400-e29b-41d4-a716-446655440000",
+            r#"{"key": "value"} TODO: fix this"#,
+            "v1.2.3 #ff00aa 2024-01-15T10:30:00Z",
+            "00:1A:2B:3C:4D:5E +14155551234",
+            "😀🎉 hello",
+        ] {
+            let _ = scanner.scan_line(input);
+            let _ = scanner.scan_line_first(input);
+        }
     }
 }
