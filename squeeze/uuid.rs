@@ -38,6 +38,31 @@ impl Finder for Uuid {
         "uuid"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte.is_ascii_hexdigit()
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if !Self::is_hex(input[pos]) {
+            return None;
+        }
+        if pos > 0 && (Self::is_hex(input[pos - 1]) || input[pos - 1] == b'-') {
+            return None;
+        }
+        if !Self::check_pattern(input, pos) {
+            return None;
+        }
+        let end = pos + 36;
+        if end < input.len() && (Self::is_hex(input[end]) || input[end] == b'-') {
+            return None;
+        }
+        Some(pos..end)
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -116,9 +141,11 @@ mod tests {
     #[test]
     fn find_should_reject_wrong_dash_positions() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e840-0e29b-41d4-a716-446655440000")
-            .is_none());
+        assert!(
+            finder
+                .find("550e840-0e29b-41d4-a716-446655440000")
+                .is_none()
+        );
     }
 
     #[test]
@@ -130,25 +157,31 @@ mod tests {
     #[test]
     fn find_should_reject_non_hex() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e8400-e29b-41d4-a716-44665544000g")
-            .is_none());
+        assert!(
+            finder
+                .find("550e8400-e29b-41d4-a716-44665544000g")
+                .is_none()
+        );
     }
 
     #[test]
     fn find_should_not_match_within_longer_hex() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("ff550e8400-e29b-41d4-a716-446655440000")
-            .is_none());
+        assert!(
+            finder
+                .find("ff550e8400-e29b-41d4-a716-446655440000")
+                .is_none()
+        );
     }
 
     #[test]
     fn find_should_not_match_with_trailing_hex() {
         let finder = Uuid::default();
-        assert!(finder
-            .find("550e8400-e29b-41d4-a716-446655440000ff")
-            .is_none());
+        assert!(
+            finder
+                .find("550e8400-e29b-41d4-a716-446655440000ff")
+                .is_none()
+        );
     }
 
     #[test]
@@ -196,5 +229,58 @@ mod tests {
         let input = "00000000-0000-0000-0000-000000000000";
         let range = finder.find(input).unwrap();
         assert_eq!("00000000-0000-0000-0000-000000000000", &input[range]);
+    }
+
+    #[test]
+    fn try_at_at_start() {
+        let finder = Uuid::default();
+        let input = b"550e8400-e29b-41d4-a716-446655440000 end";
+        assert_eq!(finder.try_at(input, 0), Some(0..36));
+    }
+
+    #[test]
+    fn try_at_preceded_by_hex() {
+        let finder = Uuid::default();
+        let input = b"ff550e8400-e29b-41d4-a716-446655440000";
+        assert!(finder.try_at(input, 2).is_none());
+    }
+
+    #[test]
+    fn try_at_preceded_by_dash() {
+        let finder = Uuid::default();
+        let input = b"-550e8400-e29b-41d4-a716-446655440000";
+        assert!(finder.try_at(input, 1).is_none());
+    }
+
+    #[test]
+    fn try_at_too_short_input() {
+        let finder = Uuid::default();
+        let input = b"550e8400";
+        assert!(finder.try_at(input, 0).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_extra_dash_at_end() {
+        let finder = Uuid::default();
+        assert!(
+            finder
+                .find("550e8400-e29b-41d4-a716-446655440000-")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn find_should_handle_uuid_at_exact_end() {
+        let finder = Uuid::default();
+        let input = "x 550e8400-e29b-41d4-a716-446655440000";
+        let range = finder.find(input).unwrap();
+        assert_eq!("550e8400-e29b-41d4-a716-446655440000", &input[range]);
+    }
+
+    #[test]
+    fn find_should_handle_input_shorter_than_uuid() {
+        let finder = Uuid::default();
+        assert!(finder.find("abc").is_none());
+        assert!(finder.find("a").is_none());
     }
 }

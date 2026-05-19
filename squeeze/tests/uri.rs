@@ -1,6 +1,6 @@
-use squeeze::{uri, Finder};
+use squeeze::{Finder, uri};
 use std::fs::File;
-use std::io::{prelude::*, BufReader};
+use std::io::{BufReader, prelude::*};
 
 #[test]
 fn it_should_succeed_to_mirror_the_fixtures_uris() {

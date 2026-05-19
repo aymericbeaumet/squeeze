@@ -3,7 +3,7 @@ members = [
   "squeeze",
   "squeeze-cli",
 ]
-resolver = "2"
+resolver = "3"
 
 [profile.dev]
 opt-level = 0
@@ -12,3 +12,5 @@ opt-level = 0
 codegen-units = 1
 lto = "fat"
 opt-level = 3
+panic = "abort"
+strip = true

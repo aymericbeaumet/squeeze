@@ -183,11 +183,7 @@ impl Finder for Codetag {
             m.start()
         };
         let to = s.len();
-        if from >= to {
-            None
-        } else {
-            Some(from..to)
-        }
+        if from >= to { None } else { Some(from..to) }
     }
 }
 

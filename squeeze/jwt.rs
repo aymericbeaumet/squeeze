@@ -43,6 +43,39 @@ impl Finder for Jwt {
         "jwt"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte == b'e'
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if input[pos] != b'e' {
+            return None;
+        }
+        if pos > 0 && Self::is_base64url(input[pos - 1]) {
+            return None;
+        }
+        let header_end = Self::read_segment(input, pos)?;
+        if !Self::looks_like_jwt_header(input, pos, header_end) {
+            return None;
+        }
+        if header_end >= input.len() || input[header_end] != b'.' {
+            return None;
+        }
+        let payload_end = Self::read_segment(input, header_end + 1)?;
+        if payload_end >= input.len() || input[payload_end] != b'.' {
+            return None;
+        }
+        let sig_end = Self::read_segment(input, payload_end + 1)?;
+        if sig_end < input.len() && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.') {
+            return None;
+        }
+        Some(pos..sig_end)
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -166,9 +199,11 @@ mod tests {
     #[test]
     fn find_should_reject_two_segments() {
         let finder = Jwt::default();
-        assert!(finder
-            .find("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0")
-            .is_none());
+        assert!(
+            finder
+                .find("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0")
+                .is_none()
+        );
     }
 
     #[test]
@@ -213,5 +248,55 @@ mod tests {
     fn find_should_reject_short_segments() {
         let finder = Jwt::default();
         assert!(finder.find("eyJ.ab.cd").is_none());
+    }
+
+    #[test]
+    fn try_at_valid_jwt() {
+        let finder = Jwt::default();
+        let input = JWT_HS256.as_bytes();
+        assert_eq!(finder.try_at(input, 0), Some(0..input.len()));
+    }
+
+    #[test]
+    fn try_at_preceded_by_base64() {
+        let finder = Jwt::default();
+        let input = format!("x{}", JWT_HS256);
+        assert!(finder.try_at(input.as_bytes(), 1).is_none());
+    }
+
+    #[test]
+    fn try_at_non_e() {
+        let finder = Jwt::default();
+        assert!(finder.try_at(b"abc", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_single_e() {
+        let finder = Jwt::default();
+        assert!(finder.try_at(b"e", 0).is_none());
+    }
+
+    #[test]
+    fn try_at_eyj_only() {
+        let finder = Jwt::default();
+        assert!(finder.try_at(b"eyJ", 0).is_none());
+    }
+
+    #[test]
+    fn find_four_segments_finds_inner_jwt() {
+        let finder = Jwt::default();
+        let input = format!("{}.extra", JWT_HS256);
+        let range = finder.find(&input).unwrap();
+        let found = &input[range];
+        assert!(found.starts_with("eyJzdWIi"));
+        assert!(found.ends_with("extra"));
+    }
+
+    #[test]
+    fn find_should_extract_jwt_after_space() {
+        let finder = Jwt::default();
+        let input = format!(" {}", JWT_HS256);
+        let range = finder.find(&input).unwrap();
+        assert_eq!(JWT_HS256, &input[range]);
     }
 }
