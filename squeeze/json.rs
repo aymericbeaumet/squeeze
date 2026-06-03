@@ -1,72 +1,200 @@
+//! Strict JSON finder.
+//!
+//! Finds the first valid JSON value rooted at an object (`{...}`) or array
+//! (`[...]`) in the input. Bare numbers, strings, and literals are intentionally
+//! not surfaced — they're too easy to false-positive on prose.
+//!
+//! Validation follows RFC 8259: it checks string escapes (including `\uXXXX`),
+//! number shape, and that the only allowed JSON literals are `true`, `false`,
+//! and `null`. Inputs whose braces happen to balance but contain garbage
+//! (`{not really json}`) are rejected.
+
 use super::Finder;
 use std::ops::Range;
 
+const MAX_DEPTH: usize = 256;
+
+#[inline]
 fn memchr2(n1: u8, n2: u8, haystack: &[u8]) -> Option<usize> {
     haystack.iter().position(|&b| b == n1 || b == n2)
 }
 
-const MAX_DEPTH: usize = 256;
+#[inline]
+fn skip_ws(input: &[u8], mut pos: usize) -> usize {
+    while pos < input.len() && matches!(input[pos], b' ' | b'\t' | b'\n' | b'\r') {
+        pos += 1;
+    }
+    pos
+}
 
-#[derive(Default)]
-pub struct Json {}
+fn parse_value(input: &[u8], pos: usize, depth: usize) -> Option<usize> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let pos = skip_ws(input, pos);
+    if pos >= input.len() {
+        return None;
+    }
+    match input[pos] {
+        b'{' => parse_object(input, pos, depth + 1),
+        b'[' => parse_array(input, pos, depth + 1),
+        b'"' => parse_string(input, pos),
+        b't' => parse_literal(input, pos, b"true"),
+        b'f' => parse_literal(input, pos, b"false"),
+        b'n' => parse_literal(input, pos, b"null"),
+        b'-' | b'0'..=b'9' => parse_number(input, pos),
+        _ => None,
+    }
+}
 
-impl Json {
-    fn try_extract(input: &[u8], start: usize) -> Result<Range<usize>, usize> {
-        if !matches!(input[start], b'{' | b'[') {
-            return Err(start + 1);
+fn parse_object(input: &[u8], start: usize, depth: usize) -> Option<usize> {
+    debug_assert_eq!(input[start], b'{');
+    let mut pos = start + 1;
+    pos = skip_ws(input, pos);
+    if pos < input.len() && input[pos] == b'}' {
+        return Some(pos + 1);
+    }
+    loop {
+        pos = skip_ws(input, pos);
+        if pos >= input.len() || input[pos] != b'"' {
+            return None;
         }
-
-        let mut depth: usize = 1;
-        let mut pos = start + 1;
-        let mut first_inner_open: Option<usize> = None;
-
-        while pos < input.len() && depth > 0 {
-            match input[pos] {
-                b'"' => {
-                    pos += 1;
-                    while pos < input.len() {
-                        match memchr2(b'"', b'\\', &input[pos..]) {
-                            Some(offset) => {
-                                pos += offset;
-                                if input[pos] == b'\\' {
-                                    pos += 2;
-                                } else {
-                                    pos += 1;
-                                    break;
-                                }
-                            }
-                            None => {
-                                pos = input.len();
-                                break;
-                            }
-                        }
-                    }
-                    continue;
-                }
-                b'{' | b'[' => {
-                    if first_inner_open.is_none() {
-                        first_inner_open = Some(pos);
-                    }
-                    depth += 1;
-                    if depth > MAX_DEPTH {
-                        return Err(pos);
-                    }
-                }
-                b'}' | b']' => {
-                    depth -= 1;
-                }
-                _ => {}
-            }
-            pos += 1;
+        pos = parse_string(input, pos)?;
+        pos = skip_ws(input, pos);
+        if pos >= input.len() || input[pos] != b':' {
+            return None;
         }
-
-        if depth == 0 {
-            Ok(start..pos)
-        } else {
-            Err(first_inner_open.unwrap_or(pos))
+        pos += 1;
+        pos = parse_value(input, pos, depth)?;
+        pos = skip_ws(input, pos);
+        if pos >= input.len() {
+            return None;
+        }
+        match input[pos] {
+            b',' => pos += 1,
+            b'}' => return Some(pos + 1),
+            _ => return None,
         }
     }
 }
+
+fn parse_array(input: &[u8], start: usize, depth: usize) -> Option<usize> {
+    debug_assert_eq!(input[start], b'[');
+    let mut pos = start + 1;
+    pos = skip_ws(input, pos);
+    if pos < input.len() && input[pos] == b']' {
+        return Some(pos + 1);
+    }
+    loop {
+        pos = parse_value(input, pos, depth)?;
+        pos = skip_ws(input, pos);
+        if pos >= input.len() {
+            return None;
+        }
+        match input[pos] {
+            b',' => pos += 1,
+            b']' => return Some(pos + 1),
+            _ => return None,
+        }
+    }
+}
+
+fn parse_string(input: &[u8], start: usize) -> Option<usize> {
+    debug_assert_eq!(input[start], b'"');
+    let mut pos = start + 1;
+    while pos < input.len() {
+        let b = input[pos];
+        if b == b'"' {
+            return Some(pos + 1);
+        }
+        if b == b'\\' {
+            pos += 1;
+            if pos >= input.len() {
+                return None;
+            }
+            match input[pos] {
+                b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => pos += 1,
+                b'u' => {
+                    if pos + 4 >= input.len() {
+                        return None;
+                    }
+                    for i in 1..=4 {
+                        if !input[pos + i].is_ascii_hexdigit() {
+                            return None;
+                        }
+                    }
+                    pos += 5;
+                }
+                _ => return None,
+            }
+        } else if b < 0x20 {
+            // Unescaped control character is illegal in JSON strings.
+            return None;
+        } else {
+            pos += 1;
+        }
+    }
+    None
+}
+
+fn parse_number(input: &[u8], start: usize) -> Option<usize> {
+    let mut pos = start;
+    if input[pos] == b'-' {
+        pos += 1;
+        if pos >= input.len() {
+            return None;
+        }
+    }
+    // Integer part.
+    match input.get(pos)? {
+        b'0' => pos += 1,
+        b'1'..=b'9' => {
+            pos += 1;
+            while pos < input.len() && input[pos].is_ascii_digit() {
+                pos += 1;
+            }
+        }
+        _ => return None,
+    }
+    // Fraction.
+    if pos < input.len() && input[pos] == b'.' {
+        pos += 1;
+        let frac_start = pos;
+        while pos < input.len() && input[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos == frac_start {
+            return None;
+        }
+    }
+    // Exponent.
+    if pos < input.len() && (input[pos] == b'e' || input[pos] == b'E') {
+        pos += 1;
+        if pos < input.len() && (input[pos] == b'+' || input[pos] == b'-') {
+            pos += 1;
+        }
+        let exp_start = pos;
+        while pos < input.len() && input[pos].is_ascii_digit() {
+            pos += 1;
+        }
+        if pos == exp_start {
+            return None;
+        }
+    }
+    Some(pos)
+}
+
+fn parse_literal(input: &[u8], start: usize, lit: &[u8]) -> Option<usize> {
+    let end = start + lit.len();
+    if end <= input.len() && &input[start..end] == lit {
+        Some(end)
+    } else {
+        None
+    }
+}
+
+#[derive(Default)]
+pub struct Json {}
 
 impl Finder for Json {
     fn id(&self) -> &'static str {
@@ -76,17 +204,13 @@ impl Finder for Json {
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
-
         while let Some(offset) = memchr2(b'{', b'[', &input[idx..]) {
             idx += offset;
-            match Self::try_extract(input, idx) {
-                Ok(range) => return Some(range),
-                Err(scanned_to) => {
-                    idx = scanned_to.min(input.len());
-                }
+            if let Some(end) = parse_value(input, idx, 0) {
+                return Some(idx..end);
             }
+            idx += 1;
         }
-
         None
     }
 }
@@ -312,5 +436,154 @@ mod tests {
         let input = r#"{"key": "val\\"}"#;
         let range = finder.find(input).unwrap();
         assert_eq!(input, &input[range]);
+    }
+
+    // --- Strict-mode rejections ---
+
+    #[test]
+    fn find_should_reject_balanced_garbage() {
+        let finder = Json::default();
+        assert!(finder.find("{not really json}").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_object_without_colon() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{"key" "value"}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_object_unquoted_key() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{key: "value"}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_trailing_comma_in_object() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{"a": 1,}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_trailing_comma_in_array() {
+        let finder = Json::default();
+        assert!(finder.find("[1, 2,]").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_single_quoted_strings() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{'key': 'value'}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_javascript_undefined() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{"k": undefined}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_bare_number_with_leading_zero() {
+        let finder = Json::default();
+        assert!(finder.find("[01]").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_bare_dot_number() {
+        let finder = Json::default();
+        // JSON numbers must have a digit before the dot.
+        assert!(finder.find("[.5]").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_trailing_dot_number() {
+        let finder = Json::default();
+        // JSON numbers must have at least one digit after the dot.
+        assert!(finder.find("[1.]").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_invalid_escape_sequence() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{"k": "bad \q escape"}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_short_unicode_escape() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{"k": "\u12"}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_non_hex_unicode_escape() {
+        let finder = Json::default();
+        assert!(finder.find(r#"{"k": "\uZZZZ"}"#).is_none());
+    }
+
+    #[test]
+    fn find_should_reject_unescaped_control_char_in_string() {
+        let finder = Json::default();
+        let input = "{\"k\": \"line1\nline2\"}";
+        assert!(finder.find(input).is_none());
+    }
+
+    #[test]
+    fn find_should_accept_number_with_exponent() {
+        let finder = Json::default();
+        let input = "[1.5e10, -2.0E-3]";
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_accept_literals() {
+        let finder = Json::default();
+        let input = "[true, false, null]";
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_reject_truncated_literal() {
+        let finder = Json::default();
+        assert!(finder.find("[tru]").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_uppercase_literal() {
+        let finder = Json::default();
+        assert!(finder.find("[True]").is_none());
+    }
+
+    #[test]
+    fn find_should_accept_whitespace_around_values() {
+        let finder = Json::default();
+        let input = "{  \"k\"  :  \"v\"  ,  \"n\"  :  42  }";
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_accept_unicode_escapes() {
+        let finder = Json::default();
+        let input = r#"{"k": "éclair"}"#;
+        let range = finder.find(input).unwrap();
+        assert_eq!(input, &input[range]);
+    }
+
+    #[test]
+    fn find_should_reject_array_with_two_consecutive_commas() {
+        let finder = Json::default();
+        assert!(finder.find("[1,,2]").is_none());
+    }
+
+    #[test]
+    fn find_should_reject_extra_close_brace() {
+        let finder = Json::default();
+        // The first valid object is `{"a":1}`. We stop at its end; trailing
+        // `}` is not the finder's concern.
+        let input = r#"{"a":1}}"#;
+        let r = finder.find(input).unwrap();
+        assert_eq!(r#"{"a":1}"#, &input[r]);
     }
 }

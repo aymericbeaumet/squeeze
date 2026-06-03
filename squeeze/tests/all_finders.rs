@@ -600,16 +600,26 @@ fn email_with_ipv4_host_is_skipped_but_ip_matches() {
 }
 
 // ============================================================================
-// JSON shape leniency: balanced braces with arbitrary content
+// JSON strict validation
 // ============================================================================
 
 #[test]
-fn json_balanced_braces_are_matched_even_if_not_valid_json() {
+fn json_balanced_braces_with_garbage_are_rejected() {
     let scanner = Scanner::new(all_finders());
     let s = spans(&scanner, "weird {not really json}");
-    // The JSON finder is balance-based, not parser-strict: this is documented.
     let json = s.iter().find(|(id, _)| *id == "json");
-    assert!(json.is_some());
+    assert!(
+        json.is_none(),
+        "balanced-but-invalid JSON must be rejected: {s:?}"
+    );
+}
+
+#[test]
+fn json_valid_object_is_accepted() {
+    let scanner = Scanner::new(all_finders());
+    let s = spans(&scanner, r#"data: {"key": "value"} ok"#);
+    let json = s.iter().find(|(id, _)| *id == "json");
+    assert_eq!(json, Some(&("json", r#"{"key": "value"}"#)));
 }
 
 // ============================================================================
