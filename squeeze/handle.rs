@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn find_handle_at_max_length() {
         let f = Handle::default();
-        let name: String = std::iter::repeat('a').take(39).collect();
+        let name = "a".repeat(39);
         let input = format!("hi @{} hi", name);
         let r = f.find(&input).unwrap();
         assert_eq!(format!("@{}", name), input[r]);
@@ -211,7 +211,7 @@ mod tests {
         // If the entire run is 40 chars, we currently report None (full check).
         // This documents that strictness explicitly.
         let f = Handle::default();
-        let name: String = std::iter::repeat('a').take(40).collect();
+        let name = "a".repeat(40);
         let input = format!("@{}", name);
         assert!(f.find(&input).is_none());
     }
