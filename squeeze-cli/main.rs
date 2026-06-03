@@ -650,7 +650,9 @@ fn scan_lines_sequential(
                         b.push(found.to_string());
                     } else {
                         writeln!(out, "{}", found)?;
-                        if opts.open && let Err(e) = open_url(found) {
+                        if opts.open
+                            && let Err(e) = open_url(found)
+                        {
                             eprintln!("failed to open '{}': {}", found, e);
                         }
                     }
@@ -672,7 +674,9 @@ fn scan_lines_sequential(
                     }
                 } else {
                     writeln!(out, "{}", found)?;
-                    if opts.open && let Err(e) = open_url(found) {
+                    if opts.open
+                        && let Err(e) = open_url(found)
+                    {
                         eprintln!("failed to open '{}': {}", found, e);
                     }
                 }
@@ -680,18 +684,16 @@ fn scan_lines_sequential(
         }
     }
 
-    if opts.last && let (Some(b), Some(last)) = (buffered.as_mut(), last_match) {
+    if opts.last
+        && let (Some(b), Some(last)) = (buffered.as_mut(), last_match)
+    {
         b.push(last);
     }
 
     Ok(false)
 }
 
-fn scan_lines_parallel(
-    scanner: &Scanner,
-    opts: &Opts,
-    lines: Vec<String>,
-) -> Vec<String> {
+fn scan_lines_parallel(scanner: &Scanner, opts: &Opts, lines: Vec<String>) -> Vec<String> {
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(opts.jobs)
         .build()
@@ -773,7 +775,9 @@ fn main() -> ExitCode {
         } else {
             for r in &results {
                 let _ = writeln!(out, "{}", r);
-                if opts.open && let Err(e) = open_url(r) {
+                if opts.open
+                    && let Err(e) = open_url(r)
+                {
                     eprintln!("failed to open '{}': {}", r, e);
                 }
             }

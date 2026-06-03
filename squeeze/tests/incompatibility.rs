@@ -5,6 +5,7 @@
 //! belong to a different finder.
 
 use squeeze::{
+    Finder,
     domain::Domain,
     email::Email,
     handle::Handle,
@@ -12,7 +13,6 @@ use squeeze::{
     path::Path,
     scanner::{Match, Scanner},
     uri::URI,
-    Finder,
 };
 
 fn matched_spans<'a>(scanner: &Scanner, input: &'a str) -> Vec<(&'static str, &'a str)> {

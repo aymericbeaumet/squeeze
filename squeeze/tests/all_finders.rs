@@ -6,6 +6,7 @@
 //! span, this suite will fail loudly so the new behavior is reviewed.
 
 use squeeze::{
+    Finder,
     cidr::Cidr,
     codetag::Codetag,
     color::Color,
@@ -27,7 +28,6 @@ use squeeze::{
     semver::Semver,
     uri::URI,
     uuid::Uuid,
-    Finder,
 };
 
 fn all_finders() -> Vec<Box<dyn Finder>> {
@@ -173,8 +173,7 @@ fn md5_hash_is_reported_as_hash_not_uuid() {
 fn jwt_is_reported_as_jwt() {
     let scanner = Scanner::new(all_finders());
     // Real-ish JWT (3 base64url segments separated by dots)
-    let jwt =
-        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
     let line = format!("token: {} ok", jwt);
     let s = spans(&scanner, &line);
     let jwt_match = s.iter().find(|(id, _)| *id == "jwt");
@@ -335,8 +334,7 @@ fn color_hex_is_not_hash() {
 #[test]
 fn comprehensive_real_world_line() {
     let scanner = Scanner::new(all_finders());
-    let input =
-        "TODO: contact alice@example.com about https://example.com, see /etc/hosts, version 1.2.3 #ff0000";
+    let input = "TODO: contact alice@example.com about https://example.com, see /etc/hosts, version 1.2.3 #ff0000";
     let got_ids: Vec<_> = ids(&scanner, input).into_iter().collect();
     // Required: codetag, email, uri, path, semver, color.
     for required in ["codetag", "email", "uri", "path", "semver", "color"] {
