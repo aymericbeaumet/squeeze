@@ -96,4 +96,130 @@ mod tests {
         let f = Modeline::default();
         assert!(f.find("vim").is_none());
     }
+
+    // --- Format variants ---
+
+    #[test]
+    fn find_vim_colon_separated_options() {
+        let f = Modeline::default();
+        let input = "/* vim:ts=4:sw=4:et: */";
+        let r = f.find(input).unwrap();
+        assert_eq!("vim:ts=4:sw=4:et:", &input[r]);
+    }
+
+    #[test]
+    fn find_vim_no_space_after_colon() {
+        let f = Modeline::default();
+        let input = "// vim:ts=4 sw=4";
+        let r = f.find(input).unwrap();
+        assert_eq!("vim:ts=4 sw=4", &input[r]);
+    }
+
+    #[test]
+    fn find_vim_uppercase_prefix() {
+        let f = Modeline::default();
+        let input = "// VIM: ts=4";
+        let r = f.find(input).unwrap();
+        assert_eq!("VIM: ts=4", &input[r]);
+    }
+
+    #[test]
+    fn find_vim_with_filetype() {
+        let f = Modeline::default();
+        let input = "// vim: set ft=rust ts=4:";
+        let r = f.find(input).unwrap();
+        assert_eq!("vim: set ft=rust ts=4:", &input[r]);
+    }
+
+    // --- Boundaries ---
+
+    #[test]
+    fn find_at_start_of_input() {
+        let f = Modeline::default();
+        let input = "vim: ts=4";
+        let r = f.find(input).unwrap();
+        assert_eq!("vim: ts=4", &input[r]);
+    }
+
+    #[test]
+    fn find_trailing_whitespace_trimmed() {
+        let f = Modeline::default();
+        let input = "vim: ts=4   ";
+        let r = f.find(input).unwrap();
+        assert_eq!("vim: ts=4", &input[r]);
+    }
+
+    // --- Negative cases ---
+
+    #[test]
+    fn find_rejects_random_colon_word() {
+        let f = Modeline::default();
+        assert!(f.find("https://example.com").is_none());
+    }
+
+    #[test]
+    fn find_rejects_prefix_glued_to_alpha() {
+        let f = Modeline::default();
+        // 'devim:' — the `vim:` is preceded by 'e', so \b makes it not match
+        assert!(f.find("devim:ts=4").is_none());
+    }
+
+    #[test]
+    fn find_rejects_url_with_scheme_like_prefix() {
+        let f = Modeline::default();
+        assert!(f.find("see http: //example.com").is_none());
+    }
+
+    #[test]
+    fn find_empty_input() {
+        let f = Modeline::default();
+        assert!(f.find("").is_none());
+    }
+
+    // --- In source comments ---
+
+    #[test]
+    fn find_inside_c_block_comment() {
+        let f = Modeline::default();
+        let input = "/* vim: set ts=4 et: */";
+        let r = f.find(input).unwrap();
+        assert!(input[r].starts_with("vim: set ts=4"));
+    }
+
+    #[test]
+    fn find_inside_hash_comment() {
+        let f = Modeline::default();
+        let input = "# vim: ts=4 sw=4";
+        let r = f.find(input).unwrap();
+        assert_eq!("vim: ts=4 sw=4", &input[r]);
+    }
+
+    #[test]
+    fn find_inside_html_comment() {
+        let f = Modeline::default();
+        let input = "<!-- vim: ts=2 -->";
+        let r = f.find(input).unwrap();
+        assert!(input[r].starts_with("vim: ts=2"));
+    }
+
+    // --- Multiple modelines (per-line basis) ---
+
+    #[test]
+    fn find_returns_first_modeline_when_multiple_in_same_input() {
+        let f = Modeline::default();
+        let input = "vim: ts=4 something vim: ts=2";
+        let r = f.find(input).unwrap();
+        // Both forms are matched; first wins.
+        assert!(input[r].starts_with("vim: ts=4"));
+    }
+
+    // --- vi/ex variants ---
+
+    #[test]
+    fn find_vi_with_set_form() {
+        let f = Modeline::default();
+        let input = "// vi: set noet ts=4:";
+        let r = f.find(input).unwrap();
+        assert_eq!("vi: set noet ts=4:", &input[r]);
+    }
 }

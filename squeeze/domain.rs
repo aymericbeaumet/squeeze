@@ -7,16 +7,6 @@
 use super::Finder;
 use std::ops::Range;
 
-/// Common TLDs we accept without further validation. Anything else must look
-/// alphabetic and be between 2 and 24 chars to be considered a TLD.
-static COMMON_TLDS: phf::Set<&'static str> = phf::phf_set! {
-    "com", "net", "org", "io", "dev", "app", "co", "uk", "us", "ca", "de",
-    "fr", "jp", "cn", "ru", "br", "au", "in", "mx", "es", "it", "nl", "se",
-    "no", "fi", "pl", "ch", "at", "be", "dk", "ie", "nz", "za", "ai", "ly",
-    "me", "tv", "info", "biz", "name", "pro", "museum", "tech", "xyz",
-    "online", "site", "store", "edu", "gov", "mil", "int",
-};
-
 #[inline]
 fn is_label_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-'
@@ -24,19 +14,7 @@ fn is_label_byte(b: u8) -> bool {
 
 #[inline]
 fn looks_like_tld(s: &[u8]) -> bool {
-    if s.len() < 2 || s.len() > 24 {
-        return false;
-    }
-    if !s.iter().all(|b| b.is_ascii_alphabetic()) {
-        return false;
-    }
-    // Accept any all-alpha label of reasonable length, OR a common TLD.
-    // The all-alpha-only constraint already filters out IPs and most noise.
-    if s.len() >= 2 {
-        return true;
-    }
-    let lowered: String = s.iter().map(|b| b.to_ascii_lowercase() as char).collect();
-    COMMON_TLDS.contains(lowered.as_str())
+    (2..=24).contains(&s.len()) && s.iter().all(|b| b.is_ascii_alphabetic())
 }
 
 #[derive(Default)]
@@ -230,5 +208,221 @@ mod tests {
     #[test]
     fn find_handles_empty() {
         assert!(Domain::default().find("").is_none());
+    }
+
+    // --- Positions ---
+
+    #[test]
+    fn find_domain_at_start() {
+        let f = Domain::default();
+        let input = "example.com is great";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_at_end() {
+        let f = Domain::default();
+        let input = "see example.com";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_inside_parens() {
+        let f = Domain::default();
+        let input = "(example.com)";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_in_markdown_link() {
+        let f = Domain::default();
+        let input = "[link](example.com)";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_followed_by_comma() {
+        let f = Domain::default();
+        let input = "example.com, foo";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_followed_by_period_end_of_sentence() {
+        let f = Domain::default();
+        let input = "go to example.com.";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_followed_by_question_mark() {
+        let f = Domain::default();
+        let input = "is it example.com?";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.com", &input[r]);
+    }
+
+    // --- Case sensitivity ---
+
+    #[test]
+    fn find_uppercase_domain() {
+        let f = Domain::default();
+        let input = "go to EXAMPLE.COM today";
+        let r = f.find(input).unwrap();
+        assert_eq!("EXAMPLE.COM", &input[r]);
+    }
+
+    #[test]
+    fn find_mixed_case_domain() {
+        let f = Domain::default();
+        let input = "see Example.Com";
+        let r = f.find(input).unwrap();
+        assert_eq!("Example.Com", &input[r]);
+    }
+
+    // --- Labels ---
+
+    #[test]
+    fn find_long_subdomain_chain() {
+        let f = Domain::default();
+        let input = "a.b.c.d.e.example.com";
+        let r = f.find(input).unwrap();
+        assert_eq!("a.b.c.d.e.example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_domain_with_numeric_subdomain() {
+        let f = Domain::default();
+        let input = "v2.example.com";
+        let r = f.find(input).unwrap();
+        assert_eq!("v2.example.com", &input[r]);
+    }
+
+    #[test]
+    fn find_rejects_label_ending_with_hyphen() {
+        let f = Domain::default();
+        assert!(f.find("bad-.example.com").is_none());
+    }
+
+    #[test]
+    fn find_rejects_consecutive_dots() {
+        let f = Domain::default();
+        assert!(f.find("foo..bar.com").is_none());
+    }
+
+    #[test]
+    fn find_rejects_tld_too_short() {
+        let f = Domain::default();
+        assert!(f.find("foo.x").is_none());
+    }
+
+    #[test]
+    fn find_rejects_numeric_tld() {
+        let f = Domain::default();
+        assert!(f.find("foo.123").is_none());
+    }
+
+    // --- Multiple ---
+
+    #[test]
+    fn find_multiple_domains_iteratively() {
+        let f = Domain::default();
+        let input = "example.com and other.org";
+        let mut results = Vec::new();
+        let mut idx = 0;
+        while idx < input.len() {
+            if let Some(r) = f.find(&input[idx..]) {
+                results.push(&input[idx + r.start..idx + r.end]);
+                idx += r.end;
+            } else {
+                break;
+            }
+        }
+        assert_eq!(vec!["example.com", "other.org"], results);
+    }
+
+    // --- Avoid eating other tokens ---
+
+    #[test]
+    fn find_skips_inside_path() {
+        let f = Domain::default();
+        // Looks like a domain but is inside a path; we want to skip.
+        assert!(f.find("/usr/example.com/files").is_none());
+    }
+
+    #[test]
+    fn find_skips_ipv6_like() {
+        let f = Domain::default();
+        assert!(f.find("2001:db8::1").is_none());
+    }
+
+    #[test]
+    fn find_skips_when_followed_by_at() {
+        // domain immediately followed by '@' might be confusable with email tail
+        let f = Domain::default();
+        assert!(f.find("foo.com@bar").is_none());
+    }
+
+    #[test]
+    fn find_skips_when_followed_by_path() {
+        let f = Domain::default();
+        // domain.com/ would be the start of a URL — skip
+        assert!(f.find("example.com/path").is_none());
+    }
+
+    #[test]
+    fn find_skips_when_followed_by_port() {
+        let f = Domain::default();
+        // domain:8080 is more URL-like
+        assert!(f.find("example.com:8080").is_none());
+    }
+
+    // --- TLDs ---
+
+    #[test]
+    fn find_long_alpha_tld() {
+        let f = Domain::default();
+        let input = "example.museum";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.museum", &input[r]);
+    }
+
+    #[test]
+    fn find_two_letter_country_tld() {
+        let f = Domain::default();
+        let input = "see example.uk";
+        let r = f.find(input).unwrap();
+        assert_eq!("example.uk", &input[r]);
+    }
+
+    // --- Boundary characters ---
+
+    #[test]
+    fn find_matches_full_token_not_inner() {
+        let f = Domain::default();
+        // "abcdexample.com" is itself a valid domain, so the full token matches.
+        // The inner "example.com" must not be reported separately at offset 4.
+        let input = "abcdexample.com";
+        let r = f.find(input).unwrap();
+        assert_eq!(0..input.len(), r);
+    }
+
+    #[test]
+    fn find_skips_glued_to_underscore_prefix() {
+        let f = Domain::default();
+        assert!(f.find("_example.com").is_none());
+    }
+
+    #[test]
+    fn find_skips_in_dotted_chain_preceded_by_dot() {
+        let f = Domain::default();
+        // prev '.' should disqualify start (avoid mid-chain re-matches)
+        assert!(f.find(".example.com").is_none());
     }
 }
