@@ -190,6 +190,26 @@ proptest! {
     fn path_dispatch_consistent(s in "[a-z/.~\\- :0-9 ]{0,60}") {
         check_dispatch_consistency(Box::new(squeeze::path::Path::default()), &s);
     }
+
+    #[test]
+    fn uri_trigger_consistent(s in "[a-zA-Z0-9:/?#.\\-_&=%+ ]{0,160}") {
+        check_dispatch_consistency(Box::new(squeeze::uri::URI::default()), &s);
+    }
+
+    #[test]
+    fn email_trigger_consistent(s in "[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~@\\-. ]{0,120}") {
+        check_dispatch_consistency(Box::new(squeeze::email::Email::default()), &s);
+    }
+
+    #[test]
+    fn phone_dispatch_consistent(s in "[0-9+().\\- a-zA-Z]{0,100}") {
+        check_dispatch_consistency(Box::new(squeeze::phone::Phone::default()), &s);
+    }
+
+    #[test]
+    fn modeline_dispatch_consistent(s in "[a-zA-Z0-9_=:.,\\-/ ]{0,100}") {
+        check_dispatch_consistency(Box::new(squeeze::modeline::Modeline::default()), &s);
+    }
 }
 
 // --- Fuzz: no panics with individual finders on arbitrary input ---
@@ -392,6 +412,33 @@ proptest! {
     #[test]
     fn cidr_try_at_no_panic(s in "[\\x00-\\x7f]{1,100}") {
         let finder = squeeze::cidr::Cidr::default();
+        let input = s.as_bytes();
+        for pos in 0..input.len() {
+            let _ = finder.try_at(input, pos);
+        }
+    }
+
+    #[test]
+    fn json_try_at_no_panic(s in "[\\x00-\\x7f]{1,100}") {
+        let finder = squeeze::json::Json::default();
+        let input = s.as_bytes();
+        for pos in 0..input.len() {
+            let _ = finder.try_at(input, pos);
+        }
+    }
+
+    #[test]
+    fn phone_try_at_no_panic(s in "[\\x00-\\x7f]{1,100}") {
+        let finder = squeeze::phone::Phone::default();
+        let input = s.as_bytes();
+        for pos in 0..input.len() {
+            let _ = finder.try_at(input, pos);
+        }
+    }
+
+    #[test]
+    fn modeline_try_at_no_panic(s in "[\\x00-\\x7f]{1,100}") {
+        let finder = squeeze::modeline::Modeline::default();
         let input = s.as_bytes();
         for pos in 0..input.len() {
             let _ = finder.try_at(input, pos);

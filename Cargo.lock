@@ -1005,6 +1005,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "env_logger",
+ "glob",
  "log",
  "open",
  "predicates",

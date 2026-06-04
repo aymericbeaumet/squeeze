@@ -1,4 +1,5 @@
 use crate::Finder;
+use std::fmt;
 use std::ops::Range;
 
 const CL_DIGIT: u16 = 1 << 0;
@@ -146,6 +147,22 @@ fn can_skip_with_mask(cl: u16, required: &[(u16, bool)]) -> bool {
 
 const MAX_FINDERS: usize = 32;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScannerError {
+    TooManyFinders { len: usize, max: usize },
+}
+
+impl fmt::Display for ScannerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScannerError::TooManyFinders { len, max } => {
+                write!(f, "too many finders: got {}, max is {}", len, max)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Match {
     pub finder_index: usize,
     pub range: Range<usize>,
@@ -154,17 +171,30 @@ pub struct Match {
 pub struct Scanner {
     finders: Vec<Box<dyn Finder>>,
     dispatch: [u32; 256],
+    trigger: [u32; 256],
     dispatch_mask: u32,
+    trigger_mask: u32,
     scan_mask: u32,
     skip_requirements: Vec<&'static [(u16, bool)]>,
 }
 
 impl Scanner {
     pub fn new(finders: Vec<Box<dyn Finder>>) -> Self {
-        assert!(finders.len() <= MAX_FINDERS);
+        Self::try_new(finders).expect("too many finders")
+    }
+
+    pub fn try_new(finders: Vec<Box<dyn Finder>>) -> Result<Self, ScannerError> {
+        if finders.len() > MAX_FINDERS {
+            return Err(ScannerError::TooManyFinders {
+                len: finders.len(),
+                max: MAX_FINDERS,
+            });
+        }
 
         let mut dispatch = [0u32; 256];
+        let mut trigger = [0u32; 256];
         let mut dispatch_mask = 0u32;
+        let mut trigger_mask = 0u32;
         let mut scan_mask = 0u32;
 
         let skip_requirements: Vec<&'static [(u16, bool)]> =
@@ -179,18 +209,27 @@ impl Scanner {
                         dispatch[b as usize] |= bit;
                     }
                 }
+            } else if finder.triggerable() {
+                trigger_mask |= bit;
+                for b in 0..=255u8 {
+                    if finder.could_trigger_at(b) {
+                        trigger[b as usize] |= bit;
+                    }
+                }
             } else {
                 scan_mask |= bit;
             }
         }
 
-        Scanner {
+        Ok(Scanner {
             finders,
             dispatch,
+            trigger,
             dispatch_mask,
+            trigger_mask,
             scan_mask,
             skip_requirements,
-        }
+        })
     }
 
     pub fn finders(&self) -> &[Box<dyn Finder>] {
@@ -274,6 +313,30 @@ impl Scanner {
             }
         }
 
+        let active_trigger = active & self.trigger_mask;
+        if active_trigger != 0 {
+            let mut finder_pos = [0usize; MAX_FINDERS];
+
+            for pos in 0..input.len() {
+                let mut candidates = self.trigger[input[pos] as usize] & active_trigger;
+                while candidates != 0 {
+                    let i = candidates.trailing_zeros() as usize;
+                    candidates &= candidates - 1;
+
+                    if pos < finder_pos[i] {
+                        continue;
+                    }
+                    if let Some(range) = self.finders[i].try_trigger_at(input, pos) {
+                        finder_pos[i] = range.end;
+                        matches.push(Match {
+                            finder_index: i,
+                            range,
+                        });
+                    }
+                }
+            }
+        }
+
         matches.sort_unstable_by(|a, b| {
             a.range
                 .start
@@ -335,6 +398,40 @@ impl Scanner {
                         continue;
                     }
                     if let Some(range) = self.finders[i].try_at(input, pos) {
+                        finder_pos[i] = range.end;
+                        let dominated = match &best {
+                            Some(b) => range.start >= b.range.start,
+                            None => false,
+                        };
+                        if !dominated {
+                            best = Some(Match {
+                                finder_index: i,
+                                range,
+                            });
+                            if best.as_ref().unwrap().range.start == 0 {
+                                return best;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let active_trigger = active & self.trigger_mask;
+        if active_trigger != 0 {
+            let limit = best.as_ref().map_or(input.len(), |b| b.range.start);
+            let mut finder_pos = [0usize; MAX_FINDERS];
+
+            for pos in 0..limit {
+                let mut candidates = self.trigger[input[pos] as usize] & active_trigger;
+                while candidates != 0 {
+                    let i = candidates.trailing_zeros() as usize;
+                    candidates &= candidates - 1;
+
+                    if pos < finder_pos[i] {
+                        continue;
+                    }
+                    if let Some(range) = self.finders[i].try_trigger_at(input, pos) {
                         finder_pos[i] = range.end;
                         let dominated = match &best {
                             Some(b) => range.start >= b.range.start,
@@ -466,6 +563,21 @@ mod tests {
     fn scanner_empty_finders() {
         let scanner = Scanner::new(Vec::new());
         assert!(scanner.scan_line("hello").is_empty());
+    }
+
+    #[test]
+    fn scanner_try_new_rejects_too_many_finders() {
+        let finders: Vec<Box<dyn Finder>> = (0..=MAX_FINDERS)
+            .map(|_| Box::new(crate::mirror::Mirror::default()) as Box<dyn Finder>)
+            .collect();
+        assert!(matches!(
+            Scanner::try_new(finders),
+            Err(ScannerError::TooManyFinders {
+                len,
+                max,
+            })
+            if len == MAX_FINDERS + 1 && max == MAX_FINDERS
+        ));
     }
 
     #[test]

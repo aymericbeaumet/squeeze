@@ -171,11 +171,7 @@ impl Finder for Emoji {
             return None;
         }
 
-        if pos > 0
-            && let Ok(before) = std::str::from_utf8(&input[..pos])
-            && let Some(prev) = before.chars().last()
-            && Self::is_zwj(prev)
-        {
+        if pos >= 3 && input[pos - 3..pos] == [0xE2, 0x80, 0x8D] {
             return None;
         }
 

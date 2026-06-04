@@ -1,13 +1,35 @@
 use clap::{Parser, ValueEnum};
-use rayon::prelude::*;
+use rayon::{ThreadPool, prelude::*};
 use squeeze::{
-    Finder, cidr::Cidr, codetag::Codetag, color::Color, datetime::Datetime, domain::Domain,
-    email::Email, emoji::Emoji, env::Env, handle::Handle, hash::Hash, ip::Ip, json::Json, jwt::Jwt,
-    mac::Mac, mirror::Mirror, modeline::Modeline, path::Path, phone::Phone, scanner::Scanner,
-    semver::Semver, uri::URI, uuid::Uuid,
+    Finder,
+    cidr::Cidr,
+    codetag::Codetag,
+    color::Color,
+    datetime::Datetime,
+    domain::Domain,
+    email::Email,
+    emoji::Emoji,
+    env::Env,
+    handle::Handle,
+    hash::Hash,
+    ip::Ip,
+    json::Json,
+    jwt::Jwt,
+    mac::Mac,
+    mirror::Mirror,
+    modeline::Modeline,
+    path::Path,
+    phone::Phone,
+    scanner::{Match, Scanner},
+    semver::Semver,
+    uri::URI,
+    uuid::Uuid,
 };
+use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
-use std::io::{self, BufRead, BufWriter, Read, Write};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
@@ -22,6 +44,13 @@ enum Format {
     Json,
     Yaml,
     Csv,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum, Default, PartialEq, Eq)]
+enum Precedence {
+    #[default]
+    First,
+    Longest,
 }
 
 #[derive(Parser)]
@@ -63,6 +92,19 @@ struct Opts {
         help = "scan lines in parallel (1 = sequential streaming)"
     )]
     jobs: usize,
+    #[arg(long = "all", help = "enable all finders")]
+    all: bool,
+    #[arg(long = "with-kind", help = "include finder kind in output")]
+    with_kind: bool,
+    #[arg(long = "no-overlap", help = "suppress overlapping matches")]
+    no_overlap: bool,
+    #[arg(
+        long = "precedence",
+        value_enum,
+        default_value_t = Precedence::First,
+        help = "overlap policy used with --no-overlap"
+    )]
+    precedence: Precedence,
 
     // cidr
     #[arg(long = "cidr", help = "search for CIDR notation")]
@@ -182,12 +224,18 @@ struct Opts {
     // uuid
     #[arg(long = "uuid", help = "search for UUIDs")]
     uuid: bool,
+
+    #[arg(
+        value_name = "INPUT",
+        help = "files or glob patterns to scan; omit for stdin"
+    )]
+    inputs: Vec<String>,
 }
 
 impl TryFrom<&Opts> for Cidr {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.cidr {
+        if !(opts.all || opts.cidr) {
             return Err(());
         }
         Ok(Cidr::default())
@@ -197,7 +245,7 @@ impl TryFrom<&Opts> for Cidr {
 impl TryFrom<&Opts> for Color {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.color {
+        if !(opts.all || opts.color) {
             return Err(());
         }
         Ok(Color::default())
@@ -207,7 +255,7 @@ impl TryFrom<&Opts> for Color {
 impl TryFrom<&Opts> for Datetime {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.datetime {
+        if !(opts.all || opts.datetime) {
             return Err(());
         }
         Ok(Datetime::default())
@@ -217,7 +265,7 @@ impl TryFrom<&Opts> for Datetime {
 impl TryFrom<&Opts> for Domain {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.domain {
+        if !(opts.all || opts.domain) {
             return Err(());
         }
         Ok(Domain::default())
@@ -227,7 +275,7 @@ impl TryFrom<&Opts> for Domain {
 impl TryFrom<&Opts> for Email {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.email {
+        if !(opts.all || opts.email) {
             return Err(());
         }
         Ok(Email::default())
@@ -237,7 +285,7 @@ impl TryFrom<&Opts> for Email {
 impl TryFrom<&Opts> for Emoji {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.emoji {
+        if !(opts.all || opts.emoji) {
             return Err(());
         }
         Ok(Emoji::default())
@@ -247,7 +295,7 @@ impl TryFrom<&Opts> for Emoji {
 impl TryFrom<&Opts> for Env {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.env {
+        if !(opts.all || opts.env) {
             return Err(());
         }
         Ok(Env::default())
@@ -257,7 +305,7 @@ impl TryFrom<&Opts> for Env {
 impl TryFrom<&Opts> for Handle {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.handle {
+        if !(opts.all || opts.handle) {
             return Err(());
         }
         Ok(Handle::default())
@@ -267,10 +315,19 @@ impl TryFrom<&Opts> for Handle {
 impl TryFrom<&Opts> for Hash {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.hash_algo.is_some() || opts.md5 || opts.sha1 || opts.sha256 || opts.sha512) {
+        if !(opts.all
+            || opts.hash_algo.is_some()
+            || opts.md5
+            || opts.sha1
+            || opts.sha256
+            || opts.sha512)
+        {
             return Err(());
         }
         let mut finder = Hash::default();
+        if opts.all {
+            return Ok(finder);
+        }
         if let Some(Some(ref algo)) = opts.hash_algo {
             for a in algo.split(',') {
                 finder.add_algorithm(a);
@@ -295,12 +352,12 @@ impl TryFrom<&Opts> for Hash {
 impl TryFrom<&Opts> for Ip {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.ip || opts.ipv4 || opts.ipv6) {
+        if !(opts.all || opts.ip || opts.ipv4 || opts.ipv6) {
             return Err(());
         }
         Ok(Ip {
-            ipv4: opts.ip || opts.ipv4,
-            ipv6: opts.ip || opts.ipv6,
+            ipv4: opts.all || opts.ip || opts.ipv4,
+            ipv6: opts.all || opts.ip || opts.ipv6,
         })
     }
 }
@@ -308,7 +365,7 @@ impl TryFrom<&Opts> for Ip {
 impl TryFrom<&Opts> for Json {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.json {
+        if !(opts.all || opts.json) {
             return Err(());
         }
         Ok(Json::default())
@@ -318,7 +375,7 @@ impl TryFrom<&Opts> for Json {
 impl TryFrom<&Opts> for Jwt {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.jwt {
+        if !(opts.all || opts.jwt) {
             return Err(());
         }
         Ok(Jwt::default())
@@ -328,7 +385,7 @@ impl TryFrom<&Opts> for Jwt {
 impl TryFrom<&Opts> for Mac {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.mac {
+        if !(opts.all || opts.mac) {
             return Err(());
         }
         Ok(Mac::default())
@@ -338,7 +395,7 @@ impl TryFrom<&Opts> for Mac {
 impl TryFrom<&Opts> for Modeline {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.modeline {
+        if !(opts.all || opts.modeline) {
             return Err(());
         }
         Ok(Modeline::default())
@@ -348,7 +405,7 @@ impl TryFrom<&Opts> for Modeline {
 impl TryFrom<&Opts> for Codetag {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.mnemonic.is_some() || opts.fixme || opts.todo) {
+        if !(opts.all || opts.mnemonic.is_some() || opts.fixme || opts.todo) {
             return Err(());
         }
         let mut finder = Codetag::default();
@@ -384,7 +441,7 @@ impl TryFrom<&Opts> for Mirror {
 impl TryFrom<&Opts> for Path {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.path {
+        if !(opts.all || opts.path) {
             return Err(());
         }
         Ok(Path::default())
@@ -394,7 +451,7 @@ impl TryFrom<&Opts> for Path {
 impl TryFrom<&Opts> for Phone {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.phone {
+        if !(opts.all || opts.phone) {
             return Err(());
         }
         Ok(Phone::default())
@@ -404,7 +461,7 @@ impl TryFrom<&Opts> for Phone {
 impl TryFrom<&Opts> for Semver {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.semver {
+        if !(opts.all || opts.semver) {
             return Err(());
         }
         Ok(Semver::default())
@@ -414,11 +471,14 @@ impl TryFrom<&Opts> for Semver {
 impl TryFrom<&Opts> for URI {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !(opts.scheme.is_some() || opts.url || opts.http || opts.https) {
+        if !(opts.all || opts.scheme.is_some() || opts.url || opts.http || opts.https) {
             return Err(());
         }
         let mut finder = URI::default();
         finder.strict = opts.strict;
+        if opts.all {
+            return Ok(finder);
+        }
         if let Some(Some(ref scheme)) = opts.scheme {
             for s in scheme.split(',') {
                 finder.add_scheme(s);
@@ -448,7 +508,7 @@ impl TryFrom<&Opts> for URI {
 impl TryFrom<&Opts> for Uuid {
     type Error = ();
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
-        if !opts.uuid {
+        if !(opts.all || opts.uuid) {
             return Err(());
         }
         Ok(Uuid::default())
@@ -528,11 +588,59 @@ fn must_buffer(opts: &Opts) -> bool {
     opts.last || opts.sort || opts.uniq || opts.copy || opts.output != Format::Text
 }
 
-fn write_formatted<W: Write>(out: &mut W, results: &[String], format: Format) -> io::Result<()> {
+#[derive(Clone, Debug)]
+struct ResultItem {
+    kind: &'static str,
+    value: String,
+    source: Option<String>,
+    line: usize,
+    column: usize,
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Debug)]
+struct LineRecord {
+    source: Option<String>,
+    line: usize,
+    text: String,
+}
+
+#[derive(Debug)]
+enum InputTarget {
+    Stdin,
+    File(PathBuf),
+}
+
+struct OutputState {
+    buffer: Option<Vec<ResultItem>>,
+    last_match: Option<ResultItem>,
+}
+
+impl OutputState {
+    fn new(opts: &Opts) -> Self {
+        let buffer = if must_buffer(opts) && !opts.last {
+            Some(Vec::new())
+        } else {
+            None
+        };
+        OutputState {
+            buffer,
+            last_match: None,
+        }
+    }
+}
+
+fn write_formatted<W: Write>(
+    out: &mut W,
+    results: &[ResultItem],
+    format: Format,
+    with_kind: bool,
+) -> io::Result<()> {
     match format {
         Format::Text => {
             for r in results {
-                writeln!(out, "{}", r)?;
+                write_text_result(out, r, with_kind)?;
             }
         }
         Format::Json => {
@@ -541,25 +649,52 @@ fn write_formatted<W: Write>(out: &mut W, results: &[String], format: Format) ->
                 if i > 0 {
                     out.write_all(b",")?;
                 }
-                write_json_string(out, r)?;
+                if with_kind {
+                    write_json_result(out, r)?;
+                } else {
+                    write_json_string(out, &r.value)?;
+                }
             }
             out.write_all(b"]\n")?;
         }
         Format::Yaml => {
             for r in results {
-                write!(out, "- ")?;
-                write_yaml_scalar(out, r)?;
-                writeln!(out)?;
+                if with_kind {
+                    write_yaml_result(out, r)?;
+                } else {
+                    write!(out, "- ")?;
+                    write_yaml_scalar(out, &r.value)?;
+                    writeln!(out)?;
+                }
             }
         }
         Format::Csv => {
+            if with_kind {
+                out.write_all(b"kind,value,line,column,start,end,source\n")?;
+            }
             for r in results {
-                write_csv_field(out, r)?;
-                writeln!(out)?;
+                if with_kind {
+                    write_csv_result(out, r)?;
+                } else {
+                    write_csv_field(out, &r.value)?;
+                    writeln!(out)?;
+                }
             }
         }
     }
     Ok(())
+}
+
+fn write_text_result<W: Write + ?Sized>(
+    out: &mut W,
+    result: &ResultItem,
+    with_kind: bool,
+) -> io::Result<()> {
+    if with_kind {
+        writeln!(out, "{}\t{}", result.kind, result.value)
+    } else {
+        writeln!(out, "{}", result.value)
+    }
 }
 
 fn write_json_string<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
@@ -594,6 +729,61 @@ fn write_yaml_scalar<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
     }
 }
 
+fn write_json_result<W: Write>(out: &mut W, result: &ResultItem) -> io::Result<()> {
+    out.write_all(b"{\"kind\":")?;
+    write_json_string(out, result.kind)?;
+    out.write_all(b",\"value\":")?;
+    write_json_string(out, &result.value)?;
+    write!(out, ",\"line\":{}", result.line)?;
+    write!(out, ",\"column\":{}", result.column)?;
+    write!(out, ",\"start\":{}", result.start)?;
+    write!(out, ",\"end\":{}", result.end)?;
+    out.write_all(b",\"source\":")?;
+    if let Some(source) = &result.source {
+        write_json_string(out, source)?;
+    } else {
+        out.write_all(b"null")?;
+    }
+    out.write_all(b"}")?;
+    Ok(())
+}
+
+fn write_yaml_result<W: Write>(out: &mut W, result: &ResultItem) -> io::Result<()> {
+    out.write_all(b"- kind: ")?;
+    write_yaml_scalar(out, result.kind)?;
+    out.write_all(b"\n  value: ")?;
+    write_yaml_scalar(out, &result.value)?;
+    writeln!(out, "\n  line: {}", result.line)?;
+    writeln!(out, "  column: {}", result.column)?;
+    writeln!(out, "  start: {}", result.start)?;
+    writeln!(out, "  end: {}", result.end)?;
+    out.write_all(b"  source: ")?;
+    if let Some(source) = &result.source {
+        write_yaml_scalar(out, source)?;
+    } else {
+        out.write_all(b"null")?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
+fn write_csv_result<W: Write>(out: &mut W, result: &ResultItem) -> io::Result<()> {
+    write_csv_field(out, result.kind)?;
+    out.write_all(b",")?;
+    write_csv_field(out, &result.value)?;
+    write!(
+        out,
+        ",{},{},{},{}",
+        result.line, result.column, result.start, result.end
+    )?;
+    out.write_all(b",")?;
+    if let Some(source) = &result.source {
+        write_csv_field(out, source)?;
+    }
+    writeln!(out)?;
+    Ok(())
+}
+
 fn write_csv_field<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
     let needs_quoting = s.contains([',', '"', '\n', '\r']);
     if needs_quoting {
@@ -619,116 +809,309 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn byte_column(line: &str, byte_pos: usize) -> usize {
+    line[..byte_pos].chars().count() + 1
+}
+
+fn apply_overlap_policy(matches: &mut Vec<Match>, precedence: Precedence) {
+    if matches.len() < 2 {
+        return;
+    }
+
+    match precedence {
+        Precedence::First => {
+            let mut end = 0;
+            matches.retain(|m| {
+                if m.range.start >= end {
+                    end = m.range.end;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        Precedence::Longest => {
+            let original = std::mem::take(matches);
+            let mut filtered = Vec::new();
+            let mut i = 0;
+            while i < original.len() {
+                let mut cluster_end = original[i].range.end;
+                let mut best = i;
+                let mut j = i + 1;
+                while j < original.len() && original[j].range.start < cluster_end {
+                    cluster_end = cluster_end.max(original[j].range.end);
+                    let best_len = original[best].range.end - original[best].range.start;
+                    let candidate_len = original[j].range.end - original[j].range.start;
+                    if candidate_len > best_len
+                        || (candidate_len == best_len
+                            && original[j].finder_index < original[best].finder_index)
+                    {
+                        best = j;
+                    }
+                    j += 1;
+                }
+                filtered.push(original[best].clone());
+                i = j;
+            }
+            filtered.sort_unstable_by(|a, b| {
+                a.range
+                    .start
+                    .cmp(&b.range.start)
+                    .then(a.finder_index.cmp(&b.finder_index))
+            });
+            *matches = filtered;
+        }
+    }
+}
+
+fn collect_line_matches(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    line_number: usize,
+    line: &str,
+) -> Vec<ResultItem> {
+    let mut matches = Vec::new();
+    if opts.first {
+        if let Some(m) = scanner.scan_line_first(line) {
+            matches.push(m);
+        }
+    } else {
+        scanner.scan_line_into(line, &mut matches);
+    }
+
+    if opts.no_overlap {
+        apply_overlap_policy(&mut matches, opts.precedence);
+    }
+
+    matches
+        .into_iter()
+        .filter_map(|m| {
+            let value = &line[m.range.clone()];
+            if value.is_empty() {
+                return None;
+            }
+            Some(ResultItem {
+                kind: scanner.finders()[m.finder_index].id(),
+                value: value.to_string(),
+                source: source.map(ToOwned::to_owned),
+                line: line_number,
+                column: byte_column(line, m.range.start),
+                start: m.range.start,
+                end: m.range.end,
+            })
+        })
+        .collect()
+}
+
+fn emit_result(out: &mut dyn Write, opts: &Opts, result: &ResultItem) -> io::Result<()> {
+    write_text_result(out, result, opts.with_kind)?;
+    if opts.open {
+        open_url(&result.value)?;
+    }
+    Ok(())
+}
+
+fn handle_result(
+    out: &mut dyn Write,
+    opts: &Opts,
+    state: &mut OutputState,
+    result: ResultItem,
+) -> io::Result<bool> {
+    if opts.last {
+        state.last_match = Some(result);
+        return Ok(false);
+    }
+
+    if let Some(buffer) = state.buffer.as_mut() {
+        buffer.push(result);
+    } else {
+        emit_result(out, opts, &result)?;
+    }
+
+    Ok(opts.first)
+}
+
 fn scan_lines_sequential(
     scanner: &Scanner,
     opts: &Opts,
+    source: Option<&str>,
     reader: &mut dyn BufRead,
     out: &mut dyn Write,
-    buffered: &mut Option<Vec<String>>,
+    state: &mut OutputState,
 ) -> io::Result<bool> {
     let mut line = String::new();
-    let mut matches_buf = Vec::new();
-    let mut last_match: Option<String> = None;
+    let mut line_number = 0;
 
     loop {
         line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => {}
-            Err(e) => {
-                log::error!("failed to read line: {}", e);
-                continue;
-            }
+        if reader.read_line(&mut line)? == 0 {
+            break;
         }
+        line_number += 1;
         let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-
-        if opts.first {
-            if let Some(m) = scanner.scan_line_first(trimmed) {
-                let found = &trimmed[m.range];
-                if !found.is_empty() {
-                    if let Some(b) = buffered.as_mut() {
-                        b.push(found.to_string());
-                    } else {
-                        writeln!(out, "{}", found)?;
-                        if opts.open
-                            && let Err(e) = open_url(found)
-                        {
-                            eprintln!("failed to open '{}': {}", found, e);
-                        }
-                    }
-                    return Ok(true);
-                }
-            }
-        } else {
-            scanner.scan_line_into(trimmed, &mut matches_buf);
-            for m in &matches_buf {
-                let found = &trimmed[m.range.clone()];
-                if found.is_empty() {
-                    continue;
-                }
-                if let Some(b) = buffered.as_mut() {
-                    if opts.last {
-                        last_match = Some(found.to_string());
-                    } else {
-                        b.push(found.to_string());
-                    }
-                } else {
-                    writeln!(out, "{}", found)?;
-                    if opts.open
-                        && let Err(e) = open_url(found)
-                    {
-                        eprintln!("failed to open '{}': {}", found, e);
-                    }
-                }
+        for result in collect_line_matches(scanner, opts, source, line_number, trimmed) {
+            if handle_result(out, opts, state, result)? {
+                return Ok(true);
             }
         }
-    }
-
-    if opts.last
-        && let (Some(b), Some(last)) = (buffered.as_mut(), last_match)
-    {
-        b.push(last);
     }
 
     Ok(false)
 }
 
-fn scan_lines_parallel(scanner: &Scanner, opts: &Opts, lines: Vec<String>) -> Vec<String> {
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(opts.jobs)
-        .build()
-        .expect("failed to build thread pool");
+const PARALLEL_BATCH_LINES: usize = 4096;
 
-    pool.install(|| {
-        lines
-            .par_iter()
-            .map(|line| {
-                let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-                let mut out = Vec::new();
-                if opts.first {
-                    if let Some(m) = scanner.scan_line_first(trimmed) {
-                        let f = &trimmed[m.range];
-                        if !f.is_empty() {
-                            out.push(f.to_string());
-                        }
-                    }
-                } else {
-                    let mut buf = Vec::new();
-                    scanner.scan_line_into(trimmed, &mut buf);
-                    for m in &buf {
-                        let f = &trimmed[m.range.clone()];
-                        if !f.is_empty() {
-                            out.push(f.to_string());
-                        }
-                    }
+fn scan_lines_parallel(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    reader: &mut dyn BufRead,
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    pool: &ThreadPool,
+) -> io::Result<bool> {
+    let mut line = String::new();
+    let mut line_number = 0;
+
+    loop {
+        let mut batch = Vec::with_capacity(PARALLEL_BATCH_LINES);
+        for _ in 0..PARALLEL_BATCH_LINES {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
+            line_number += 1;
+            batch.push(LineRecord {
+                source: source.map(ToOwned::to_owned),
+                line: line_number,
+                text: line
+                    .trim_end_matches('\n')
+                    .trim_end_matches('\r')
+                    .to_string(),
+            });
+        }
+
+        if batch.is_empty() {
+            break;
+        }
+
+        let batch_results: Vec<Vec<ResultItem>> = pool.install(|| {
+            batch
+                .par_iter()
+                .map(|record| {
+                    collect_line_matches(
+                        scanner,
+                        opts,
+                        record.source.as_deref(),
+                        record.line,
+                        &record.text,
+                    )
+                })
+                .collect()
+        });
+
+        for line_results in batch_results {
+            for result in line_results {
+                if handle_result(out, opts, state, result)? {
+                    return Ok(true);
                 }
-                out
-            })
-            .reduce(Vec::new, |mut a, mut b| {
-                a.append(&mut b);
-                a
-            })
-    })
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+fn has_glob_magic(input: &str) -> bool {
+    input.contains('*') || input.contains('?') || input.contains('[')
+}
+
+fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
+    if inputs.is_empty() {
+        return Ok(vec![InputTarget::Stdin]);
+    }
+
+    let mut targets = Vec::new();
+    for input in inputs {
+        if input == "-" {
+            targets.push(InputTarget::Stdin);
+            continue;
+        }
+
+        if has_glob_magic(input) {
+            let mut matched = false;
+            for entry in glob::glob(input).map_err(|e| e.to_string())? {
+                let path = entry.map_err(|e| e.to_string())?;
+                if path.is_file() {
+                    matched = true;
+                    targets.push(InputTarget::File(path));
+                }
+            }
+            if !matched {
+                return Err(format!("no files matched pattern '{}'", input));
+            }
+        } else {
+            targets.push(InputTarget::File(PathBuf::from(input)));
+        }
+    }
+
+    Ok(targets)
+}
+
+fn scan_reader(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    reader: &mut dyn BufRead,
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    pool: Option<&ThreadPool>,
+) -> io::Result<bool> {
+    if let Some(pool) = pool {
+        scan_lines_parallel(scanner, opts, source, reader, out, state, pool)
+    } else {
+        scan_lines_sequential(scanner, opts, source, reader, out, state)
+    }
+}
+
+fn finalize_results(
+    out: &mut dyn Write,
+    opts: &Opts,
+    mut results: Vec<ResultItem>,
+) -> io::Result<()> {
+    if opts.sort {
+        results.sort_by(|a, b| {
+            a.value
+                .cmp(&b.value)
+                .then(a.kind.cmp(b.kind))
+                .then(a.source.cmp(&b.source))
+                .then(a.line.cmp(&b.line))
+                .then(a.start.cmp(&b.start))
+        });
+    }
+    if opts.uniq {
+        let mut seen = HashSet::new();
+        results.retain(|r| seen.insert(r.value.clone()));
+    }
+
+    let mut formatted = Vec::new();
+    write_formatted(&mut formatted, &results, opts.output, opts.with_kind)?;
+
+    if opts.copy {
+        let text = String::from_utf8_lossy(&formatted);
+        copy_to_clipboard(&text).map_err(io::Error::other)?;
+    }
+
+    out.write_all(&formatted)?;
+
+    if opts.open {
+        for r in &results {
+            open_url(&r.value)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -746,87 +1129,109 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let scanner = Scanner::new(finders);
-    let stdout = io::stdout().lock();
-    let mut out = BufWriter::new(stdout);
-
-    let buffered = must_buffer(&opts);
-    let mut buffer: Option<Vec<String>> = if buffered { Some(Vec::new()) } else { None };
-
-    if opts.jobs > 1 {
-        // Parallel mode: read all input then process.
-        let mut input = String::new();
-        if let Err(e) = io::stdin().lock().read_to_string(&mut input) {
-            log::error!("failed to read stdin: {}", e);
+    let scanner = match Scanner::try_new(finders) {
+        Ok(scanner) => scanner,
+        Err(e) => {
+            eprintln!("{}", e);
             return ExitCode::FAILURE;
         }
-        let lines: Vec<String> = input.lines().map(String::from).collect();
-        let mut results = scan_lines_parallel(&scanner, &opts, lines);
-        if opts.first {
-            results.truncate(1);
+    };
+    let targets = match expand_inputs(&opts.inputs) {
+        Ok(targets) => targets,
+        Err(e) => {
+            eprintln!("{}", e);
+            return ExitCode::FAILURE;
         }
-        if opts.last && !results.is_empty() {
-            let last = results.pop().unwrap();
-            results.clear();
-            results.push(last);
-        }
-        if let Some(b) = buffer.as_mut() {
-            *b = results;
-        } else {
-            for r in &results {
-                let _ = writeln!(out, "{}", r);
-                if opts.open
-                    && let Err(e) = open_url(r)
-                {
-                    eprintln!("failed to open '{}': {}", r, e);
-                }
+    };
+
+    let pool = if opts.jobs > 1 {
+        match rayon::ThreadPoolBuilder::new()
+            .num_threads(opts.jobs)
+            .build()
+        {
+            Ok(pool) => Some(pool),
+            Err(e) => {
+                eprintln!("failed to build thread pool: {}", e);
+                return ExitCode::FAILURE;
             }
         }
     } else {
-        let mut stdin = io::stdin().lock();
-        if let Err(e) = scan_lines_sequential(&scanner, &opts, &mut stdin, &mut out, &mut buffer) {
-            log::error!("error during scanning: {}", e);
-            return ExitCode::FAILURE;
+        None
+    };
+
+    let stdout = io::stdout().lock();
+    let mut out = BufWriter::new(stdout);
+    let mut state = OutputState::new(&opts);
+
+    for target in targets {
+        let result = match target {
+            InputTarget::Stdin => {
+                let stdin = io::stdin();
+                let mut reader = stdin.lock();
+                scan_reader(
+                    &scanner,
+                    &opts,
+                    None,
+                    &mut reader,
+                    &mut out,
+                    &mut state,
+                    pool.as_ref(),
+                )
+            }
+            InputTarget::File(path) => {
+                let source = path.display().to_string();
+                let file = match File::open(&path) {
+                    Ok(file) => file,
+                    Err(e) => {
+                        eprintln!("failed to open '{}': {}", source, e);
+                        return ExitCode::FAILURE;
+                    }
+                };
+                let mut reader = BufReader::new(file);
+                scan_reader(
+                    &scanner,
+                    &opts,
+                    Some(&source),
+                    &mut reader,
+                    &mut out,
+                    &mut state,
+                    pool.as_ref(),
+                )
+            }
+        };
+
+        match result {
+            Ok(true) => {
+                break;
+            }
+            Ok(false) => {}
+            Err(e) => {
+                eprintln!("error during scanning: {}", e);
+                return ExitCode::FAILURE;
+            }
         }
     }
 
-    if let Some(mut results) = buffer {
-        if opts.sort {
-            results.sort();
-        }
-        if opts.uniq {
-            let mut seen = std::collections::HashSet::new();
-            results.retain(|r| seen.insert(r.clone()));
-        }
+    let buffered_results = if opts.last {
+        state.last_match.into_iter().collect()
+    } else {
+        state.buffer.take().unwrap_or_default()
+    };
 
-        let mut formatted = Vec::new();
-        if let Err(e) = write_formatted(&mut formatted, &results, opts.output) {
-            log::error!("formatting failed: {}", e);
-            return ExitCode::FAILURE;
-        }
-
-        if opts.copy {
-            let text = String::from_utf8_lossy(&formatted);
-            if let Err(e) = copy_to_clipboard(&text) {
-                eprintln!("failed to copy to clipboard: {}", e);
-            }
-        }
-
-        if let Err(e) = out.write_all(&formatted) {
-            log::error!("output failed: {}", e);
-            return ExitCode::FAILURE;
-        }
-
-        if opts.open {
-            for r in &results {
-                if let Err(e) = open_url(r) {
-                    eprintln!("failed to open '{}': {}", r, e);
-                }
-            }
-        }
+    if (opts.last || must_buffer(&opts))
+        && let Err(e) = finalize_results(&mut out, &opts, buffered_results)
+    {
+        eprintln!("output failed: {}", e);
+        return ExitCode::FAILURE;
     }
 
-    ExitCode::SUCCESS
+    match out.flush() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("output failed: {}", e);
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn open_url(url: &str) -> io::Result<()> {

@@ -128,8 +128,19 @@ Combine finders with these flags to massage the output:
 | `--copy` | copy the results to the system clipboard |
 | `--output <fmt>` | output as `text` (default), `json`, `yaml`, or `csv` |
 | `-j`, `--jobs <N>` | scan lines in parallel using `N` worker threads |
+| `--all` | enable all regular finders |
+| `--with-kind` | include the finder id, and structured metadata for non-text formats |
+| `--no-overlap` | suppress overlapping matches |
+| `--precedence <first\|longest>` | choose the overlap policy used with `--no-overlap` |
 
 See all the possibilities with `squeeze --help`.
+
+By default `squeeze` reads standard input. You can also pass files or glob
+patterns:
+
+```shell
+squeeze --all --with-kind --output json 'logs/*.txt'
+```
 
 ## Integrations
 

@@ -31,10 +31,34 @@ impl Finder for Modeline {
         "modeline"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        matches!(byte, b'v' | b'V' | b'e' | b'E')
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if !self.could_start_at(input[pos]) {
+            return None;
+        }
+        let s = std::str::from_utf8(input).ok()?;
+        let m = regex().find_at(s, pos)?;
+        if m.start() != pos {
+            return None;
+        }
+        Self::trim_range(s, m.start(), m.end())
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let m = regex().find(s)?;
-        let start = m.start();
-        let mut end = m.end();
+        Self::trim_range(s, m.start(), m.end())
+    }
+}
+
+impl Modeline {
+    fn trim_range(s: &str, start: usize, mut end: usize) -> Option<Range<usize>> {
         // Trim trailing whitespace.
         let bytes = s.as_bytes();
         while end > start && matches!(bytes[end - 1], b' ' | b'\t') {

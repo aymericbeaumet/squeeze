@@ -69,6 +69,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo doc
-        run: cargo doc --no-deps --all-features
+        run: |
+          cargo doc -p squeeze --no-deps --all-features
+          cargo doc -p squeeze-cli --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings

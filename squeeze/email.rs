@@ -42,104 +42,119 @@ impl Finder for Email {
         "email"
     }
 
+    fn triggerable(&self) -> bool {
+        true
+    }
+
+    fn could_trigger_at(&self, byte: u8) -> bool {
+        byte == b'@'
+    }
+
+    fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        Self::try_at_at(input, pos)
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
 
         while idx < input.len() {
             let at_pos = idx + input[idx..].iter().position(|&b| b == b'@')?;
-
-            let mut local_start = at_pos;
-            while local_start > idx && LOCAL_CHARS[input[local_start - 1] as usize] {
-                local_start -= 1;
+            if let Some(range) = Self::try_at_at(input, at_pos) {
+                return Some(range);
             }
-
-            // Local part must be non-empty and not start/end with '.'
-            if local_start == at_pos || input[local_start] == b'.' || input[at_pos - 1] == b'.' {
-                idx = at_pos + 1;
-                continue;
-            }
-
-            // Walk forwards for domain, validating in a single pass
-            let domain_start = at_pos + 1;
-            let mut domain_end = domain_start;
-            let mut dot_count = 0u32;
-            let mut last_dot = 0usize;
-            let mut label_start = domain_start;
-            let mut label_valid = true;
-
-            while domain_end < input.len() {
-                let b = input[domain_end];
-                if b == b'.' {
-                    let label_len = domain_end - label_start;
-                    if label_len == 0 || input[label_start] == b'-' || input[domain_end - 1] == b'-'
-                    {
-                        label_valid = false;
-                        break;
-                    }
-                    dot_count += 1;
-                    last_dot = domain_end;
-                    label_start = domain_end + 1;
-                    domain_end += 1;
-                } else if b.is_ascii_alphanumeric() || b == b'-' {
-                    domain_end += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if domain_end == domain_start || !label_valid {
-                idx = at_pos + 1;
-                continue;
-            }
-
-            // Strip trailing dots/hyphens
-            while domain_end > domain_start && matches!(input[domain_end - 1], b'.' | b'-') {
-                if input[domain_end - 1] == b'.' && domain_end - 1 == last_dot {
-                    dot_count -= 1;
-                    if dot_count > 0 {
-                        // Recalculate last_dot
-                        last_dot = input[domain_start..domain_end - 1]
-                            .iter()
-                            .rposition(|&b| b == b'.')
-                            .map(|p| domain_start + p)
-                            .unwrap_or(0);
-                    }
-                }
-                domain_end -= 1;
-            }
-
-            if dot_count == 0 {
-                idx = at_pos + 1;
-                continue;
-            }
-
-            // Validate final label (after last strip)
-            let final_label_start = if last_dot >= domain_start {
-                last_dot + 1
-            } else {
-                domain_start
-            };
-            let final_label_len = domain_end - final_label_start;
-            if final_label_len == 0
-                || input[final_label_start] == b'-'
-                || input[domain_end - 1] == b'-'
-            {
-                idx = at_pos + 1;
-                continue;
-            }
-
-            // TLD must be >= 2 chars and all alpha
-            let tld = &input[last_dot + 1..domain_end];
-            if tld.len() < 2 || !tld.iter().all(|b| b.is_ascii_alphabetic()) {
-                idx = at_pos + 1;
-                continue;
-            }
-
-            return Some(local_start..domain_end);
+            idx = at_pos + 1;
         }
 
         None
+    }
+}
+
+impl Email {
+    fn try_at_at(input: &[u8], at_pos: usize) -> Option<Range<usize>> {
+        if input[at_pos] != b'@' {
+            return None;
+        }
+
+        let mut local_start = at_pos;
+        while local_start > 0 && LOCAL_CHARS[input[local_start - 1] as usize] {
+            local_start -= 1;
+        }
+
+        // Local part must be non-empty and not start/end with '.'
+        if local_start == at_pos || input[local_start] == b'.' || input[at_pos - 1] == b'.' {
+            return None;
+        }
+
+        // Walk forwards for domain, validating in a single pass
+        let domain_start = at_pos + 1;
+        let mut domain_end = domain_start;
+        let mut dot_count = 0u32;
+        let mut last_dot = 0usize;
+        let mut label_start = domain_start;
+        let mut label_valid = true;
+
+        while domain_end < input.len() {
+            let b = input[domain_end];
+            if b == b'.' {
+                let label_len = domain_end - label_start;
+                if label_len == 0 || input[label_start] == b'-' || input[domain_end - 1] == b'-' {
+                    label_valid = false;
+                    break;
+                }
+                dot_count += 1;
+                last_dot = domain_end;
+                label_start = domain_end + 1;
+                domain_end += 1;
+            } else if b.is_ascii_alphanumeric() || b == b'-' {
+                domain_end += 1;
+            } else {
+                break;
+            }
+        }
+
+        if domain_end == domain_start || !label_valid {
+            return None;
+        }
+
+        // Strip trailing dots/hyphens
+        while domain_end > domain_start && matches!(input[domain_end - 1], b'.' | b'-') {
+            if input[domain_end - 1] == b'.' && domain_end - 1 == last_dot {
+                dot_count -= 1;
+                if dot_count > 0 {
+                    last_dot = input[domain_start..domain_end - 1]
+                        .iter()
+                        .rposition(|&b| b == b'.')
+                        .map(|p| domain_start + p)
+                        .unwrap_or(0);
+                }
+            }
+            domain_end -= 1;
+        }
+
+        if dot_count == 0 {
+            return None;
+        }
+
+        // Validate final label (after last strip)
+        let final_label_start = if last_dot >= domain_start {
+            last_dot + 1
+        } else {
+            domain_start
+        };
+        let final_label_len = domain_end - final_label_start;
+        if final_label_len == 0 || input[final_label_start] == b'-' || input[domain_end - 1] == b'-'
+        {
+            return None;
+        }
+
+        // TLD must be >= 2 chars and all alpha
+        let tld = &input[last_dot + 1..domain_end];
+        if tld.len() < 2 || !tld.iter().all(|b| b.is_ascii_alphabetic()) {
+            return None;
+        }
+
+        Some(local_start..domain_end)
     }
 }
 

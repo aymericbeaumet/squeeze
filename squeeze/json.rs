@@ -201,6 +201,21 @@ impl Finder for Json {
         "json"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        matches!(byte, b'{' | b'[')
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if !matches!(input[pos], b'{' | b'[') {
+            return None;
+        }
+        parse_value(input, pos, 0).map(|end| pos..end)
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
@@ -223,6 +238,14 @@ mod tests {
     fn id_should_return_json() {
         let finder = Json::default();
         assert_eq!("json", finder.id());
+    }
+
+    #[test]
+    fn try_at_extracts_json_at_exact_position() {
+        let finder = Json::default();
+        let input = br#"x {"key": "value"} y"#;
+        assert_eq!(Some(2..18), finder.try_at(input, 2));
+        assert_eq!(None, finder.try_at(input, 0));
     }
 
     // Objects

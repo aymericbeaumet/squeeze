@@ -117,4 +117,25 @@ pub trait Finder: Send + Sync {
     fn try_at(&self, _input: &[u8], _pos: usize) -> Option<Range<usize>> {
         None
     }
+
+    /// Whether this finder supports trigger-mode scanning.
+    ///
+    /// Trigger-mode is for finders whose cheapest reliable signal is inside the
+    /// match rather than at the first byte, such as the `@` in an email address
+    /// or `:` in a URI.
+    fn triggerable(&self) -> bool {
+        false
+    }
+
+    /// Whether the given byte could trigger a match for this finder.
+    /// Only meaningful when [`triggerable`](Finder::triggerable) returns true.
+    fn could_trigger_at(&self, _byte: u8) -> bool {
+        false
+    }
+
+    /// Try to find a match triggered by `pos` in the full input.
+    /// Only called when [`triggerable`](Finder::triggerable) returns true.
+    fn try_trigger_at(&self, _input: &[u8], _pos: usize) -> Option<Range<usize>> {
+        None
+    }
 }
