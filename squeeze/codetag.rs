@@ -156,12 +156,21 @@ fn default_mnemonics() -> &'static HashSet<String> {
 ///     println!("Found: {}", &text[range]);
 /// }
 /// ```
-#[derive(Default)]
 pub struct Codetag {
     /// When `true`, the mnemonic (e.g., "TODO:") is excluded from the result.
     pub hide_mnemonic: bool,
     mnemonics: HashSet<String>,
-    mnemonics_regex: Option<Regex>,
+    mnemonics_regex: OnceLock<Regex>,
+}
+
+impl Default for Codetag {
+    fn default() -> Self {
+        Codetag {
+            hide_mnemonic: false,
+            mnemonics: HashSet::new(),
+            mnemonics_regex: OnceLock::new(),
+        }
+    }
 }
 
 impl Finder for Codetag {
@@ -170,13 +179,11 @@ impl Finder for Codetag {
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
-        let m = self
-            .mnemonics_regex
-            .as_ref()
-            .expect(
-                "implementation error: please call .build_mnemonics_regex() on the codetag instance",
-            )
-            .find(s)?;
+        let regex = self.mnemonics_regex.get_or_init(|| {
+            self.compile_mnemonics_regex()
+                .expect("escaped codetag mnemonics must compile")
+        });
+        let m = regex.find(s)?;
         let from = if self.hide_mnemonic {
             m.end()
         } else {
@@ -196,6 +203,7 @@ impl Codetag {
     /// Mnemonic matching is case-insensitive.
     pub fn add_mnemonic(&mut self, mnemonic: &str) {
         self.mnemonics.insert(mnemonic.to_uppercase());
+        self.mnemonics_regex = OnceLock::new();
     }
 
     /// Builds the internal regex for matching mnemonics.
@@ -208,6 +216,13 @@ impl Codetag {
     /// Returns an error if the regex compilation fails (should not happen with
     /// valid mnemonics).
     pub fn build_mnemonics_regex(&mut self) -> Result<(), regex::Error> {
+        let regex = self.compile_mnemonics_regex()?;
+        self.mnemonics_regex = OnceLock::new();
+        let _ = self.mnemonics_regex.set(regex);
+        Ok(())
+    }
+
+    fn compile_mnemonics_regex(&self) -> Result<Regex, regex::Error> {
         let mnemonics = if self.mnemonics.is_empty() {
             default_mnemonics().iter()
         } else {
@@ -251,8 +266,7 @@ impl Codetag {
         }
 
         r.push_str(")(?:\\([^)]*\\))?:");
-        self.mnemonics_regex = Some(Regex::new(&r)?);
-        Ok(())
+        Regex::new(&r)
     }
 }
 
@@ -261,6 +275,16 @@ impl Codetag {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_finder_is_ready_to_use() {
+        let finder = Codetag::default();
+        let input = "TODO: check if cmd is installed";
+        assert_eq!(
+            Some("TODO: check if cmd is installed"),
+            finder.find(input).map(|r| &input[r])
+        );
+    }
 
     #[test]
     fn it_should_find_at_start_of_line() {

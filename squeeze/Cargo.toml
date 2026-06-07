@@ -15,6 +15,11 @@ categories = ["text-processing", "parsing", "command-line-utilities"]
 name = "squeeze"
 path = "lib.rs"
 
+[[bench]]
+name = "scanner"
+path = "benches/scanner.rs"
+harness = false
+
 [dependencies]
 phf = { version = "0.13", features = ["macros"] }
 regex = "1.12"

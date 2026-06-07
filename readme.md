@@ -11,13 +11,16 @@ Currently supported:
 | Codetags | `--codetag`, `--todo`, `--fixme` | `TODO: fix this`, `FIXME(#42): bug` |
 | Colors | `--color` | `#ff0000`, `rgb(255, 0, 0)`, `hsl(0, 100%, 50%)` |
 | Datetimes | `--datetime` | `2024-01-15`, `2024-01-15T10:30:00Z` |
+| Domains | `--domain` | `example.com`, `mail.example.co.uk` |
 | Emails | `--email` | `user@example.com`, `first.last+tag@company.co.uk` |
 | Env vars | `--env` | `$HOME`, `${PATH}` |
+| Handles | `--handle` | `@alice`, `@user@example.social` |
 | Hashes | `--hash`, `--md5`, `--sha256` | `5d41402abc4b2a76b9719d911017c592` |
 | IPs | `--ip`, `--ipv4`, `--ipv6` | `192.168.1.1`, `::1`, `2001:db8::1` |
 | JSON | `--json` | `{"key": "value"}`, `[1, 2, 3]` |
 | JWTs | `--jwt` | `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOi...` |
 | MACs | `--mac` | `00:1A:2B:3C:4D:5E`, `001A.2B3C.4D5E` |
+| Modelines | `--modeline` | `vim: set ts=4 sw=4 et:` |
 | Paths | `--path` | `/etc/hosts`, `./src/main.rs:42:10` |
 | Phones | `--phone` | `+14155551234`, `(415) 555-1234` |
 | Semver | `--semver` | `1.0.0`, `v2.3.1-rc.1+build.42` |
@@ -112,7 +115,32 @@ http://localhost
 Some finders support sub-filters. For example `--codetag=todo` or its alias
 `--todo`, `--uri=https`, `--hash=sha256`, etc.
 
+### Output flags
+
+Combine finders with these flags to massage the output:
+
+| Flag | Description |
+|------|-------------|
+| `-1`, `--first` | only show the first match |
+| `--last` | only show the last match |
+| `--sort` | sort the results |
+| `--uniq` | deduplicate the results |
+| `--copy` | copy the results to the system clipboard |
+| `--output <fmt>` | output as `text` (default), `json`, `yaml`, or `csv` |
+| `-j`, `--jobs <N>` | scan lines in parallel using `N` worker threads |
+| `--all` | enable all regular finders |
+| `--with-kind` | include the finder id, and structured metadata for non-text formats |
+| `--no-overlap` | suppress overlapping matches |
+| `--precedence <first\|longest>` | choose the overlap policy used with `--no-overlap` |
+
 See all the possibilities with `squeeze --help`.
+
+By default `squeeze` reads standard input. You can also pass files or glob
+patterns:
+
+```shell
+squeeze --all --with-kind --output json 'logs/*.txt'
+```
 
 ## Integrations
 

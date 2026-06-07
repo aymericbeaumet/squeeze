@@ -71,6 +71,18 @@ impl SchemeConfigs {
             SchemeConfig::default()
         }
     }
+
+    fn get_ascii_case_insensitive(&self, key: &str) -> SchemeConfig {
+        if key.eq_ignore_ascii_case("ftp") {
+            self.get("ftp")
+        } else if key.eq_ignore_ascii_case("http") {
+            self.get("http")
+        } else if key.eq_ignore_ascii_case("https") {
+            self.get("https")
+        } else {
+            SchemeConfig::default()
+        }
+    }
 }
 
 const DISALLOW_EMPTY_HOST: u8 = 1 << 0;
@@ -104,32 +116,28 @@ impl Finder for URI {
         "uri"
     }
 
+    fn triggerable(&self) -> bool {
+        true
+    }
+
+    fn could_trigger_at(&self, byte: u8) -> bool {
+        byte == b':'
+    }
+
+    fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        self.try_at_colon(input, pos)
+    }
+
     // scheme ":" hier-part [ "?" query ] [ "#" fragment ]
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let mut idx = 0;
 
         while idx < input.len() {
-            let start = idx;
-
-            let colon_idx = start + input[start..].iter().position(|&b| b == b':')?;
+            let colon_idx = idx + input[idx..].iter().position(|&b| b == b':')?;
             idx = colon_idx + 1;
-
-            let scheme_idx = match self.rlook_scheme(&input[start..colon_idx]) {
-                Some(i) => start + i,
-                None => continue,
-            };
-            let scheme = &s[scheme_idx..colon_idx];
-            let scheme_config = SCHEMES_CONFIGS.get(scheme);
-
-            idx += self.look_hier_part(&input[idx..], scheme_config)?;
-            idx += self.look_question_mark_query(&input[idx..]).unwrap_or(0);
-            idx += self.look_sharp_fragment(&input[idx..]).unwrap_or(0);
-
-            // we cannot early exit as soon as we know the scheme as we need to advance idx even if the
-            // uri should be discarded
-            if self.schemes.is_empty() || self.schemes.iter().any(|s| s == scheme) {
-                return Some(scheme_idx..idx);
+            if let Some(range) = self.try_at_colon(input, colon_idx) {
+                return Some(range);
             }
         }
 
@@ -158,6 +166,27 @@ impl URI {
         let lower = s.to_lowercase();
         if let Err(pos) = self.schemes.binary_search(&lower) {
             self.schemes.insert(pos, lower);
+        }
+    }
+
+    fn try_at_colon(&self, input: &[u8], colon_idx: usize) -> Option<Range<usize>> {
+        if input[colon_idx] != b':' {
+            return None;
+        }
+
+        let scheme_idx = self.rlook_scheme(&input[..colon_idx])?;
+        let scheme = std::str::from_utf8(&input[scheme_idx..colon_idx]).ok()?;
+        let scheme_config = SCHEMES_CONFIGS.get_ascii_case_insensitive(scheme);
+
+        let mut idx = colon_idx + 1;
+        idx += self.look_hier_part(&input[idx..], scheme_config)?;
+        idx += self.look_question_mark_query(&input[idx..]).unwrap_or(0);
+        idx += self.look_sharp_fragment(&input[idx..]).unwrap_or(0);
+
+        if self.schemes.is_empty() || self.schemes.iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
+            Some(scheme_idx..idx)
+        } else {
+            None
         }
     }
 
@@ -1356,6 +1385,17 @@ mod tests {
         // Should match lowercase http
         let input = "http://example.com";
         assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
+
+        // Should also match uppercase input schemes
+        let input = "HTTP://example.com";
+        assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
+    }
+
+    #[test]
+    fn uppercase_http_scheme_obeys_host_rules() {
+        let finder = URI::default();
+        assert_eq!(None, finder.find("HTTP:///missing-host"));
+        assert_eq!(None, finder.find("HTTPS:///missing-host"));
     }
 
     // --- Regression: sorted Vec scheme dedup ---

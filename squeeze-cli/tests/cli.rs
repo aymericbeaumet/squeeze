@@ -1,9 +1,20 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 fn squeeze() -> Command {
     #[allow(deprecated)]
     Command::cargo_bin("squeeze").unwrap()
+}
+
+fn temp_path(name: &str) -> PathBuf {
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!("squeeze-cli-test-{}-{}", id, name))
 }
 
 // ============================================================================
@@ -64,6 +75,27 @@ fn uri_with_scheme_filter_should_only_match_specified_scheme() {
         .success()
         .stdout(predicate::str::contains("https://secure.com"))
         .stdout(predicate::str::contains("http://insecure.com").not());
+}
+
+#[test]
+fn uri_scheme_filter_should_match_uppercase_input_scheme() {
+    squeeze()
+        .arg("--https")
+        .write_stdin("HTTPS://secure.com and http://insecure.com\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("HTTPS://secure.com"))
+        .stdout(predicate::str::contains("http://insecure.com").not());
+}
+
+#[test]
+fn uri_uppercase_http_scheme_should_still_require_host() {
+    squeeze()
+        .arg("--uri")
+        .write_stdin("HTTPS:///missing-host\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
 }
 
 #[test]
@@ -961,4 +993,390 @@ fn codetag_should_be_case_insensitive() {
         .stdout(predicate::str::contains("todo: lowercase"))
         .stdout(predicate::str::contains("TODO: uppercase"))
         .stdout(predicate::str::contains("ToDo: mixed"));
+}
+
+// ============================================================================
+// Domain finder tests
+// ============================================================================
+
+#[test]
+fn domain_flag_should_extract_bare_domain() {
+    squeeze()
+        .arg("--domain")
+        .write_stdin("see example.com today\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("example.com\n"));
+}
+
+#[test]
+fn domain_flag_should_skip_emails_and_urls() {
+    squeeze()
+        .arg("--domain")
+        .write_stdin("https://foo.com bob@bar.com baz.io\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("baz.io\n"));
+}
+
+// ============================================================================
+// Handle finder tests
+// ============================================================================
+
+#[test]
+fn handle_flag_should_extract_handles() {
+    squeeze()
+        .arg("--handle")
+        .write_stdin("ping @alice and @bob-c\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("@alice\n@bob-c\n"));
+}
+
+#[test]
+fn handle_flag_should_skip_emails() {
+    squeeze()
+        .arg("--handle")
+        .write_stdin("contact user@example.com\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// Modeline finder tests
+// ============================================================================
+
+#[test]
+fn modeline_flag_should_extract_vim_modeline() {
+    squeeze()
+        .arg("--modeline")
+        .write_stdin("// vim: set ts=4 sw=4 et:\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("vim: set ts=4 sw=4 et:"));
+}
+
+#[test]
+fn modeline_flag_should_ignore_url_schemes() {
+    squeeze()
+        .arg("--modeline")
+        .write_stdin("see https://example.com\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+// ============================================================================
+// --last flag tests
+// ============================================================================
+
+#[test]
+fn last_flag_should_output_only_last_match() {
+    squeeze()
+        .arg("--env")
+        .arg("--last")
+        .write_stdin("$A\n$B\n$C\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$C\n"));
+}
+
+#[test]
+fn last_flag_with_multiple_matches_per_line() {
+    squeeze()
+        .arg("--env")
+        .arg("--last")
+        .write_stdin("$A $B $C\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$C\n"));
+}
+
+#[test]
+fn last_flag_conflicts_with_first() {
+    squeeze()
+        .arg("--env")
+        .arg("--first")
+        .arg("--last")
+        .write_stdin("$A\n")
+        .assert()
+        .failure();
+}
+
+// ============================================================================
+// --sort and --uniq flag tests
+// ============================================================================
+
+#[test]
+fn sort_flag_should_sort_results() {
+    squeeze()
+        .arg("--env")
+        .arg("--sort")
+        .write_stdin("$C $A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$A\n$B\n$C\n"));
+}
+
+#[test]
+fn uniq_flag_should_dedupe_results() {
+    squeeze()
+        .arg("--env")
+        .arg("--uniq")
+        .write_stdin("$A $B $A $C $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$A\n$B\n$C\n"));
+}
+
+#[test]
+fn sort_and_uniq_combine() {
+    squeeze()
+        .arg("--env")
+        .arg("--sort")
+        .arg("--uniq")
+        .write_stdin("$C $A $B $A\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$A\n$B\n$C\n"));
+}
+
+// ============================================================================
+// --output flag tests
+// ============================================================================
+
+#[test]
+fn output_json_should_emit_json_array() {
+    squeeze()
+        .arg("--env")
+        .arg("--output")
+        .arg("json")
+        .write_stdin("$A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("[\"$A\",\"$B\"]\n"));
+}
+
+#[test]
+fn output_yaml_should_emit_yaml_list() {
+    squeeze()
+        .arg("--env")
+        .arg("--output")
+        .arg("yaml")
+        .write_stdin("$A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("- $A\n- $B\n"));
+}
+
+#[test]
+fn output_csv_should_emit_csv_rows() {
+    squeeze()
+        .arg("--env")
+        .arg("--output")
+        .arg("csv")
+        .write_stdin("$A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$A\n$B\n"));
+}
+
+#[test]
+fn output_json_escapes_special_chars() {
+    squeeze()
+        .arg("--codetag")
+        .arg("--output")
+        .arg("json")
+        .write_stdin("TODO: a \"quoted\" value\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\\\"quoted\\\""));
+}
+
+// ============================================================================
+// --jobs flag tests
+// ============================================================================
+
+#[test]
+fn jobs_parallel_should_produce_same_results() {
+    squeeze()
+        .arg("--env")
+        .arg("--jobs")
+        .arg("4")
+        .arg("--sort")
+        .write_stdin("$A\n$B\n$C\n$D\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$A\n$B\n$C\n$D\n"));
+}
+
+#[test]
+fn jobs_zero_should_fail() {
+    squeeze()
+        .arg("--env")
+        .arg("--jobs")
+        .arg("0")
+        .write_stdin("$A\n")
+        .assert()
+        .failure();
+}
+
+#[test]
+fn jobs_parallel_first_should_return_global_first_match() {
+    squeeze()
+        .arg("--env")
+        .arg("--jobs")
+        .arg("4")
+        .arg("--first")
+        .write_stdin("$A\n$B\n$C\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$A\n"));
+}
+
+#[test]
+fn all_flag_should_enable_regular_finders_without_debug_mirror() {
+    squeeze()
+        .arg("--all")
+        .write_stdin("see https://example.com and $HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("https://example.com"))
+        .stdout(predicate::str::contains("$HOME"))
+        .stdout(predicate::str::contains("see https://example.com and $HOME").not());
+}
+
+#[test]
+fn with_kind_text_should_prefix_finder_id() {
+    squeeze()
+        .arg("--env")
+        .arg("--with-kind")
+        .write_stdin("$HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("env\t$HOME\n"));
+}
+
+#[test]
+fn with_kind_json_should_emit_match_metadata() {
+    squeeze()
+        .arg("--env")
+        .arg("--with-kind")
+        .arg("--output")
+        .arg("json")
+        .write_stdin("x $HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""kind":"env""#))
+        .stdout(predicate::str::contains(r#""value":"$HOME""#))
+        .stdout(predicate::str::contains(r#""line":1"#))
+        .stdout(predicate::str::contains(r#""column":3"#))
+        .stdout(predicate::str::contains(r#""start":2"#))
+        .stdout(predicate::str::contains(r#""end":7"#));
+}
+
+#[test]
+fn with_kind_csv_should_emit_header_and_metadata() {
+    squeeze()
+        .arg("--env")
+        .arg("--with-kind")
+        .arg("--output")
+        .arg("csv")
+        .write_stdin("x $HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with(
+            "kind,value,line,column,start,end,source\n",
+        ))
+        .stdout(predicate::str::contains("env,$HOME,1,3,2,7,"));
+}
+
+#[test]
+fn no_overlap_should_drop_inner_matches() {
+    squeeze()
+        .arg("--json")
+        .arg("--uri")
+        .arg("--no-overlap")
+        .write_stdin(r#"{"url":"https://example.com"}"#)
+        .assert()
+        .success()
+        .stdout(predicate::eq(
+            r#"{"url":"https://example.com"}"#.to_owned() + "\n",
+        ));
+}
+
+#[test]
+fn file_input_should_scan_named_file_and_report_source_in_metadata() {
+    let path = temp_path("input.txt");
+    fs::write(&path, "x $HOME\n").unwrap();
+    let source = path.to_str().unwrap();
+    let json_source_field = format!(r#""source":"{}""#, source.replace('\\', "\\\\"));
+
+    squeeze()
+        .arg("--env")
+        .arg("--with-kind")
+        .arg("--output")
+        .arg("json")
+        .arg(source)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""kind":"env""#))
+        .stdout(predicate::str::contains(json_source_field));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn glob_input_should_scan_matching_files() {
+    let dir = temp_path("glob");
+    fs::create_dir(&dir).unwrap();
+    let one = dir.join("one.txt");
+    let two = dir.join("two.txt");
+    fs::write(&one, "$ONE\n").unwrap();
+    fs::write(&two, "$TWO\n").unwrap();
+    let pattern = dir.join("*.txt");
+
+    squeeze()
+        .arg("--env")
+        .arg("--sort")
+        .arg(pattern.to_str().unwrap())
+        .assert()
+        .success()
+        .stdout(predicate::eq("$ONE\n$TWO\n"));
+
+    let _ = fs::remove_file(one);
+    let _ = fs::remove_file(two);
+    let _ = fs::remove_dir(dir);
+}
+
+// ============================================================================
+// Combined flag interactions
+// ============================================================================
+
+#[test]
+fn sort_uniq_output_json_combined() {
+    squeeze()
+        .arg("--env")
+        .arg("--sort")
+        .arg("--uniq")
+        .arg("--output")
+        .arg("json")
+        .write_stdin("$C $A $B $A\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("[\"$A\",\"$B\",\"$C\"]\n"));
+}
+
+#[test]
+fn first_overrides_other_post_processing() {
+    // --first short-circuits scanning; sort/uniq still apply to the single match.
+    squeeze()
+        .arg("--env")
+        .arg("--first")
+        .arg("--sort")
+        .write_stdin("$Z $A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("$Z\n"));
 }

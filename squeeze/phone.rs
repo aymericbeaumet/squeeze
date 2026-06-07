@@ -40,33 +40,57 @@ impl Finder for Phone {
         "phone"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        byte == b'+' || byte == b'(' || byte.is_ascii_digit()
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        if !self.could_start_at(input[pos]) {
+            return None;
+        }
+        let s = std::str::from_utf8(input).ok()?;
+        let m = self.regex.find_at(s, pos)?;
+        if m.start() != pos {
+            return None;
+        }
+        self.validate_match(s, m.start(), m.end())
+    }
+
     fn find(&self, s: &str) -> Option<Range<usize>> {
-        let input = s.as_bytes();
-
         for m in self.regex.find_iter(s) {
-            let start = m.start();
-            let end = m.end();
-            let matched = &s[start..end];
-
-            // Boundary before: not preceded by alphanumeric
-            if start > 0 && input[start - 1].is_ascii_alphanumeric() {
-                continue;
+            if let Some(range) = self.validate_match(s, m.start(), m.end()) {
+                return Some(range);
             }
+        }
+        None
+    }
+}
 
-            // Boundary after: not followed by digit
-            if end < input.len() && input[end].is_ascii_digit() {
-                continue;
-            }
+impl Phone {
+    fn validate_match(&self, s: &str, start: usize, end: usize) -> Option<Range<usize>> {
+        let input = s.as_bytes();
+        let matched = &s[start..end];
 
-            let digit_count = Self::count_digits(matched);
-            if !(7..=15).contains(&digit_count) {
-                continue;
-            }
-
-            return Some(start..end);
+        // Boundary before: not preceded by alphanumeric
+        if start > 0 && input[start - 1].is_ascii_alphanumeric() {
+            return None;
         }
 
-        None
+        // Boundary after: not followed by digit
+        if end < input.len() && input[end].is_ascii_digit() {
+            return None;
+        }
+
+        let digit_count = Self::count_digits(matched);
+        if !(7..=15).contains(&digit_count) {
+            return None;
+        }
+
+        Some(start..end)
     }
 }
 

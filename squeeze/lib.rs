@@ -8,14 +8,17 @@
 //! - [`codetag::Codetag`] - Extract codetags (TODO, FIXME, etc.) as defined by [PEP 350](https://www.python.org/dev/peps/pep-0350/)
 //! - [`color::Color`] - Extract colors (hex, rgb, hsl)
 //! - [`datetime::Datetime`] - Extract ISO 8601 datetimes
+//! - [`domain::Domain`] - Extract DNS-style domain names
 //! - [`email::Email`] - Extract email addresses
 //! - [`emoji::Emoji`] - Extract emojis and emoji sequences
 //! - [`env::Env`] - Extract environment variable references
+//! - [`handle::Handle`] - Extract social `@handle` mentions
 //! - [`hash::Hash`] - Extract hashes (MD5, SHA-1, SHA-256, SHA-512)
 //! - [`ip::Ip`] - Extract IP addresses (IPv4, IPv6)
 //! - [`json::Json`] - Extract JSON objects and arrays
 //! - [`jwt::Jwt`] - Extract JSON Web Tokens
 //! - [`mac::Mac`] - Extract MAC addresses
+//! - [`modeline::Modeline`] - Extract vim/vi/ex modelines
 //! - [`path::Path`] - Extract file paths (absolute, relative, and home-relative)
 //! - [`phone::Phone`] - Extract phone numbers
 //! - [`semver::Semver`] - Extract semantic versions
@@ -39,9 +42,11 @@ pub mod cidr;
 pub mod codetag;
 pub mod color;
 pub mod datetime;
+pub mod domain;
 pub mod email;
 pub mod emoji;
 pub mod env;
+pub mod handle;
 pub mod hash;
 pub mod ip;
 pub(crate) mod ipv6;
@@ -49,6 +54,7 @@ pub mod json;
 pub mod jwt;
 pub mod mac;
 pub mod mirror;
+pub mod modeline;
 pub mod path;
 pub mod phone;
 pub mod scanner;
@@ -85,7 +91,7 @@ use std::ops::Range;
 ///
 /// assert_eq!(results, vec!["https://foo.com", "https://bar.com"]);
 /// ```
-pub trait Finder {
+pub trait Finder: Send + Sync {
     /// Returns a unique identifier for this finder.
     fn id(&self) -> &'static str;
 
@@ -109,6 +115,27 @@ pub trait Finder {
     /// Try to find a match starting exactly at `pos` in the full input.
     /// Only called when [`dispatchable`](Finder::dispatchable) returns true.
     fn try_at(&self, _input: &[u8], _pos: usize) -> Option<Range<usize>> {
+        None
+    }
+
+    /// Whether this finder supports trigger-mode scanning.
+    ///
+    /// Trigger-mode is for finders whose cheapest reliable signal is inside the
+    /// match rather than at the first byte, such as the `@` in an email address
+    /// or `:` in a URI.
+    fn triggerable(&self) -> bool {
+        false
+    }
+
+    /// Whether the given byte could trigger a match for this finder.
+    /// Only meaningful when [`triggerable`](Finder::triggerable) returns true.
+    fn could_trigger_at(&self, _byte: u8) -> bool {
+        false
+    }
+
+    /// Try to find a match triggered by `pos` in the full input.
+    /// Only called when [`triggerable`](Finder::triggerable) returns true.
+    fn try_trigger_at(&self, _input: &[u8], _pos: usize) -> Option<Range<usize>> {
         None
     }
 }

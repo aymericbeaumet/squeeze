@@ -1,4 +1,4 @@
-.PHONY: all build release test lint fmt check clean doc install help
+.PHONY: all build release test bench lint fmt check clean doc install help
 
 # Default target
 all: check
@@ -17,6 +17,9 @@ test:
 test-verbose:
 	cargo test -- --nocapture
 
+bench:
+	cargo bench -p squeeze --bench scanner
+
 # Linting and formatting
 lint:
 	cargo clippy --all-targets -- --deny warnings
@@ -32,10 +35,11 @@ check: fmt-check lint test doc-check
 
 # Documentation
 doc:
-	cargo doc --no-deps --all-features --open
+	cargo doc -p squeeze --no-deps --all-features --open
 
 doc-check:
-	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+	RUSTDOCFLAGS="-D warnings" cargo doc -p squeeze --no-deps --all-features
+	RUSTDOCFLAGS="-D warnings" cargo doc -p squeeze-cli --no-deps --all-features
 
 # Clean build artifacts
 clean:
@@ -59,8 +63,8 @@ run:
 
 # MSRV check (Minimum Supported Rust Version)
 msrv:
-	cargo +1.85 build
-	cargo +1.85 test
+	cargo +1.95 build
+	cargo +1.95 test
 
 # Update dependencies
 update:
@@ -82,6 +86,7 @@ help:
 	@echo "  release      - Build release binary"
 	@echo "  test         - Run all tests"
 	@echo "  test-verbose - Run tests with output"
+	@echo "  bench        - Run scanner throughput benchmarks"
 	@echo "  lint         - Run clippy linter"
 	@echo "  fmt          - Format code"
 	@echo "  fmt-check    - Check code formatting"
@@ -92,7 +97,7 @@ help:
 	@echo "  install      - Install binary locally"
 	@echo "  watch        - Watch for changes and run tests"
 	@echo "  watch-check  - Watch for changes and run full check"
-	@echo "  msrv         - Test with minimum supported Rust version (1.85)"
+	@echo "  msrv         - Test with minimum supported Rust version (1.95)"
 	@echo "  update       - Update dependencies"
 	@echo "  outdated     - Show outdated dependencies"
 	@echo "  audit        - Run security audit"
