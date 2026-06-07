@@ -419,10 +419,9 @@ impl Scanner {
 
         let active_trigger = active & self.trigger_mask;
         if active_trigger != 0 {
-            let limit = best.as_ref().map_or(input.len(), |b| b.range.start);
             let mut finder_pos = [0usize; MAX_FINDERS];
 
-            for pos in 0..limit {
+            for pos in 0..input.len() {
                 let mut candidates = self.trigger[input[pos] as usize] & active_trigger;
                 while candidates != 0 {
                     let i = candidates.trailing_zeros() as usize;

@@ -47,6 +47,20 @@ fn collect_texts(line: &str, ranges: &[Range<usize>]) -> Vec<String> {
     texts
 }
 
+#[test]
+fn scan_line_first_considers_trigger_matches_starting_before_trigger() {
+    let finders = all_finders();
+    let scanner = Scanner::new(finders);
+
+    for s in ["a+::\u{2000}", "𝒥A+::"] {
+        let all = scanner.scan_line(s);
+        let first = scanner.scan_line_first(s);
+        let earliest = all.iter().map(|m| m.range.start).min();
+
+        assert_eq!(first.as_ref().map(|m| m.range.start), earliest, "{s:?}");
+    }
+}
+
 // --- Property-based tests ---
 
 proptest! {
