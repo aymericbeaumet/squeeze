@@ -1310,17 +1310,19 @@ fn no_overlap_should_drop_inner_matches() {
 fn file_input_should_scan_named_file_and_report_source_in_metadata() {
     let path = temp_path("input.txt");
     fs::write(&path, "x $HOME\n").unwrap();
+    let source = path.to_str().unwrap();
+    let json_source_field = format!(r#""source":"{}""#, source.replace('\\', "\\\\"));
 
     squeeze()
         .arg("--env")
         .arg("--with-kind")
         .arg("--output")
         .arg("json")
-        .arg(path.to_str().unwrap())
+        .arg(source)
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""kind":"env""#))
-        .stdout(predicate::str::contains(path.to_str().unwrap()));
+        .stdout(predicate::str::contains(json_source_field));
 
     let _ = fs::remove_file(path);
 }
