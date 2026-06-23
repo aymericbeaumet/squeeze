@@ -21,7 +21,7 @@ path = "benches/scanner.rs"
 harness = false
 
 [dependencies]
-phf = { version = "0.13", features = ["macros"] }
+phf = { version = "0.14", features = ["macros"] }
 regex = "1.12"
 regex-syntax = "0.8"
 
