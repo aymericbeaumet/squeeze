@@ -126,7 +126,7 @@ Combine finders with these flags to massage the output:
 | `--sort` | sort the results |
 | `--uniq` | deduplicate the results |
 | `--copy` | copy the results to the system clipboard |
-| `--output <fmt>` | output as `text` (default), `json`, `yaml`, or `csv` |
+| `--output <fmt>` | output as `text` (default), `json`, `yaml`, `csv`, or `none` |
 | `-j`, `--jobs <N>` | scan lines in parallel using `N` worker threads |
 | `--all` | enable all regular finders |
 | `--with-kind` | include the finder id, and structured metadata for non-text formats |
@@ -135,8 +135,8 @@ Combine finders with these flags to massage the output:
 
 See all the possibilities with `squeeze --help`.
 
-By default `squeeze` reads standard input. You can also pass files or glob
-patterns:
+With no `INPUT` arguments, `squeeze` scans standard input. To scan files
+instead, pass file paths or quoted glob patterns after the options:
 
 ```shell
 squeeze --all --with-kind --output json 'logs/*.txt'
@@ -168,12 +168,11 @@ bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url --open
 
 ### shell (bash, zsh)
 
-Define convenience functions:
+For example, define a function that extracts URLs from your shell history:
 
 ```shell
 # ~/.bashrc ~/.zshrc
 urls() { fc -rl 1 | squeeze --url | sort -u; }
-ips() { squeeze --ip; }
 ```
 
 ## Development

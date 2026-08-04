@@ -1183,6 +1183,31 @@ fn output_csv_should_emit_csv_rows() {
 }
 
 #[test]
+fn output_none_should_emit_no_stdout() {
+    squeeze()
+        .arg("--env")
+        .arg("--output")
+        .arg("none")
+        .write_stdin("$A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn output_none_should_still_apply_selection_flags() {
+    squeeze()
+        .arg("--env")
+        .arg("--first")
+        .arg("--output")
+        .arg("none")
+        .write_stdin("$A $B\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
 fn output_json_escapes_special_chars() {
     squeeze()
         .arg("--codetag")

@@ -251,13 +251,9 @@ impl URI {
     fn look_authority(&self, input: &[u8], sc: SchemeConfig) -> Option<usize> {
         let mut idx = 0;
         idx += self.look_userinfo_at(&input[idx..]).unwrap_or(0);
-        idx += self.look_host(&input[idx..]).and_then(|i| {
-            if i == 0 && sc.has(DISALLOW_EMPTY_HOST) {
-                None
-            } else {
-                Some(i)
-            }
-        })?;
+        idx += self
+            .look_host(&input[idx..])
+            .filter(|&i| !(i == 0 && sc.has(DISALLOW_EMPTY_HOST)))?;
         idx += self.look_colon_port(&input[idx..]).unwrap_or(0);
         Some(idx)
     }

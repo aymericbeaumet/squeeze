@@ -44,6 +44,7 @@ enum Format {
     Json,
     Yaml,
     Csv,
+    None,
 }
 
 #[derive(Copy, Clone, Debug, ValueEnum, Default, PartialEq, Eq)]
@@ -638,6 +639,7 @@ fn write_formatted<W: Write>(
     with_kind: bool,
 ) -> io::Result<()> {
     match format {
+        Format::None => {}
         Format::Text => {
             for r in results {
                 write_text_result(out, r, with_kind)?;
@@ -807,6 +809,14 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+fn clipboard_format(output_format: Format) -> Format {
+    if output_format == Format::None {
+        Format::Text
+    } else {
+        output_format
+    }
 }
 
 fn byte_column(line: &str, byte_pos: usize) -> usize {
@@ -1099,7 +1109,14 @@ fn finalize_results(
     write_formatted(&mut formatted, &results, opts.output, opts.with_kind)?;
 
     if opts.copy {
-        let text = String::from_utf8_lossy(&formatted);
+        let mut clipboard = Vec::new();
+        write_formatted(
+            &mut clipboard,
+            &results,
+            clipboard_format(opts.output),
+            opts.with_kind,
+        )?;
+        let text = String::from_utf8_lossy(&clipboard);
         copy_to_clipboard(&text).map_err(io::Error::other)?;
     }
 
@@ -1236,4 +1253,40 @@ fn main() -> ExitCode {
 
 fn open_url(url: &str) -> io::Result<()> {
     open::that(url).map_err(io::Error::other)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn result(value: &str) -> ResultItem {
+        ResultItem {
+            kind: "env",
+            value: value.to_string(),
+            source: None,
+            line: 1,
+            column: 1,
+            start: 0,
+            end: value.len(),
+        }
+    }
+
+    #[test]
+    fn clipboard_format_should_use_text_when_stdout_is_suppressed() {
+        let results = vec![result("$A")];
+        let mut stdout = Vec::new();
+        let mut clipboard = Vec::new();
+
+        write_formatted(&mut stdout, &results, Format::None, false).unwrap();
+        write_formatted(
+            &mut clipboard,
+            &results,
+            clipboard_format(Format::None),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(stdout, b"");
+        assert_eq!(clipboard, b"$A\n");
+    }
 }
