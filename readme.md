@@ -1,7 +1,8 @@
 # squeeze [![GitHub Actions](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml)
 
-[squeeze](https://github.com/aymericbeaumet/squeeze) enables to extract rich
-information from any text (raw, JSON, HTML, YAML, etc).
+[squeeze](https://github.com/aymericbeaumet/squeeze) extracts structured
+information—such as URLs, emails, IP addresses, paths, and hashes—from text in
+formats including Markdown, JSON, HTML, and YAML.
 
 Currently supported:
 

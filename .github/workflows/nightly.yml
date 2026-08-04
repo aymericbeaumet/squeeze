@@ -3,7 +3,7 @@ name: nightly
 on:
   push:
     branches:
-      - master
+      - main
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
           SHA256=$(curl -sL "${ARCHIVE_URL}" | sha256sum | cut -d' ' -f1)
 
           FORMULA_CONTENT=$(cat <<RUBY
-          # This formula is automatically updated on every push to master. DO NOT EDIT.
+          # This formula is automatically updated on every push to main. DO NOT EDIT.
 
           class SqueezeNightly < Formula
             desc "Extract rich information from any text (URIs, codetags, etc.) - nightly"
