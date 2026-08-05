@@ -31,11 +31,21 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+#[cfg(target_os = "linux")]
+use std::{
+    io::Read,
+    process::{Command, Stdio},
+};
 
 const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
+
+#[cfg(target_os = "linux")]
+const CLIPBOARD_DAEMON_ARG: &str = "--__clipboard-daemon";
+#[cfg(target_os = "linux")]
+const CLIPBOARD_READY: &str = "ready";
 
 #[derive(Copy, Clone, Debug, ValueEnum, Default, PartialEq, Eq)]
 enum Format {
@@ -77,6 +87,9 @@ struct Opts {
     uniq: bool,
     #[arg(long = "copy", help = "copy the results to the clipboard")]
     copy: bool,
+    #[cfg(target_os = "linux")]
+    #[arg(long = "__clipboard-daemon", hide = true)]
+    clipboard_daemon: bool,
     #[arg(long = "open", help = "open the results")]
     open: bool,
     #[arg(
@@ -805,10 +818,83 @@ fn write_csv_field<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_os = "linux"))]
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    // X11 and Wayland clipboard contents disappear when their owner exits. Re-run this binary as
+    // a helper so the interactive command can return while another process serves paste requests.
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = Command::new(executable)
+        .arg(CLIPBOARD_DAEMON_ARG)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .current_dir("/")
+        .spawn()
+        .map_err(|e| format!("failed to start clipboard helper: {e}"))?;
+
+    let mut child_stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "failed to open clipboard helper input".to_string())?;
+    child_stdin
+        .write_all(text.as_bytes())
+        .map_err(|e| format!("failed to send clipboard contents to helper: {e}"))?;
+    drop(child_stdin);
+
+    let child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "failed to open clipboard helper output".to_string())?;
+    let mut ready = String::new();
+    BufReader::new(child_stdout)
+        .read_line(&mut ready)
+        .map_err(|e| format!("failed to read clipboard helper status: {e}"))?;
+
+    if ready.trim_end() == CLIPBOARD_READY {
+        return Ok(());
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("failed waiting for clipboard helper: {e}"))?;
+    let error = String::from_utf8_lossy(&output.stderr);
+    let error = error.trim();
+    if error.is_empty() {
+        Err("clipboard helper exited before taking ownership".to_string())
+    } else {
+        Err(error.to_string())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_clipboard_daemon() -> Result<(), String> {
+    use arboard::SetExtLinux;
+
+    let mut text = String::new();
+    io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|e| format!("failed to read clipboard contents: {e}"))?;
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    clipboard
+        .set_text(text.clone())
+        .map_err(|e| e.to_string())?;
+
+    // Confirm that ownership was established before the invoking process returns. The waiting set
+    // then keeps this helper alive until another application replaces the clipboard contents.
+    println!("{CLIPBOARD_READY}");
+    io::stdout()
+        .flush()
+        .map_err(|e| format!("failed to report clipboard readiness: {e}"))?;
+
+    clipboard.set().wait().text(text).map_err(|e| e.to_string())
 }
 
 fn clipboard_format(output_format: Format) -> Format {
@@ -1132,9 +1218,20 @@ fn finalize_results(
 }
 
 fn main() -> ExitCode {
+    let opts = Opts::parse();
+    #[cfg(target_os = "linux")]
+    if opts.clipboard_daemon {
+        return match run_clipboard_daemon() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     env_logger::init();
 
-    let opts = Opts::parse();
     let finders = build_finders(&opts);
 
     if finders.is_empty() {
