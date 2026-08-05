@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
 use rayon::{ThreadPool, prelude::*};
 use squeeze::{
     Finder,
@@ -28,7 +28,7 @@ use squeeze::{
 use std::collections::HashSet;
 use std::convert::{TryFrom, TryInto};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 #[cfg(target_os = "linux")]
@@ -126,10 +126,7 @@ struct Opts {
     // codetag
     #[arg(long = "codetag", help = "search for codetags")]
     mnemonic: Option<Option<String>>,
-    #[arg(
-        long = "hide-mnemonic",
-        help = "whether to show the mnemonics in the results"
-    )]
+    #[arg(long = "hide-mnemonic", help = "hide the mnemonics in the results")]
     hide_mnemonic: bool,
     #[arg(long = "fixme", help = "alias for: --codetag=fixme")]
     fixme: bool,
@@ -325,8 +322,29 @@ impl TryFrom<&Opts> for Handle {
     }
 }
 
+/// Why a finder could not be built from the command-line options.
+enum FinderError {
+    /// The finder's flags were not given: simply skip it.
+    Disabled,
+    /// A flag value is invalid: abort with a usage error.
+    Invalid(String),
+}
+
+/// Splits a `--flag=a,b` value into its non-empty entries. Empty entries are
+/// dropped so `--flag=a,` or `--flag=` never install an empty filter.
+fn explicit_entries(value: &Option<Option<String>>) -> Vec<&str> {
+    match value {
+        Some(Some(list)) => list
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 impl TryFrom<&Opts> for Hash {
-    type Error = ();
+    type Error = FinderError;
     fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
         if !(opts.all
             || opts.hash_algo.is_some()
@@ -335,28 +353,36 @@ impl TryFrom<&Opts> for Hash {
             || opts.sha256
             || opts.sha512)
         {
-            return Err(());
+            return Err(FinderError::Disabled);
         }
         let mut finder = Hash::default();
         if opts.all {
             return Ok(finder);
         }
-        if let Some(Some(ref algo)) = opts.hash_algo {
-            for a in algo.split(',') {
-                let _ = finder.add_algorithm(a);
+        let algorithms = explicit_entries(&opts.hash_algo);
+        for algo in &algorithms {
+            if !finder.add_algorithm(algo) {
+                return Err(FinderError::Invalid(format!(
+                    "invalid value '{algo}' for '--hash': expected one of md5, sha1, sha256, sha512"
+                )));
             }
         }
-        if opts.md5 {
-            let _ = finder.add_algorithm("md5");
+        // A bare `--hash` (or an empty `--hash=`) requests every algorithm;
+        // alias flags like `--md5` must widen, never narrow, so they only
+        // restrict when the bare form is absent.
+        if opts.hash_algo.is_some() && algorithms.is_empty() {
+            return Ok(finder);
         }
-        if opts.sha1 {
-            let _ = finder.add_algorithm("sha1");
-        }
-        if opts.sha256 {
-            let _ = finder.add_algorithm("sha256");
-        }
-        if opts.sha512 {
-            let _ = finder.add_algorithm("sha512");
+        for (enabled, name) in [
+            (opts.md5, "md5"),
+            (opts.sha1, "sha1"),
+            (opts.sha256, "sha256"),
+            (opts.sha512, "sha512"),
+        ] {
+            if enabled {
+                // These names are known-valid, the rejection path cannot hit.
+                let _ = finder.add_algorithm(name);
+            }
         }
         Ok(finder)
     }
@@ -423,10 +449,11 @@ impl TryFrom<&Opts> for Codetag {
         }
         let mut finder = Codetag::default();
         finder.hide_mnemonic = opts.hide_mnemonic;
-        if let Some(Some(ref mnemonic)) = opts.mnemonic {
-            for m in mnemonic.split(',') {
-                finder.add_mnemonic(m);
-            }
+        // Empty entries are dropped so `--codetag=todo,` does not install an
+        // empty mnemonic matching every `word:` line, and `--codetag=` falls
+        // back to the default mnemonics like the bare flag.
+        for m in explicit_entries(&opts.mnemonic) {
+            finder.add_mnemonic(m);
         }
         if opts.fixme {
             finder.add_mnemonic("fixme");
@@ -492,21 +519,22 @@ impl TryFrom<&Opts> for URI {
         if opts.all {
             return Ok(finder);
         }
-        if let Some(Some(ref scheme)) = opts.scheme {
-            for s in scheme.split(',') {
-                finder.add_scheme(s);
-            }
+        let schemes = explicit_entries(&opts.scheme);
+        // A bare `--uri` (or an empty `--uri=`) requests every scheme; alias
+        // flags like `--http` must widen, never narrow, so they only restrict
+        // when the bare form is absent.
+        if opts.scheme.is_some() && schemes.is_empty() {
+            return Ok(finder);
+        }
+        for s in schemes {
+            finder.add_scheme(s);
         }
         if opts.url {
-            finder.add_scheme("data");
-            finder.add_scheme("ftp");
-            finder.add_scheme("ftps");
-            finder.add_scheme("http");
-            finder.add_scheme("https");
-            finder.add_scheme("mailto");
-            finder.add_scheme("sftp");
-            finder.add_scheme("ws");
-            finder.add_scheme("wss");
+            for s in [
+                "data", "ftp", "ftps", "http", "https", "mailto", "sftp", "ws", "wss",
+            ] {
+                finder.add_scheme(s);
+            }
         }
         if opts.http {
             finder.add_scheme("http");
@@ -528,7 +556,7 @@ impl TryFrom<&Opts> for Uuid {
     }
 }
 
-fn build_finders(opts: &Opts) -> Vec<Box<dyn Finder>> {
+fn build_finders(opts: &Opts) -> Result<Vec<Box<dyn Finder>>, String> {
     let mut finders: Vec<Box<dyn Finder>> = Vec::new();
     if let Ok(f) = TryInto::<Cidr>::try_into(opts) {
         finders.push(Box::new(f));
@@ -557,8 +585,10 @@ fn build_finders(opts: &Opts) -> Vec<Box<dyn Finder>> {
     if let Ok(f) = TryInto::<Handle>::try_into(opts) {
         finders.push(Box::new(f));
     }
-    if let Ok(f) = TryInto::<Hash>::try_into(opts) {
-        finders.push(Box::new(f));
+    match TryInto::<Hash>::try_into(opts) {
+        Ok(f) => finders.push(Box::new(f)),
+        Err(FinderError::Disabled) => {}
+        Err(FinderError::Invalid(message)) => return Err(message),
     }
     if let Ok(f) = TryInto::<Ip>::try_into(opts) {
         finders.push(Box::new(f));
@@ -593,12 +623,26 @@ fn build_finders(opts: &Opts) -> Vec<Box<dyn Finder>> {
     if let Ok(f) = TryInto::<Uuid>::try_into(opts) {
         finders.push(Box::new(f));
     }
-    finders
+    Ok(finders)
 }
 
 /// Whether the requested options require collecting all matches before output.
 fn must_buffer(opts: &Opts) -> bool {
     opts.last || opts.sort || opts.uniq || opts.copy || opts.output != Format::Text
+}
+
+/// Whether to scan with the parallel batch path. First-only mode must stay
+/// sequential: the parallel path blocks until a whole batch of lines has been
+/// read before scanning any of them, so `-1 --jobs N` on a slow stream would
+/// sit on a match it had already read instead of printing it and exiting.
+fn use_parallel(opts: &Opts) -> bool {
+    opts.jobs > 1 && !opts.first
+}
+
+/// A closed downstream reader (`squeeze ... | head -1`) is a normal way for a
+/// pipeline to end: finish silently and successfully, like grep does.
+fn is_broken_pipe(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::BrokenPipe
 }
 
 #[derive(Clone, Debug)]
@@ -628,6 +672,10 @@ enum InputTarget {
 struct OutputState {
     buffer: Option<Vec<ResultItem>>,
     last_match: Option<ResultItem>,
+    /// Whether to flush after every streamed result: enabled when stdout is a
+    /// terminal so matches appear as they are found; piped output stays fully
+    /// buffered (grep behavior).
+    flush_streaming: bool,
 }
 
 impl OutputState {
@@ -640,6 +688,7 @@ impl OutputState {
         OutputState {
             buffer,
             last_match: None,
+            flush_streaming: !must_buffer(opts) && io::stdout().is_terminal(),
         }
     }
 }
@@ -903,6 +952,12 @@ fn byte_column(line: &str, byte_pos: usize) -> usize {
     line[..byte_pos].chars().count() + 1
 }
 
+/// Only the structured formats ever print the column, so the char-count walk
+/// over the line prefix in [`byte_column`] is skipped everywhere else.
+fn output_needs_column(opts: &Opts) -> bool {
+    opts.with_kind && matches!(opts.output, Format::Json | Format::Yaml | Format::Csv)
+}
+
 fn apply_overlap_policy(matches: &mut Vec<Match>, precedence: Precedence) {
     if matches.len() < 2 {
         return;
@@ -954,50 +1009,82 @@ fn apply_overlap_policy(matches: &mut Vec<Match>, precedence: Precedence) {
     }
 }
 
+/// Scans one line, leaving the matches (with the overlap policy applied) in
+/// `matches`. The buffer is reused across lines to avoid per-line allocations.
+fn scan_line_matches_into(scanner: &Scanner, opts: &Opts, line: &str, matches: &mut Vec<Match>) {
+    if opts.first {
+        matches.clear();
+        if let Some(m) = scanner.scan_line_first(line) {
+            matches.push(m);
+        }
+    } else {
+        scanner.scan_line_into(line, matches);
+    }
+
+    if opts.no_overlap {
+        apply_overlap_policy(matches, opts.precedence);
+    }
+}
+
+fn make_result_item(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    line_number: usize,
+    line: &str,
+    m: &Match,
+) -> Option<ResultItem> {
+    let value = &line[m.range.clone()];
+    if value.is_empty() {
+        return None;
+    }
+    Some(ResultItem {
+        kind: scanner.finders()[m.finder_index].id(),
+        value: value.to_string(),
+        source: source.map(ToOwned::to_owned),
+        line: line_number,
+        column: if output_needs_column(opts) {
+            byte_column(line, m.range.start)
+        } else {
+            0
+        },
+        start: m.range.start,
+        end: m.range.end,
+    })
+}
+
 fn collect_line_matches(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
     line_number: usize,
     line: &str,
+    scratch: &mut Vec<Match>,
 ) -> Vec<ResultItem> {
-    let mut matches = Vec::new();
-    if opts.first {
-        if let Some(m) = scanner.scan_line_first(line) {
-            matches.push(m);
-        }
-    } else {
-        scanner.scan_line_into(line, &mut matches);
-    }
-
-    if opts.no_overlap {
-        apply_overlap_policy(&mut matches, opts.precedence);
-    }
-
-    matches
-        .into_iter()
-        .filter_map(|m| {
-            let value = &line[m.range.clone()];
-            if value.is_empty() {
-                return None;
-            }
-            Some(ResultItem {
-                kind: scanner.finders()[m.finder_index].id(),
-                value: value.to_string(),
-                source: source.map(ToOwned::to_owned),
-                line: line_number,
-                column: byte_column(line, m.range.start),
-                start: m.range.start,
-                end: m.range.end,
-            })
-        })
+    scan_line_matches_into(scanner, opts, line, scratch);
+    scratch
+        .iter()
+        .filter_map(|m| make_result_item(scanner, opts, source, line_number, line, m))
         .collect()
 }
 
-fn emit_result(out: &mut dyn Write, opts: &Opts, result: &ResultItem) -> io::Result<()> {
-    write_text_result(out, result, opts.with_kind)?;
+fn emit_streaming_value(
+    out: &mut dyn Write,
+    opts: &Opts,
+    flush: bool,
+    kind: &str,
+    value: &str,
+) -> io::Result<()> {
+    if opts.with_kind {
+        writeln!(out, "{kind}\t{value}")?;
+    } else {
+        writeln!(out, "{value}")?;
+    }
+    if flush {
+        out.flush()?;
+    }
     if opts.open {
-        open_url(&result.value)?;
+        open_url(value)?;
     }
     Ok(())
 }
@@ -1016,10 +1103,22 @@ fn handle_result(
     if let Some(buffer) = state.buffer.as_mut() {
         buffer.push(result);
     } else {
-        emit_result(out, opts, &result)?;
+        emit_streaming_value(out, opts, state.flush_streaming, result.kind, &result.value)?;
     }
 
     Ok(opts.first)
+}
+
+/// Strips the line terminator (`\n`, `\r\n`, and any extra `\r`s) from a raw
+/// line, mirroring the previous `trim_end_matches('\n')`/`('\r')` behavior.
+fn trim_line_ending(mut line: &[u8]) -> &[u8] {
+    if let [rest @ .., b'\n'] = line {
+        line = rest;
+    }
+    while let [rest @ .., b'\r'] = line {
+        line = rest;
+    }
+    line
 }
 
 fn scan_lines_sequential(
@@ -1030,18 +1129,41 @@ fn scan_lines_sequential(
     out: &mut dyn Write,
     state: &mut OutputState,
 ) -> io::Result<bool> {
-    let mut line = String::new();
+    let mut raw_line = Vec::new();
+    let mut matches: Vec<Match> = Vec::new();
     let mut line_number = 0;
+    // In the plain streaming text path the match value is written straight
+    // from the line slice, without allocating a ResultItem per match.
+    let streaming = !must_buffer(opts);
 
     loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
+        raw_line.clear();
+        if reader.read_until(b'\n', &mut raw_line)? == 0 {
             break;
         }
         line_number += 1;
-        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
-        for result in collect_line_matches(scanner, opts, source, line_number, trimmed) {
-            if handle_result(out, opts, state, result)? {
+        // Lines are read as bytes and converted lossily so invalid UTF-8
+        // cannot abort the scan (grep behavior): the U+FFFD replacement
+        // characters are non-ASCII and match nothing, and every other line
+        // keeps being scanned. `from_utf8_lossy` borrows when the line is
+        // valid UTF-8, so the common case does not allocate.
+        let line = String::from_utf8_lossy(trim_line_ending(&raw_line));
+        scan_line_matches_into(scanner, opts, &line, &mut matches);
+        for m in &matches {
+            let value = &line[m.range.clone()];
+            if value.is_empty() {
+                continue;
+            }
+            if streaming {
+                let kind = scanner.finders()[m.finder_index].id();
+                emit_streaming_value(out, opts, state.flush_streaming, kind, value)?;
+                if opts.first {
+                    return Ok(true);
+                }
+            } else if let Some(result) =
+                make_result_item(scanner, opts, source, line_number, &line, m)
+                && handle_result(out, opts, state, result)?
+            {
                 return Ok(true);
             }
         }
@@ -1061,24 +1183,23 @@ fn scan_lines_parallel(
     state: &mut OutputState,
     pool: &ThreadPool,
 ) -> io::Result<bool> {
-    let mut line = String::new();
+    let mut raw_line = Vec::new();
     let mut line_number = 0;
 
     loop {
         let mut batch = Vec::with_capacity(PARALLEL_BATCH_LINES);
         for _ in 0..PARALLEL_BATCH_LINES {
-            line.clear();
-            if reader.read_line(&mut line)? == 0 {
+            raw_line.clear();
+            if reader.read_until(b'\n', &mut raw_line)? == 0 {
                 break;
             }
             line_number += 1;
             batch.push(LineRecord {
                 source: source.map(ToOwned::to_owned),
                 line: line_number,
-                text: line
-                    .trim_end_matches('\n')
-                    .trim_end_matches('\r')
-                    .to_string(),
+                // Lossy conversion mirrors the sequential path: invalid
+                // UTF-8 must not abort the scan.
+                text: String::from_utf8_lossy(trim_line_ending(&raw_line)).into_owned(),
             });
         }
 
@@ -1089,13 +1210,14 @@ fn scan_lines_parallel(
         let batch_results: Vec<Vec<ResultItem>> = pool.install(|| {
             batch
                 .par_iter()
-                .map(|record| {
+                .map_init(Vec::new, |scratch, record| {
                     collect_line_matches(
                         scanner,
                         opts,
                         record.source.as_deref(),
                         record.line,
                         &record.text,
+                        scratch,
                     )
                 })
                 .collect()
@@ -1231,15 +1353,27 @@ fn main() -> ExitCode {
     env_logger::init();
 
     let opts = Opts::parse();
-    let finders = build_finders(&opts);
 
-    if finders.is_empty() {
-        return ExitCode::SUCCESS;
-    }
-
+    // Validated before the empty-finders early return so `--jobs 0` fails
+    // even when no finder flags are given.
     if opts.jobs == 0 {
         eprintln!("--jobs must be >= 1");
         return ExitCode::FAILURE;
+    }
+
+    let finders = match build_finders(&opts) {
+        Ok(finders) => finders,
+        Err(message) => {
+            // Same path clap takes for its own invalid values: usage error on
+            // stderr, exit code 2.
+            let mut cmd = Opts::command();
+            cmd.error(clap::error::ErrorKind::InvalidValue, message)
+                .exit()
+        }
+    };
+
+    if finders.is_empty() {
+        return ExitCode::SUCCESS;
     }
 
     let scanner = match Scanner::try_new(finders) {
@@ -1257,7 +1391,7 @@ fn main() -> ExitCode {
         }
     };
 
-    let pool = if opts.jobs > 1 {
+    let pool = if use_parallel(&opts) {
         match rayon::ThreadPoolBuilder::new()
             .num_threads(opts.jobs)
             .build()
@@ -1318,6 +1452,9 @@ fn main() -> ExitCode {
                 break;
             }
             Ok(false) => {}
+            Err(e) if is_broken_pipe(&e) => {
+                return ExitCode::SUCCESS;
+            }
             Err(e) => {
                 eprintln!("error during scanning: {}", e);
                 return ExitCode::FAILURE;
@@ -1334,12 +1471,16 @@ fn main() -> ExitCode {
     if (opts.last || must_buffer(&opts))
         && let Err(e) = finalize_results(&mut out, &opts, buffered_results)
     {
+        if is_broken_pipe(&e) {
+            return ExitCode::SUCCESS;
+        }
         eprintln!("output failed: {}", e);
         return ExitCode::FAILURE;
     }
 
     match out.flush() {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("output failed: {}", e);
             ExitCode::FAILURE
@@ -1384,5 +1525,55 @@ mod tests {
 
         assert_eq!(stdout, b"");
         assert_eq!(clipboard, b"$A\n");
+    }
+
+    #[test]
+    fn first_mode_should_force_the_sequential_path() {
+        // The parallel path blocks filling a whole batch before scanning, so
+        // -1 has to dispatch to the sequential streaming path.
+        let opts = Opts::try_parse_from(["squeeze", "--url", "--jobs", "4", "--first"]).unwrap();
+        assert!(!use_parallel(&opts));
+
+        let opts = Opts::try_parse_from(["squeeze", "--url", "--jobs", "4"]).unwrap();
+        assert!(use_parallel(&opts));
+
+        let opts = Opts::try_parse_from(["squeeze", "--url"]).unwrap();
+        assert!(!use_parallel(&opts));
+    }
+
+    #[test]
+    fn buffered_output_should_never_flush_per_result() {
+        let opts = Opts::try_parse_from(["squeeze", "--env", "--sort"]).unwrap();
+        let state = OutputState::new(&opts);
+        assert!(!state.flush_streaming);
+    }
+
+    #[test]
+    fn broken_pipe_errors_should_be_recognized() {
+        assert!(is_broken_pipe(&io::Error::from(io::ErrorKind::BrokenPipe)));
+        assert!(!is_broken_pipe(&io::Error::other("boom")));
+    }
+
+    #[test]
+    fn hash_options_should_reject_unknown_algorithms() {
+        let opts = Opts::try_parse_from(["squeeze", "--hash=md5,bogus"]).unwrap();
+        match TryInto::<Hash>::try_into(&opts) {
+            Err(FinderError::Invalid(message)) => assert!(message.contains("bogus")),
+            _ => panic!("expected an invalid-value error"),
+        }
+    }
+
+    #[test]
+    fn bare_hash_with_alias_should_stay_unrestricted() {
+        let opts = Opts::try_parse_from(["squeeze", "--hash", "--md5"]).unwrap();
+        let Ok(finder) = TryInto::<Hash>::try_into(&opts) else {
+            panic!("expected the hash finder to be built");
+        };
+        // sha1 still matches: the bare --hash means every algorithm.
+        assert!(
+            finder
+                .find("2aae6c35c94fcfb415dbe95f408b9ce91ee846ed")
+                .is_some()
+        );
     }
 }

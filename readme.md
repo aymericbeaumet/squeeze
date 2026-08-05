@@ -128,7 +128,7 @@ Combine finders with these flags to massage the output:
 | `--uniq` | deduplicate the results |
 | `--copy` | copy the results to the system clipboard |
 | `--output <fmt>` | output as `text` (default), `json`, `yaml`, `csv`, or `none` |
-| `-j`, `--jobs <N>` | scan lines in parallel using `N` worker threads |
+| `-j`, `--jobs <N>` | scan lines in parallel using `N` worker threads (`-1`/`--first` always scans sequentially) |
 | `--all` | enable all regular finders |
 | `--with-kind` | include the finder id, and structured metadata for non-text formats |
 | `--no-overlap` | suppress overlapping matches |
