@@ -6,7 +6,59 @@ pub struct Path {}
 
 impl Path {
     fn is_boundary(b: u8) -> bool {
-        b.is_ascii_whitespace() || matches!(b, b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b'`')
+        // `=` and `>` cover `--flag=/path`, `VAR=/path` and shell redirects
+        // (`>/tmp/out`, `2>/dev/null`); the match itself still starts at the
+        // path prefix character.
+        b.is_ascii_whitespace()
+            || matches!(
+                b,
+                b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b'`' | b'=' | b'>'
+            )
+    }
+
+    /// Strips trailing punctuation that is likely sentence- or wrapper-level
+    /// rather than part of the path. Loops to a fixpoint so any mix of
+    /// closers, quotes, colons and periods is peeled off (`/a/b:.` →
+    /// `/a/b`). Closing brackets are only stripped when unbalanced within
+    /// the candidate itself, like linkifiers do: `/tmp/file(1)` keeps its
+    /// `)`, `(see /etc/hosts)` loses it. Bracket occurrences are counted
+    /// once and updated incrementally so the whole pass stays O(len).
+    fn strip_trailing(input: &[u8], start: usize, min_end: usize, mut end: usize) -> usize {
+        let (mut parens, mut brackets, mut braces) = (0i32, 0i32, 0i32);
+        for &b in &input[start..end] {
+            match b {
+                b'(' => parens += 1,
+                b')' => parens -= 1,
+                b'[' => brackets += 1,
+                b']' => brackets -= 1,
+                b'{' => braces += 1,
+                b'}' => braces -= 1,
+                _ => {}
+            }
+        }
+        while end > min_end {
+            let b = input[end - 1];
+            let strip = match b {
+                b',' | b';' | b'>' | b'\'' | b'"' | b'`' | b':' | b'.' => true,
+                // Negative balance means more closers than openers, so the
+                // trailing closer cannot belong to the path.
+                b')' => parens < 0,
+                b']' => brackets < 0,
+                b'}' => braces < 0,
+                _ => false,
+            };
+            if !strip {
+                break;
+            }
+            match b {
+                b')' => parens += 1,
+                b']' => brackets += 1,
+                b'}' => braces += 1,
+                _ => {}
+            }
+            end -= 1;
+        }
+        end
     }
 
     fn find_prefix(&self, input: &[u8], from: usize) -> Option<(usize, usize)> {
@@ -110,20 +162,7 @@ impl Finder for Path {
         while end < input.len() && !input[end].is_ascii_whitespace() {
             end += 1;
         }
-        while end > start + prefix_len
-            && matches!(
-                input[end - 1],
-                b',' | b';' | b')' | b']' | b'}' | b'>' | b'\'' | b'"' | b'`'
-            )
-        {
-            end -= 1;
-        }
-        while end > start + prefix_len && input[end - 1] == b':' {
-            end -= 1;
-        }
-        while end > start + prefix_len && input[end - 1] == b'.' {
-            end -= 1;
-        }
+        let end = Self::strip_trailing(input, start, start + prefix_len, end);
 
         if end > start + prefix_len {
             Some(start..end)
@@ -144,24 +183,10 @@ impl Finder for Path {
                 end += 1;
             }
 
-            // Strip trailing punctuation that's likely sentence-level, not path-level
-            while end > start + prefix_len
-                && matches!(
-                    input[end - 1],
-                    b',' | b';' | b')' | b']' | b'}' | b'>' | b'\'' | b'"' | b'`'
-                )
-            {
-                end -= 1;
-            }
-            // Strip trailing colons (but `:digits` line references are kept because
-            // the colon won't be trailing — it's followed by digits)
-            while end > start + prefix_len && input[end - 1] == b':' {
-                end -= 1;
-            }
-            // Strip trailing periods (sentence endings)
-            while end > start + prefix_len && input[end - 1] == b'.' {
-                end -= 1;
-            }
+            // Strip trailing punctuation that's likely sentence-level, not
+            // path-level. `:digits` line references survive because the colon
+            // is not trailing — it's followed by digits.
+            let end = Self::strip_trailing(input, start, start + prefix_len, end);
 
             if end > start + prefix_len {
                 return Some(start..end);

@@ -1,7 +1,11 @@
 //! Vim modeline finder.
 //!
-//! Extracts vim modelines such as `vim: set ts=4 sw=4 et:` or `vi: ts=4 sw=4`.
-//! Supports the `vim`, `vi`, and `ex` prefixes and both the bare and `set` forms.
+//! Extracts vim modelines such as `vim: set ts=4 sw=4 et:`, `vi: ts=4 sw=4`,
+//! or version-gated forms like `vim700:` / `vim<702:` / `vim=703:` /
+//! `vim>702:`. Supports the `vim`, `vi`, and `ex` prefixes and both the bare
+//! (first) and `set` (second) modeline forms. The bare form must contain at
+//! least one `option=value` assignment so prose such as "I prefer vim: it is
+//! great" is not misread as a modeline.
 
 use super::Finder;
 use regex::Regex;
@@ -15,40 +19,34 @@ fn regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         // Forms:
-        //   vim: set ts=4 sw=4 et:
-        //   vi: ts=4 sw=4
-        //   ex: ts=4
+        //   vim: set ts=4 sw=4 et:   (second form: `set` + terminating colon)
+        //   vim: ts=4 sw=4           (first form: options to end of line)
         //   vim:ts=4:sw=4
-        // Pattern captures everything between the prefix and either a closing
-        // colon (for `set` form) or end-of-line / non-modeline char.
-        Regex::new(r"(?i)\b(?:vim?|ex)\s*:\s*(?:set\s+[^:\r\n]+:|[A-Za-z][A-Za-z0-9_=:.,\-/ ]*)")
-            .unwrap()
+        //   vim700: / vim<702: / vim=703: / vim>702: (version-gated prefixes)
+        //
+        // Constraints:
+        //   - no whitespace between the vi/vim/ex token and the `:` (vim
+        //     itself rejects `vim : ...`);
+        //   - the first form requires at least one `=` so plain prose after
+        //     `vim:` does not match; the second form is discriminating enough
+        //     through its `set ...:` structure;
+        //   - `[ \t]` instead of `\s` everywhere: finders are single-line by
+        //     contract, the match must never cross a newline.
+        Regex::new(
+            r"(?i)\b(?:vim(?:[<=>]?\d+)?|vi|ex):[ \t]*(?:set[ \t]+[^:\r\n]+:|[A-Za-z][A-Za-z0-9_:.,/\t -]*=[A-Za-z0-9_=:.,/\t -]*)",
+        )
+        .unwrap()
     })
 }
 
+// Modeline is a plain scan-mode finder: `find()` performs a single regex
+// pass over the input. It intentionally does not implement `dispatchable` /
+// `could_start_at` / `try_at` — the previous dispatch-mode implementation
+// re-ran an unanchored regex search from every candidate byte, which was
+// O(N²) on adversarial lines (a 100KB run of 'e' took seconds).
 impl Finder for Modeline {
     fn id(&self) -> &'static str {
         "modeline"
-    }
-
-    fn dispatchable(&self) -> bool {
-        true
-    }
-
-    fn could_start_at(&self, byte: u8) -> bool {
-        matches!(byte, b'v' | b'V' | b'e' | b'E')
-    }
-
-    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
-        if !self.could_start_at(input[pos]) {
-            return None;
-        }
-        let s = std::str::from_utf8(input).ok()?;
-        let m = regex().find_at(s, pos)?;
-        if m.start() != pos {
-            return None;
-        }
-        Self::trim_range(s, m.start(), m.end())
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {

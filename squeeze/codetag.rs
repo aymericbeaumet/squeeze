@@ -140,7 +140,8 @@ fn default_mnemonics() -> &'static HashSet<String> {
 /// # Usage
 ///
 /// 1. Create a default instance or configure with specific mnemonics
-/// 2. Call [`Codetag::build_mnemonics_regex`] before using
+/// 2. Optionally call [`Codetag::build_mnemonics_regex`] to surface regex
+///    errors early ([`Finder::find`] compiles it lazily otherwise)
 /// 3. Use the [`Finder::find`] method to extract codetags
 ///
 /// # Example
@@ -200,16 +201,23 @@ impl Codetag {
     /// When at least one mnemonic is added, only those mnemonics will be matched.
     /// If no mnemonics are added, all default PEP 350 mnemonics are used.
     ///
-    /// Mnemonic matching is case-insensitive.
+    /// Mnemonic matching is case-insensitive. Surrounding whitespace is
+    /// trimmed; empty and whitespace-only mnemonics are ignored, as they
+    /// would otherwise produce an empty regex alternation branch matching
+    /// every `word:`.
     pub fn add_mnemonic(&mut self, mnemonic: &str) {
+        let mnemonic = mnemonic.trim();
+        if mnemonic.is_empty() {
+            return;
+        }
         self.mnemonics.insert(mnemonic.to_uppercase());
         self.mnemonics_regex = OnceLock::new();
     }
 
     /// Builds the internal regex for matching mnemonics.
     ///
-    /// **This must be called before using the finder.** Calling [`Finder::find`]
-    /// without building the regex will panic.
+    /// Calling this is optional: [`Finder::find`] lazily compiles the regex on
+    /// first use. Building it eagerly surfaces compilation errors early.
     ///
     /// # Errors
     ///
@@ -659,5 +667,28 @@ mod tests {
         assert!(result.is_some());
         // Should capture the entire rest of the line including colons
         assert_eq!(Some("TODO: time is 12:30:45"), result.map(|r| &input[r]));
+    }
+
+    #[test]
+    fn it_should_ignore_empty_and_whitespace_only_mnemonics() {
+        // Reachable via CLI `--codetag=todo,` (trailing comma): an empty
+        // mnemonic must not become an empty alternation branch that matches
+        // every `word:`.
+        let mut finder = Codetag::default();
+        finder.add_mnemonic("");
+        finder.add_mnemonic("   ");
+        finder.add_mnemonic("\t");
+        finder.build_mnemonics_regex().unwrap();
+        assert_eq!(None, finder.find("hello: world"));
+        // No effective custom mnemonics were added, so defaults stay active.
+        assert!(finder.find("TODO: x").is_some());
+
+        let mut finder = Codetag::default();
+        finder.add_mnemonic("todo");
+        finder.add_mnemonic("");
+        finder.build_mnemonics_regex().unwrap();
+        assert_eq!(None, finder.find("hello: world"));
+        assert!(finder.find("todo: x").is_some());
+        assert_eq!(None, finder.find("FIXME: z"));
     }
 }
