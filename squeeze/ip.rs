@@ -24,6 +24,25 @@ impl Ip {
         if idx > 0 && (input[idx - 1].is_ascii_digit() || input[idx - 1] == b'.') {
             return None;
         }
+        // A quad directly after ':' sits inside an IPv6-shaped run
+        // (`1::2::1.2.3.4`, `:::1.2.3.4`). If that run starts at a token
+        // boundary it was an IPv6 candidate, and the dotted interior of a
+        // failed candidate must not be re-extracted as bare IPv4. Only a run
+        // glued to a non-hex alphanumeric (`port:10.0.0.1`) was never an IPv6
+        // candidate, so its quad may still match.
+        if idx > 0 && input[idx - 1] == b':' {
+            let mut run_start = idx - 1;
+            while run_start > 0
+                && (input[run_start - 1].is_ascii_hexdigit()
+                    || input[run_start - 1] == b':'
+                    || input[run_start - 1] == b'.')
+            {
+                run_start -= 1;
+            }
+            if run_start == 0 || !input[run_start - 1].is_ascii_alphanumeric() {
+                return None;
+            }
+        }
 
         let start = idx;
         let mut pos = idx;
@@ -103,8 +122,18 @@ impl Ip {
             end += 1;
         }
 
-        // Strip trailing colons
-        while end > start && input[end - 1] == b':' && !(end >= 2 && input[end - 2] == b':') {
+        // Boundary after: a letter glued to the run means the run is part of a
+        // larger token (`2001:db8::1x`). The maximal run never stops on ':'
+        // or '.', so this is the only live rejection; the strips below may
+        // re-expose a ':' or '.' at the new end, which is fine by design.
+        if end < input.len() && input[end].is_ascii_alphanumeric() {
+            return None;
+        }
+
+        // Strip a lone trailing colon (`fe80::1:` -> `fe80::1`), preserving
+        // a trailing `::`.
+        while end > start && input[end - 1] == b':' && !(end - start >= 2 && input[end - 2] == b':')
+        {
             end -= 1;
         }
 
@@ -115,16 +144,24 @@ impl Ip {
             return None;
         }
 
-        // Boundary after
-        if end < input.len() && (input[end].is_ascii_alphanumeric() || input[end] == b':') {
-            return None;
+        if crate::ipv6::is_valid_ipv6(candidate) {
+            return Some(start..end);
         }
 
-        if crate::ipv6::is_valid_ipv6(candidate) {
-            Some(start..end)
-        } else {
-            None
+        // Sentence-dot recovery: trailing '.'s cannot belong to an embedded
+        // IPv4 tail (the run is maximal, so the next byte is not a digit).
+        // Strip them and revalidate (`see 2001:db8::1. next`).
+        if input[end - 1] == b'.' {
+            let mut dot_end = end;
+            while dot_end > start && input[dot_end - 1] == b'.' {
+                dot_end -= 1;
+            }
+            if crate::ipv6::is_valid_ipv6(&input[start..dot_end]) {
+                return Some(start..dot_end);
+            }
         }
+
+        None
     }
 }
 

@@ -10,8 +10,12 @@ impl Cidr {
             return None;
         }
 
-        // Boundary before: not preceded by digit or dot
-        if idx > 0 && (input[idx - 1].is_ascii_digit() || input[idx - 1] == b'.') {
+        // Boundary before: not preceded by digit or dot, nor by ':' — a quad
+        // after a colon is the leftover interior of a failed IPv6 candidate
+        // (`1::2::1.2.3.4/24`) and must not be mined.
+        if idx > 0
+            && (input[idx - 1].is_ascii_digit() || input[idx - 1] == b'.' || input[idx - 1] == b':')
+        {
             return None;
         }
 
@@ -77,9 +81,17 @@ impl Cidr {
             return None;
         }
 
-        // Boundary after: not followed by digit or dot
-        if pos < input.len() && (input[pos].is_ascii_digit() || input[pos] == b'.') {
-            return None;
+        // Boundary after: a digit would extend the prefix; a '.' only vetoes
+        // when followed by a digit (`/24.5`). A bare '.' is sentence
+        // punctuation (`10.0.0.0/8. done`) — a valid CIDR cannot continue
+        // with '.' + non-digit.
+        if pos < input.len() {
+            if input[pos].is_ascii_digit() {
+                return None;
+            }
+            if input[pos] == b'.' && pos + 1 < input.len() && input[pos + 1].is_ascii_digit() {
+                return None;
+            }
         }
 
         Some(start..pos)
@@ -107,7 +119,12 @@ impl Cidr {
 
             let start = idx;
             let mut end = idx;
-            while end < input.len() && (input[end].is_ascii_hexdigit() || input[end] == b':') {
+            // '.' is part of the charset so embedded IPv4 tails
+            // (`::ffff:0.0.0.0/96`, `64:ff9b::192.0.2.33/24`) are consumed
+            // whole instead of leaving a bogus v4 leftover.
+            while end < input.len()
+                && (input[end].is_ascii_hexdigit() || input[end] == b':' || input[end] == b'.')
+            {
                 end += 1;
             }
 
@@ -153,9 +170,15 @@ impl Cidr {
             return None;
         }
 
-        // Boundary after
-        if pos < input.len() && (input[pos].is_ascii_digit() || input[pos] == b'.') {
-            return None;
+        // Boundary after: same rule as the IPv4 prefix — reject a digit or a
+        // '.' followed by a digit, allow a sentence dot (`2001:db8::/32.`).
+        if pos < input.len() {
+            if input[pos].is_ascii_digit() {
+                return None;
+            }
+            if input[pos] == b'.' && pos + 1 < input.len() && input[pos + 1].is_ascii_digit() {
+                return None;
+            }
         }
 
         Some(ip_start..pos)

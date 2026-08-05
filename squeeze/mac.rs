@@ -64,9 +64,16 @@ impl Mac {
 
         let end = idx + 14;
 
-        // Boundary after: not followed by hex digit or dot
-        if end < input.len() && (Self::is_hex(input[end]) || input[end] == b'.') {
-            return None;
+        // Boundary after: a glued hex digit extends the run, and a '.' only
+        // vetoes when followed by a hex digit (`001A.2B3C.4D5E.7788`). A bare
+        // trailing '.' is sentence punctuation (`port 001A.2B3C.4D5E. up`).
+        if end < input.len() {
+            if Self::is_hex(input[end]) {
+                return None;
+            }
+            if input[end] == b'.' && end + 1 < input.len() && Self::is_hex(input[end + 1]) {
+                return None;
+            }
         }
 
         Some(idx..end)
