@@ -1,112 +1,95 @@
+/// Validates an IPv6 address per RFC 4291 §2.2, matching the acceptance of
+/// `std::net::Ipv6Addr::from_str` (minus zone IDs, which callers strip):
+/// - at most one `::` compression marker, which must stand for at least one
+///   zero group
+/// - 1-4 hex digit groups, exactly 8 groups total when uncompressed
+/// - an optional embedded IPv4 dotted quad as the last two groups (e.g.
+///   `::ffff:192.168.1.1`, `64:ff9b::192.0.2.33`)
 pub(crate) fn is_valid_ipv6(bytes: &[u8]) -> bool {
-    let s = match std::str::from_utf8(bytes) {
-        Ok(s) => s,
-        Err(_) => return false,
+    let Ok(s) = std::str::from_utf8(bytes) else {
+        return false;
     };
-
-    if let Some(last_colon) = s.rfind(':') {
-        let suffix = &s[last_colon + 1..];
-        if suffix.contains('.') {
-            let prefix = &s[..last_colon + 1];
-            let prefix_bytes = prefix.as_bytes();
-            if is_valid_ipv4_suffix(suffix) {
-                let trimmed = prefix.trim_end_matches(':');
-                if trimmed.is_empty() {
-                    return prefix_bytes.windows(2).any(|w| w == b"::");
-                }
-                return validate_groups(trimmed, true);
-            }
-        }
+    if s.is_empty() {
+        return false;
     }
 
-    validate_groups(s, false)
+    match s.find("::") {
+        Some(pos) => {
+            let left = &s[..pos];
+            let right = &s[pos + 2..];
+            // A second `::` (including overlapping runs like `:::`) is invalid.
+            if right.contains("::") || right.starts_with(':') || left.ends_with(':') {
+                return false;
+            }
+            let Some(left_groups) = count_groups(left, false) else {
+                return false;
+            };
+            let Some(right_groups) = count_groups(right, true) else {
+                return false;
+            };
+            // `::` must expand to at least one zero group.
+            left_groups + right_groups < 8
+        }
+        None => count_groups(s, true) == Some(8),
+    }
 }
 
-fn is_valid_ipv4_suffix(s: &str) -> bool {
-    let mut octet_count = 0u8;
-    let mut octet_start = 0;
-    let bytes = s.as_bytes();
-    let mut i = 0;
-
-    while i <= bytes.len() {
-        if i == bytes.len() || bytes[i] == b'.' {
-            let octet = &s[octet_start..i];
-            if octet.is_empty() || octet.len() > 3 {
-                return false;
-            }
-            if octet.len() > 1 && octet.as_bytes()[0] == b'0' {
-                return false;
-            }
-            let mut val = 0u16;
-            for &b in octet.as_bytes() {
-                if !b.is_ascii_digit() {
-                    return false;
-                }
-                val = val * 10 + (b - b'0') as u16;
-            }
-            if val > 255 {
-                return false;
-            }
-            octet_count += 1;
-            octet_start = i + 1;
-        }
-        i += 1;
+/// Counts the 16-bit groups in a colon-separated list, where the last element
+/// may be an IPv4 dotted quad (counting as two groups) when `allow_v4_tail`.
+/// Returns `None` if any element is invalid.
+fn count_groups(part: &str, allow_v4_tail: bool) -> Option<usize> {
+    if part.is_empty() {
+        return Some(0);
     }
+    let mut count = 0usize;
+    let mut iter = part.split(':').peekable();
+    while let Some(group) = iter.next() {
+        let is_last = iter.peek().is_none();
+        if is_last && allow_v4_tail && group.contains('.') {
+            if !is_valid_ipv4_quad(group) {
+                return None;
+            }
+            count += 2;
+        } else {
+            if !is_valid_hex_group(group) {
+                return None;
+            }
+            count += 1;
+        }
+    }
+    Some(count)
+}
 
+fn is_valid_ipv4_quad(s: &str) -> bool {
+    let mut octet_count = 0u8;
+    for octet in s.split('.') {
+        let bytes = octet.as_bytes();
+        if bytes.is_empty() || bytes.len() > 3 {
+            return false;
+        }
+        // Leading zeros are rejected, matching `std::net`.
+        if bytes.len() > 1 && bytes[0] == b'0' {
+            return false;
+        }
+        let mut val = 0u16;
+        for &b in bytes {
+            if !b.is_ascii_digit() {
+                return false;
+            }
+            val = val * 10 + u16::from(b - b'0');
+        }
+        if val > 255 {
+            return false;
+        }
+        octet_count += 1;
+        if octet_count > 4 {
+            return false;
+        }
+    }
     octet_count == 4
 }
 
-pub(crate) fn validate_groups(s: &str, has_ipv4_suffix: bool) -> bool {
-    let max_groups: usize = if has_ipv4_suffix { 6 } else { 8 };
-
-    if s == "::" {
-        return true;
-    }
-
-    let has_double_colon = s.contains("::");
-
-    if has_double_colon {
-        let Some(dc_pos) = s.find("::") else {
-            return false;
-        };
-        let left_str = &s[..dc_pos];
-        let right_str = &s[dc_pos + 2..];
-
-        let left_count = if left_str.is_empty() {
-            0
-        } else {
-            count_and_validate_groups(left_str)
-        };
-        let right_count = if right_str.is_empty() {
-            0
-        } else {
-            count_and_validate_groups(right_str)
-        };
-
-        if left_count == usize::MAX || right_count == usize::MAX {
-            return false;
-        }
-
-        let total = left_count + right_count;
-        total < max_groups
-    } else {
-        let count = count_and_validate_groups(s);
-        count == max_groups
-    }
-}
-
-fn count_and_validate_groups(s: &str) -> usize {
-    let mut count = 0usize;
-    for g in s.split(':') {
-        if !is_valid_hex_group(g) {
-            return usize::MAX;
-        }
-        count += 1;
-    }
-    count
-}
-
-pub(crate) fn is_valid_hex_group(g: &str) -> bool {
+fn is_valid_hex_group(g: &str) -> bool {
     !g.is_empty() && g.len() <= 4 && g.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
@@ -212,5 +195,130 @@ mod tests {
     #[test]
     fn invalid_not_utf8() {
         assert!(!is_valid_ipv6(&[0xFF, 0xFE]));
+    }
+
+    // --- Regressions: `::` directly before an IPv4 tail (NAT64 family) ---
+
+    #[test]
+    fn valid_nat64_prefix_with_v4_tail() {
+        assert!(is_valid_ipv6(b"64:ff9b::192.0.2.33"));
+    }
+
+    #[test]
+    fn valid_compressed_one_group_with_v4_tail() {
+        assert!(is_valid_ipv6(b"1::1.2.3.4"));
+    }
+
+    #[test]
+    fn valid_compressed_five_groups_with_v4_tail() {
+        assert!(is_valid_ipv6(b"1:2:3:4:5::1.2.3.4"));
+    }
+
+    #[test]
+    fn valid_db8_with_v4_tail() {
+        assert!(is_valid_ipv6(b"2001:db8::1.2.3.4"));
+    }
+
+    // --- Regressions: invalid v4-tail forms previously accepted ---
+
+    #[test]
+    fn invalid_six_groups_compressed_with_v4_tail() {
+        // `::` would expand to zero groups: 6 + 2 = 8 already.
+        assert!(!is_valid_ipv6(b"1:2:3:4:5:6::1.2.3.4"));
+    }
+
+    #[test]
+    fn invalid_double_compression_with_v4_tail() {
+        assert!(!is_valid_ipv6(b"1::2::1.2.3.4"));
+    }
+
+    #[test]
+    fn invalid_triple_colon_with_v4_tail() {
+        assert!(!is_valid_ipv6(b":::1.2.3.4"));
+    }
+
+    #[test]
+    fn invalid_quad_colon_with_v4_tail() {
+        assert!(!is_valid_ipv6(b"::::1.2.3.4"));
+    }
+
+    #[test]
+    fn invalid_lone_leading_colon() {
+        assert!(!is_valid_ipv6(b":1:2:3:4:5:6:7:8"));
+    }
+
+    #[test]
+    fn invalid_lone_trailing_colon() {
+        assert!(!is_valid_ipv6(b"1:2:3:4:5:6:7:8:"));
+    }
+
+    #[test]
+    fn invalid_bare_ipv4() {
+        assert!(!is_valid_ipv6(b"1.2.3.4"));
+    }
+
+    #[test]
+    fn invalid_v4_tail_on_left_of_compression() {
+        assert!(!is_valid_ipv6(b"1.2.3.4::1"));
+    }
+
+    #[test]
+    fn invalid_eight_groups_plus_compression() {
+        assert!(!is_valid_ipv6(b"1:2:3:4:5:6:7:8::"));
+    }
+
+    #[test]
+    fn valid_seven_groups_trailing_compression() {
+        assert!(is_valid_ipv6(b"1:2:3:4:5:6:7::"));
+    }
+
+    #[test]
+    fn invalid_v4_tail_too_many_octets() {
+        assert!(!is_valid_ipv6(b"::1.2.3.4.5"));
+    }
+
+    #[test]
+    fn invalid_v4_tail_in_middle() {
+        assert!(!is_valid_ipv6(b"::1.2.3.4:5"));
+    }
+
+    // --- Differential sanity vs std ---
+
+    #[test]
+    fn differential_against_std() {
+        let candidates: &[&str] = &[
+            "::",
+            "::1",
+            "1::",
+            "1:2:3:4:5:6:7:8",
+            "1:2:3:4:5:6:7:8:9",
+            "64:ff9b::192.0.2.33",
+            "2001:db8::1.2.3.4",
+            "1:2:3:4:5:6::1.2.3.4",
+            "1:2:3:4:5::1.2.3.4",
+            "::ffff:0.0.0.0",
+            ":::1.2.3.4",
+            "::::1.2.3.4",
+            "1::2::3",
+            ":::",
+            "::1:",
+            ":1::2",
+            "12345::",
+            "1:2:3:4:5:6:1.2.3.4",
+            "1:2:3:4:5:6:7:1.2.3.4",
+            "fe80::1",
+            "::256.1.1.1",
+            "::01.1.1.1",
+            "a:b:c:d:e:f:1.2.3.4",
+            "A:B:C:D:E:F:a:b",
+        ];
+        for c in candidates {
+            let std_ok = c.parse::<std::net::Ipv6Addr>().is_ok();
+            assert_eq!(
+                is_valid_ipv6(c.as_bytes()),
+                std_ok,
+                "disagrees with std on {c:?}"
+            );
+        }
     }
 }

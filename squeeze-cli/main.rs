@@ -343,20 +343,20 @@ impl TryFrom<&Opts> for Hash {
         }
         if let Some(Some(ref algo)) = opts.hash_algo {
             for a in algo.split(',') {
-                finder.add_algorithm(a);
+                let _ = finder.add_algorithm(a);
             }
         }
         if opts.md5 {
-            finder.add_algorithm("md5");
+            let _ = finder.add_algorithm("md5");
         }
         if opts.sha1 {
-            finder.add_algorithm("sha1");
+            let _ = finder.add_algorithm("sha1");
         }
         if opts.sha256 {
-            finder.add_algorithm("sha256");
+            let _ = finder.add_algorithm("sha256");
         }
         if opts.sha512 {
-            finder.add_algorithm("sha512");
+            let _ = finder.add_algorithm("sha512");
         }
         Ok(finder)
     }

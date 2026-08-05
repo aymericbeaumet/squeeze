@@ -303,6 +303,9 @@ impl Scanner {
                         continue;
                     }
                     if let Some(range) = self.finders[i].try_at(input, pos) {
+                        if range.start < finder_pos[i] {
+                            continue;
+                        }
                         matches.push(Match {
                             finder_index: i,
                             range: range.clone(),
@@ -327,6 +330,12 @@ impl Scanner {
                         continue;
                     }
                     if let Some(range) = self.finders[i].try_trigger_at(input, pos) {
+                        // Trigger matches can extend backward past the previous
+                        // match for this finder (e.g. an email local part walked
+                        // back across it); matches must stay disjoint per finder.
+                        if range.start < finder_pos[i] {
+                            continue;
+                        }
                         finder_pos[i] = range.end;
                         matches.push(Match {
                             finder_index: i,
@@ -345,6 +354,8 @@ impl Scanner {
         });
     }
 
+    /// Returns the same match as `scan_line(line).into_iter().next()`: the
+    /// earliest-starting match, ties broken by the lowest finder index.
     pub fn scan_line_first(&self, line: &str) -> Option<Match> {
         let input = line.as_bytes();
         if input.is_empty() {
@@ -358,6 +369,11 @@ impl Scanner {
         }
 
         let mut best: Option<Match> = None;
+        // Matches scan_line's sort order: (range.start, finder_index) ascending.
+        let beats = |best: &Option<Match>, start: usize, index: usize| match best {
+            None => true,
+            Some(b) => (start, index) < (b.range.start, b.finder_index),
+        };
 
         let active_scan = active & self.scan_mask;
         if active_scan != 0 {
@@ -366,18 +382,11 @@ impl Scanner {
                 let i = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
                 if let Some(range) = self.finders[i].find(line) {
-                    let dominated = match &best {
-                        Some(b) => range.start >= b.range.start,
-                        None => false,
-                    };
-                    if !dominated {
+                    if beats(&best, range.start, i) {
                         best = Some(Match {
                             finder_index: i,
                             range,
                         });
-                        if best.as_ref().unwrap().range.start == 0 {
-                            return best;
-                        }
                     }
                 }
             }
@@ -385,10 +394,16 @@ impl Scanner {
 
         let active_dispatch = active & self.dispatch_mask;
         if active_dispatch != 0 {
-            let limit = best.as_ref().map_or(input.len(), |b| b.range.start);
             let mut finder_pos = [0usize; MAX_FINDERS];
 
-            for pos in 0..limit {
+            for pos in 0..input.len() {
+                // Dispatch matches start at `pos`, so once `pos` passes the best
+                // start no candidate can win (ties at equal start still can).
+                if let Some(b) = &best {
+                    if pos > b.range.start {
+                        break;
+                    }
+                }
                 let mut candidates = self.dispatch[input[pos] as usize] & active_dispatch;
                 while candidates != 0 {
                     let i = candidates.trailing_zeros() as usize;
@@ -398,19 +413,15 @@ impl Scanner {
                         continue;
                     }
                     if let Some(range) = self.finders[i].try_at(input, pos) {
+                        if range.start < finder_pos[i] {
+                            continue;
+                        }
                         finder_pos[i] = range.end;
-                        let dominated = match &best {
-                            Some(b) => range.start >= b.range.start,
-                            None => false,
-                        };
-                        if !dominated {
+                        if beats(&best, range.start, i) {
                             best = Some(Match {
                                 finder_index: i,
                                 range,
                             });
-                            if best.as_ref().unwrap().range.start == 0 {
-                                return best;
-                            }
                         }
                     }
                 }
@@ -421,6 +432,8 @@ impl Scanner {
         if active_trigger != 0 {
             let mut finder_pos = [0usize; MAX_FINDERS];
 
+            // Trigger matches can start before their trigger position, so every
+            // position must be visited even once a best match exists.
             for pos in 0..input.len() {
                 let mut candidates = self.trigger[input[pos] as usize] & active_trigger;
                 while candidates != 0 {
@@ -431,19 +444,15 @@ impl Scanner {
                         continue;
                     }
                     if let Some(range) = self.finders[i].try_trigger_at(input, pos) {
+                        if range.start < finder_pos[i] {
+                            continue;
+                        }
                         finder_pos[i] = range.end;
-                        let dominated = match &best {
-                            Some(b) => range.start >= b.range.start,
-                            None => false,
-                        };
-                        if !dominated {
+                        if beats(&best, range.start, i) {
                             best = Some(Match {
                                 finder_index: i,
                                 range,
                             });
-                            if best.as_ref().unwrap().range.start == 0 {
-                                return best;
-                            }
                         }
                     }
                 }
@@ -1073,6 +1082,97 @@ mod tests {
         for (a, b) in from_scan_line.iter().zip(buf.iter()) {
             assert_eq!(a.range, b.range);
             assert_eq!(a.finder_index, b.finder_index);
+        }
+    }
+
+    // --- Regression: trigger matches must stay disjoint per finder ---
+
+    #[test]
+    fn trigger_matches_never_overlap_per_finder() {
+        let finders: Vec<Box<dyn Finder>> = vec![Box::new(crate::email::Email::default())];
+        let scanner = Scanner::new(finders);
+        for input in ["a@b.co@d.ef", "user@example.com@evil.org"] {
+            let matches = scanner.scan_line(input);
+            for w in matches.windows(2) {
+                assert!(
+                    w[1].range.start >= w[0].range.end,
+                    "overlapping matches on {input:?}: {:?} vs {:?}",
+                    w[0].range,
+                    w[1].range
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn trigger_overlap_suppressed_keeps_first_match() {
+        let finders: Vec<Box<dyn Finder>> = vec![Box::new(crate::email::Email::default())];
+        let scanner = Scanner::new(finders);
+        let input = "user@example.com@evil.org";
+        let matches = scanner.scan_line(input);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(&input[matches[0].range.clone()], "user@example.com");
+    }
+
+    // --- Regression: scan_line_first must agree with scan_line()[0] ---
+
+    #[test]
+    fn scan_line_first_ties_broken_by_finder_index() {
+        // hash (dispatch mode, index 0) and mirror (scan mode, index 1) both
+        // match at position 0; scan_line sorts ties by finder index, and
+        // scan_line_first must agree instead of favoring scan-mode finders.
+        let input = "5d41402abc4b2a76b9719d911017c592 tail";
+        let finders: Vec<Box<dyn Finder>> = vec![
+            Box::new(crate::hash::Hash::default()),
+            Box::new(crate::mirror::Mirror::default()),
+        ];
+        let scanner = Scanner::new(finders);
+        let all = scanner.scan_line(input);
+        let first = scanner.scan_line_first(input).unwrap();
+        assert_eq!(first.finder_index, all[0].finder_index);
+        assert_eq!(first.range, all[0].range);
+        assert_eq!(first.finder_index, 0);
+    }
+
+    #[test]
+    fn scan_line_first_agrees_with_scan_line_across_orders() {
+        let inputs = [
+            "2024-01-15.example.com",
+            "x 2024-01-15.example.com",
+            "$HOME 5d41402abc4b2a76b9719d911017c592",
+            "5d41402abc4b2a76b9719d911017c592 $HOME",
+            "user@example.com $HOME",
+        ];
+        let build_finders = |reversed: bool| -> Vec<Box<dyn Finder>> {
+            let mut v: Vec<Box<dyn Finder>> = vec![
+                Box::new(crate::datetime::Datetime::default()),
+                Box::new(crate::hash::Hash::default()),
+                Box::new(crate::env::Env::default()),
+                Box::new(crate::email::Email::default()),
+                Box::new(crate::mirror::Mirror::default()),
+            ];
+            if reversed {
+                v.reverse();
+            }
+            v
+        };
+        for reversed in [false, true] {
+            let scanner = Scanner::new(build_finders(reversed));
+            for input in inputs {
+                let all = scanner.scan_line(input);
+                let first = scanner.scan_line_first(input);
+                match (all.first(), first) {
+                    (None, None) => {}
+                    (Some(a), Some(f)) => {
+                        assert_eq!(a.range, f.range, "range mismatch on {input:?}");
+                        assert_eq!(
+                            a.finder_index, f.finder_index,
+                            "finder mismatch on {input:?}"
+                        );
+                    }
+                    (a, f) => panic!("presence mismatch on {input:?}: {a:?} vs {f:?}"),
+                }
+            }
         }
     }
 

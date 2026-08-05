@@ -18,15 +18,20 @@ pub struct Hash {
 }
 
 impl Hash {
-    pub fn add_algorithm(&mut self, name: &str) {
+    /// Restricts matching to the given algorithm. Returns `false` (leaving the
+    /// finder unchanged) when the algorithm is unknown, so callers can surface
+    /// an error instead of silently matching everything.
+    #[must_use]
+    pub fn add_algorithm(&mut self, name: &str) -> bool {
         let bit = match name.to_lowercase().as_str() {
             "md5" => MD5_BIT,
             "sha1" | "sha-1" => SHA1_BIT,
             "sha256" | "sha-256" => SHA256_BIT,
             "sha512" | "sha-512" => SHA512_BIT,
-            _ => return,
+            _ => return false,
         };
         self.lengths |= bit;
+        true
     }
 
     fn is_target_length(&self, len: usize) -> bool {
@@ -172,7 +177,7 @@ mod tests {
     #[test]
     fn find_should_filter_by_algorithm() {
         let mut finder = Hash::default();
-        finder.add_algorithm("sha256");
+        assert!(finder.add_algorithm("sha256"));
 
         let md5 = "5d41402abc4b2a76b9719d911017c592";
         assert!(finder.find(md5).is_none());
@@ -184,7 +189,7 @@ mod tests {
     #[test]
     fn find_should_filter_md5_only() {
         let mut finder = Hash::default();
-        finder.add_algorithm("md5");
+        assert!(finder.add_algorithm("md5"));
 
         let input = "5d41402abc4b2a76b9719d911017c592";
         assert!(finder.find(input).is_some());
@@ -256,20 +261,20 @@ mod tests {
     #[test]
     fn add_algorithm_should_accept_various_names() {
         let mut finder = Hash::default();
-        finder.add_algorithm("sha-256");
+        assert!(finder.add_algorithm("sha-256"));
         assert!(finder.lengths & SHA256_BIT != 0);
 
-        finder.add_algorithm("SHA1");
+        assert!(finder.add_algorithm("SHA1"));
         assert!(finder.lengths & SHA1_BIT != 0);
 
-        finder.add_algorithm("SHA-512");
+        assert!(finder.add_algorithm("SHA-512"));
         assert!(finder.lengths & SHA512_BIT != 0);
     }
 
     #[test]
-    fn add_algorithm_should_ignore_unknown() {
+    fn add_algorithm_should_reject_unknown() {
         let mut finder = Hash::default();
-        finder.add_algorithm("blake2");
+        assert!(!finder.add_algorithm("blake2"));
         assert_eq!(0, finder.lengths);
     }
 
