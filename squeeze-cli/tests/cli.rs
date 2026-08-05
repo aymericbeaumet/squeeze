@@ -1405,3 +1405,34 @@ fn first_overrides_other_post_processing() {
         .success()
         .stdout(predicate::eq("$Z\n"));
 }
+
+// ============================================================================
+// --copy flag tests
+// ============================================================================
+
+#[test]
+fn copy_flag_should_not_expose_the_clipboard_helper() {
+    // The helper marker is matched before clap, so it must stay out of the CLI surface.
+    squeeze()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("clipboard_helper").not());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn copy_flag_should_report_an_error_without_a_display_server() {
+    // Regression guard for the clipboard helper handshake: with nowhere to put the selection the
+    // command has to fail loudly instead of hanging or silently dropping the contents.
+    squeeze()
+        .arg("--url")
+        .arg("--copy")
+        .env_remove("DISPLAY")
+        .env_remove("WAYLAND_DISPLAY")
+        .write_stdin("https://example.com\n")
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("https://example.com"))
+        .stderr(predicate::str::is_empty().not());
+}

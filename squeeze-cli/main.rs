@@ -42,10 +42,12 @@ const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
+/// Marker argument that puts the process into clipboard helper mode. It is matched before clap
+/// runs, so it never becomes part of the public command line surface.
 #[cfg(target_os = "linux")]
-const CLIPBOARD_DAEMON_ARG: &str = "--__clipboard-daemon";
+const CLIPBOARD_HELPER_ARG: &str = "__squeeze_clipboard_helper";
 #[cfg(target_os = "linux")]
-const CLIPBOARD_READY: &str = "ready";
+const CLIPBOARD_HELPER_READY: &str = "ready";
 
 #[derive(Copy, Clone, Debug, ValueEnum, Default, PartialEq, Eq)]
 enum Format {
@@ -87,9 +89,6 @@ struct Opts {
     uniq: bool,
     #[arg(long = "copy", help = "copy the results to the clipboard")]
     copy: bool,
-    #[cfg(target_os = "linux")]
-    #[arg(long = "__clipboard-daemon", hide = true)]
-    clipboard_daemon: bool,
     #[arg(long = "open", help = "open the results")]
     open: bool,
     #[arg(
@@ -825,56 +824,51 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+// X11 and Wayland have no clipboard storage of their own: the contents live inside whichever
+// process owns the selection, and vanish the moment it exits. Hand the text to a copy of this
+// binary that stays alive answering paste requests, so the interactive command can return.
 #[cfg(target_os = "linux")]
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
-    // X11 and Wayland clipboard contents disappear when their owner exits. Re-run this binary as
-    // a helper so the interactive command can return while another process serves paste requests.
-    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut child = Command::new(executable)
-        .arg(CLIPBOARD_DAEMON_ARG)
+    let executable =
+        std::env::current_exe().map_err(|e| format!("failed to locate squeeze: {e}"))?;
+    let mut helper = Command::new(executable)
+        .arg(CLIPBOARD_HELPER_ARG)
+        // Redirecting stdout serves double duty: it is the channel the helper reports its status
+        // on, and it stops the helper from holding the caller's pipe open once we exit, which
+        // would otherwise hang `$(squeeze --copy)` for as long as the clipboard lives.
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .current_dir("/")
         .spawn()
         .map_err(|e| format!("failed to start clipboard helper: {e}"))?;
 
-    let mut child_stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "failed to open clipboard helper input".to_string())?;
-    child_stdin
+    // The helper reads to EOF before it replies, so sending the whole payload first cannot
+    // deadlock on a full pipe.
+    let mut stdin = helper.stdin.take().expect("stdin is piped");
+    stdin
         .write_all(text.as_bytes())
         .map_err(|e| format!("failed to send clipboard contents to helper: {e}"))?;
-    drop(child_stdin);
+    drop(stdin);
 
-    let child_stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "failed to open clipboard helper output".to_string())?;
-    let mut ready = String::new();
-    BufReader::new(child_stdout)
-        .read_line(&mut ready)
+    let stdout = helper.stdout.take().expect("stdout is piped");
+    let mut status = String::new();
+    BufReader::new(stdout)
+        .read_line(&mut status)
         .map_err(|e| format!("failed to read clipboard helper status: {e}"))?;
 
-    if ready.trim_end() == CLIPBOARD_READY {
-        return Ok(());
-    }
-
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("failed waiting for clipboard helper: {e}"))?;
-    let error = String::from_utf8_lossy(&output.stderr);
-    let error = error.trim();
-    if error.is_empty() {
-        Err("clipboard helper exited before taking ownership".to_string())
-    } else {
-        Err(error.to_string())
+    match status.trim_end() {
+        CLIPBOARD_HELPER_READY => Ok(()),
+        "" => Err("clipboard helper exited before taking ownership".to_string()),
+        error => Err(error.to_string()),
     }
 }
 
+// Runs in the helper process: takes the payload from stdin, then keeps serving it until another
+// application replaces the clipboard contents. Anything written to stdout here is the status the
+// invoking process reports back to the user.
 #[cfg(target_os = "linux")]
-fn run_clipboard_daemon() -> Result<(), String> {
+fn run_clipboard_helper() -> Result<(), String> {
     use arboard::SetExtLinux;
 
     let mut text = String::new();
@@ -883,13 +877,13 @@ fn run_clipboard_daemon() -> Result<(), String> {
         .map_err(|e| format!("failed to read clipboard contents: {e}"))?;
 
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
+    // Claim the selection first so `--copy` only reports success once the contents are really
+    // ours, then re-assert and block, which is what keeps this process around to serve pastes.
     clipboard
-        .set_text(text.clone())
+        .set_text(text.as_str())
         .map_err(|e| e.to_string())?;
 
-    // Confirm that ownership was established before the invoking process returns. The waiting set
-    // then keeps this helper alive until another application replaces the clipboard contents.
-    println!("{CLIPBOARD_READY}");
+    println!("{CLIPBOARD_HELPER_READY}");
     io::stdout()
         .flush()
         .map_err(|e| format!("failed to report clipboard readiness: {e}"))?;
@@ -1193,6 +1187,9 @@ fn finalize_results(
 
     let mut formatted = Vec::new();
     write_formatted(&mut formatted, &results, opts.output, opts.with_kind)?;
+    // Print before copying: on Linux the copy waits for a display server round-trip, and a
+    // clipboard that is unavailable should not cost the user their results.
+    out.write_all(&formatted)?;
 
     if opts.copy {
         let mut clipboard = Vec::new();
@@ -1206,8 +1203,6 @@ fn finalize_results(
         copy_to_clipboard(&text).map_err(io::Error::other)?;
     }
 
-    out.write_all(&formatted)?;
-
     if opts.open {
         for r in &results {
             open_url(&r.value)?;
@@ -1218,13 +1213,16 @@ fn finalize_results(
 }
 
 fn main() -> ExitCode {
-    let opts = Opts::parse();
+    // Checked ahead of clap so the marker stays invisible to the argument parser.
     #[cfg(target_os = "linux")]
-    if opts.clipboard_daemon {
-        return match run_clipboard_daemon() {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == CLIPBOARD_HELPER_ARG)
+    {
+        return match run_clipboard_helper() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
-                eprintln!("{e}");
+                println!("{e}");
                 ExitCode::FAILURE
             }
         };
@@ -1232,6 +1230,7 @@ fn main() -> ExitCode {
 
     env_logger::init();
 
+    let opts = Opts::parse();
     let finders = build_finders(&opts);
 
     if finders.is_empty() {
