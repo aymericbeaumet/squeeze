@@ -12,6 +12,78 @@ impl Env {
     fn is_name_char(b: u8) -> bool {
         b.is_ascii_alphanumeric() || b == b'_'
     }
+
+    /// Bytes that can begin a POSIX/bash parameter-expansion operator right
+    /// after the name inside `${...}`: `:-` `:=` `:+` `:?` (and their bare
+    /// `-` `=` `+` `?` forms), `:offset:length`, `%`/`%%`, `#`/`##`,
+    /// `/pat/repl`, `^`/`^^`, `,`/`,,`, and `@` transforms.
+    fn is_operator_start(b: u8) -> bool {
+        matches!(
+            b,
+            b':' | b'%' | b'#' | b'/' | b'^' | b',' | b'-' | b'=' | b'+' | b'?' | b'@'
+        )
+    }
+
+    /// Scan from `from` (inside a `${...}` reference, after the name) to
+    /// the balanced closing `}`, tracking nested `${...}` references.
+    /// Returns the position just past the closing brace, or `None` when
+    /// the reference is unclosed.
+    fn balanced_end(input: &[u8], from: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut i = from;
+        while i < input.len() {
+            match input[i] {
+                b'$' if i + 1 < input.len() && input[i + 1] == b'{' => {
+                    depth += 1;
+                    i += 2;
+                }
+                b'}' if depth == 0 => return Some(i + 1),
+                b'}' => {
+                    depth -= 1;
+                    i += 1;
+                }
+                _ => i += 1,
+            }
+        }
+        None
+    }
+
+    /// Match a reference starting exactly at `pos` (which must hold `$`).
+    /// Returns the exclusive end of the match.
+    fn match_end(input: &[u8], pos: usize) -> Option<usize> {
+        let after = pos + 1;
+        if after >= input.len() {
+            return None;
+        }
+        if input[after] == b'{' {
+            let name_start = after + 1;
+            if name_start >= input.len() || !Self::is_name_start(input[name_start]) {
+                return None;
+            }
+            let mut name_end = name_start + 1;
+            while name_end < input.len() && Self::is_name_char(input[name_end]) {
+                name_end += 1;
+            }
+            if name_end >= input.len() {
+                return None;
+            }
+            if input[name_end] == b'}' {
+                return Some(name_end + 1);
+            }
+            if Self::is_operator_start(input[name_end]) {
+                return Self::balanced_end(input, name_end);
+            }
+            return None;
+        }
+        if Self::is_name_start(input[after]) {
+            let mut name_end = after + 1;
+            while name_end < input.len() && Self::is_name_char(input[name_end]) {
+                name_end += 1;
+            }
+            return Some(name_end);
+        }
+        None
+    }
 }
 
 impl Finder for Env {
@@ -31,31 +103,7 @@ impl Finder for Env {
         if input[pos] != b'$' {
             return None;
         }
-        let after = pos + 1;
-        if after >= input.len() {
-            return None;
-        }
-        if input[after] == b'{' {
-            let name_start = after + 1;
-            if name_start < input.len() && Self::is_name_start(input[name_start]) {
-                let mut name_end = name_start + 1;
-                while name_end < input.len() && Self::is_name_char(input[name_end]) {
-                    name_end += 1;
-                }
-                if name_end < input.len() && input[name_end] == b'}' {
-                    return Some(pos..name_end + 1);
-                }
-            }
-            return None;
-        }
-        if Self::is_name_start(input[after]) {
-            let mut name_end = after + 1;
-            while name_end < input.len() && Self::is_name_char(input[name_end]) {
-                name_end += 1;
-            }
-            return Some(pos..name_end);
-        }
-        None
+        Self::match_end(input, pos).map(|end| pos..end)
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
@@ -64,36 +112,10 @@ impl Finder for Env {
 
         while idx < input.len() {
             let dollar = idx + input[idx..].iter().position(|&b| b == b'$')?;
-
-            let after = dollar + 1;
-            if after >= input.len() {
-                return None;
+            if let Some(end) = Self::match_end(input, dollar) {
+                return Some(dollar..end);
             }
-
-            if input[after] == b'{' {
-                let name_start = after + 1;
-                if name_start < input.len() && Self::is_name_start(input[name_start]) {
-                    let mut name_end = name_start + 1;
-                    while name_end < input.len() && Self::is_name_char(input[name_end]) {
-                        name_end += 1;
-                    }
-                    if name_end < input.len() && input[name_end] == b'}' {
-                        return Some(dollar..name_end + 1);
-                    }
-                }
-                idx = after + 1;
-                continue;
-            }
-
-            if Self::is_name_start(input[after]) {
-                let mut name_end = after + 1;
-                while name_end < input.len() && Self::is_name_char(input[name_end]) {
-                    name_end += 1;
-                }
-                return Some(dollar..name_end);
-            }
-
-            idx = after;
+            idx = dollar + 1;
         }
 
         None

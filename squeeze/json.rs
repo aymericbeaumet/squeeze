@@ -4,15 +4,29 @@
 //! (`[...]`) in the input. Bare numbers, strings, and literals are intentionally
 //! not surfaced — they're too easy to false-positive on prose.
 //!
-//! Validation follows RFC 8259: it checks string escapes (including `\uXXXX`),
-//! number shape, and that the only allowed JSON literals are `true`, `false`,
-//! and `null`. Inputs whose braces happen to balance but contain garbage
-//! (`{not really json}`) are rejected.
+//! Validation follows RFC 8259: it checks string escapes (including `\uXXXX`
+//! with UTF-16 surrogate pairing), number shape, and that the only allowed
+//! JSON literals are `true`, `false`, and `null`. Inputs whose braces happen
+//! to balance but contain garbage (`{not really json}`) are rejected.
+//!
+//! Documents nested deeper than [`MAX_DEPTH`] are refused outright: they
+//! yield no match at all rather than an arbitrary inner fragment.
 
 use super::Finder;
 use std::ops::Range;
 
 const MAX_DEPTH: usize = 256;
+
+/// Why a parse attempt failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParseError {
+    /// Malformed JSON.
+    Syntax,
+    /// Well-formed so far but nested deeper than [`MAX_DEPTH`].
+    TooDeep,
+}
+
+type ParseResult = Result<usize, ParseError>;
 
 #[inline]
 fn memchr2(n1: u8, n2: u8, haystack: &[u8]) -> Option<usize> {
@@ -27,74 +41,105 @@ fn skip_ws(input: &[u8], mut pos: usize) -> usize {
     pos
 }
 
-fn parse_value(input: &[u8], pos: usize, depth: usize) -> Option<usize> {
+/// True for bytes that can extend a nesting run: opening brackets and the
+/// whitespace between them.
+#[inline]
+fn is_open_or_ws(b: u8) -> bool {
+    matches!(b, b'{' | b'[' | b' ' | b'\t' | b'\n' | b'\r')
+}
+
+/// End of the run of opening brackets/whitespace starting at `pos`.
+fn skip_open_run(input: &[u8], pos: usize) -> usize {
+    let mut p = pos;
+    while p < input.len() && is_open_or_ws(input[p]) {
+        p += 1;
+    }
+    p
+}
+
+/// Whether `pos` sits inside a run of opening brackets/whitespace whose
+/// first bracket fails the depth limit. `find` never retries inside such a
+/// run (a too-deep document yields no match at all, not an inner
+/// fragment), so `try_at` must not match there either.
+fn inside_too_deep_run(input: &[u8], pos: usize) -> bool {
+    let mut start = pos;
+    while start > 0 && is_open_or_ws(input[start - 1]) {
+        start -= 1;
+    }
+    match (start..pos).find(|&i| matches!(input[i], b'{' | b'[')) {
+        Some(first) => parse_value(input, first, 0) == Err(ParseError::TooDeep),
+        None => false,
+    }
+}
+
+fn parse_value(input: &[u8], pos: usize, depth: usize) -> ParseResult {
     if depth > MAX_DEPTH {
-        return None;
+        return Err(ParseError::TooDeep);
     }
     let pos = skip_ws(input, pos);
     if pos >= input.len() {
-        return None;
+        return Err(ParseError::Syntax);
     }
     match input[pos] {
         b'{' => parse_object(input, pos, depth + 1),
         b'[' => parse_array(input, pos, depth + 1),
-        b'"' => parse_string(input, pos),
-        b't' => parse_literal(input, pos, b"true"),
-        b'f' => parse_literal(input, pos, b"false"),
-        b'n' => parse_literal(input, pos, b"null"),
-        b'-' | b'0'..=b'9' => parse_number(input, pos),
-        _ => None,
+        b'"' => parse_string(input, pos).ok_or(ParseError::Syntax),
+        b't' => parse_literal(input, pos, b"true").ok_or(ParseError::Syntax),
+        b'f' => parse_literal(input, pos, b"false").ok_or(ParseError::Syntax),
+        b'n' => parse_literal(input, pos, b"null").ok_or(ParseError::Syntax),
+        b'-' | b'0'..=b'9' => parse_number(input, pos).ok_or(ParseError::Syntax),
+        _ => Err(ParseError::Syntax),
     }
 }
 
-fn parse_object(input: &[u8], start: usize, depth: usize) -> Option<usize> {
+fn parse_object(input: &[u8], start: usize, depth: usize) -> ParseResult {
     debug_assert_eq!(input[start], b'{');
     let mut pos = start + 1;
     pos = skip_ws(input, pos);
     if pos < input.len() && input[pos] == b'}' {
-        return Some(pos + 1);
+        return Ok(pos + 1);
     }
     loop {
         pos = skip_ws(input, pos);
         if pos >= input.len() || input[pos] != b'"' {
-            return None;
+            return Err(ParseError::Syntax);
         }
-        pos = parse_string(input, pos)?;
+        pos = parse_string(input, pos).ok_or(ParseError::Syntax)?;
         pos = skip_ws(input, pos);
         if pos >= input.len() || input[pos] != b':' {
-            return None;
+            return Err(ParseError::Syntax);
         }
         pos += 1;
         pos = parse_value(input, pos, depth)?;
         pos = skip_ws(input, pos);
         if pos >= input.len() {
-            return None;
+            return Err(ParseError::Syntax);
         }
         match input[pos] {
             b',' => pos += 1,
-            b'}' => return Some(pos + 1),
-            _ => return None,
+            b'}' => return Ok(pos + 1),
+            _ => return Err(ParseError::Syntax),
         }
     }
 }
 
-fn parse_array(input: &[u8], start: usize, depth: usize) -> Option<usize> {
+fn parse_array(input: &[u8], start: usize, depth: usize) -> ParseResult {
     debug_assert_eq!(input[start], b'[');
     let mut pos = start + 1;
     pos = skip_ws(input, pos);
     if pos < input.len() && input[pos] == b']' {
-        return Some(pos + 1);
+        return Ok(pos + 1);
     }
     loop {
         pos = parse_value(input, pos, depth)?;
         pos = skip_ws(input, pos);
         if pos >= input.len() {
-            return None;
+            return Err(ParseError::Syntax);
         }
         match input[pos] {
             b',' => pos += 1,
-            b']' => return Some(pos + 1),
-            _ => return None,
+            b']' => return Ok(pos + 1),
+            _ => return Err(ParseError::Syntax),
         }
     }
 }
@@ -115,15 +160,24 @@ fn parse_string(input: &[u8], start: usize) -> Option<usize> {
             match input[pos] {
                 b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => pos += 1,
                 b'u' => {
-                    if pos + 4 >= input.len() {
-                        return None;
-                    }
-                    for i in 1..=4 {
-                        if !input[pos + i].is_ascii_hexdigit() {
+                    let unit = parse_hex4(input, pos + 1)?;
+                    pos += 5;
+                    if (0xD800..=0xDBFF).contains(&unit) {
+                        // A high surrogate must be immediately followed by
+                        // a `\u` low surrogate; anything else cannot be
+                        // decoded (serde_json rejects lone surrogates).
+                        if pos + 1 >= input.len() || input[pos] != b'\\' || input[pos + 1] != b'u' {
                             return None;
                         }
+                        let low = parse_hex4(input, pos + 2)?;
+                        if !(0xDC00..=0xDFFF).contains(&low) {
+                            return None;
+                        }
+                        pos += 6;
+                    } else if (0xDC00..=0xDFFF).contains(&unit) {
+                        // Lone low surrogate.
+                        return None;
                     }
-                    pos += 5;
                 }
                 _ => return None,
             }
@@ -135,6 +189,20 @@ fn parse_string(input: &[u8], start: usize) -> Option<usize> {
         }
     }
     None
+}
+
+/// Parse exactly four hex digits starting at `start` into a UTF-16 code
+/// unit.
+fn parse_hex4(input: &[u8], start: usize) -> Option<u16> {
+    if start + 4 > input.len() {
+        return None;
+    }
+    let mut value: u16 = 0;
+    for &b in &input[start..start + 4] {
+        let digit = (b as char).to_digit(16)?;
+        value = (value << 4) | digit as u16;
+    }
+    Some(value)
 }
 
 fn parse_number(input: &[u8], start: usize) -> Option<usize> {
@@ -213,7 +281,13 @@ impl Finder for Json {
         if !matches!(input[pos], b'{' | b'[') {
             return None;
         }
-        parse_value(input, pos, 0).map(|end| pos..end)
+        let end = parse_value(input, pos, 0).ok()?;
+        // Keep parity with `find`: no inner fragments of too-deep
+        // documents.
+        if inside_too_deep_run(input, pos) {
+            return None;
+        }
+        Some(pos..end)
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
@@ -221,10 +295,16 @@ impl Finder for Json {
         let mut idx = 0;
         while let Some(offset) = memchr2(b'{', b'[', &input[idx..]) {
             idx += offset;
-            if let Some(end) = parse_value(input, idx, 0) {
-                return Some(idx..end);
+            match parse_value(input, idx, 0) {
+                Ok(end) => return Some(idx..end),
+                // Skip the whole run of opening brackets/whitespace that
+                // blew the depth limit: a document nested deeper than
+                // MAX_DEPTH yields no match at all, never an arbitrary
+                // inner fragment. This also keeps pathological
+                // all-bracket lines linear instead of O(MAX_DEPTH * n).
+                Err(ParseError::TooDeep) => idx = skip_open_run(input, idx),
+                Err(ParseError::Syntax) => idx += 1,
             }
-            idx += 1;
         }
         None
     }

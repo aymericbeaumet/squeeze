@@ -5,36 +5,66 @@ use std::ops::Range;
 pub struct Jwt {}
 
 impl Jwt {
+    /// Unpadded base64url alphabet (RFC 4648 section 5): `A-Z a-z 0-9 - _`.
+    /// `+`, `/` and `=` are *not* part of it: treating them as segment
+    /// characters both missed JWTs after `TOKEN=` / `?t=` / `/verify/`
+    /// (boundary-before check) and glued `=` padding into signatures.
     fn is_base64url(b: u8) -> bool {
-        b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'-' || b == b'_' || b == b'='
+        b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
     }
 
-    fn is_base64url_no_pad(b: u8) -> bool {
-        b.is_ascii_alphanumeric() || b == b'+' || b == b'/' || b == b'-' || b == b'_'
-    }
-
-    fn read_segment(input: &[u8], start: usize) -> Option<usize> {
+    /// End of the run of base64url characters starting at `start`.
+    fn run_end(input: &[u8], start: usize) -> usize {
         let mut pos = start;
-        if pos >= input.len() || !Self::is_base64url_no_pad(input[pos]) {
-            return None;
-        }
         while pos < input.len() && Self::is_base64url(input[pos]) {
             pos += 1;
         }
-        // Minimum segment length for a valid JWT part (header is at least ~20 chars base64)
-        if pos - start < 4 {
-            return None;
-        }
-        Some(pos)
+        pos
     }
 
-    fn looks_like_jwt_header(input: &[u8], start: usize, end: usize) -> bool {
-        // JWT header is base64url-encoded JSON containing "alg"
-        // The base64 of {"alg": always starts with "eyJ"
-        end - start >= 4
-            && input[start] == b'e'
-            && input[start + 1] == b'y'
-            && input[start + 2] == b'J'
+    /// Match a JWT starting exactly at `pos` (which must hold `e`).
+    /// Returns the exclusive end of the match.
+    fn match_end(input: &[u8], pos: usize) -> Option<usize> {
+        // Header: base64url-encoded JSON containing "alg"; the base64 of
+        // `{"` always starts with "eyJ".
+        let header_end = Self::run_end(input, pos);
+        if header_end - pos < 4 || &input[pos..pos + 3] != b"eyJ" {
+            return None;
+        }
+        if header_end >= input.len() || input[header_end] != b'.' {
+            return None;
+        }
+        // Payload: base64url of a JSON claims object. `{` = 0x7B, so the
+        // first sextet is 011110 -> 'e'; the shortest legal payload is
+        // `e30` (= `{}`).
+        let payload_start = header_end + 1;
+        if payload_start >= input.len() || input[payload_start] != b'e' {
+            return None;
+        }
+        let payload_end = Self::run_end(input, payload_start);
+        if payload_end - payload_start < 3 {
+            return None;
+        }
+        if payload_end >= input.len() || input[payload_end] != b'.' {
+            return None;
+        }
+        // Signature: empty for unsecured JWTs (RFC 7519 section 6), in
+        // which case the match includes the trailing dot; otherwise at
+        // least 4 base64url characters.
+        let sig_start = payload_end + 1;
+        let sig_end = Self::run_end(input, sig_start);
+        if sig_end == sig_start {
+            return Some(sig_start);
+        }
+        if sig_end - sig_start < 4 {
+            return None;
+        }
+        // Boundary after: a fourth dotted segment means this candidate is
+        // not the signature; the caller retries further in.
+        if sig_end < input.len() && input[sig_end] == b'.' {
+            return None;
+        }
+        Some(sig_end)
     }
 }
 
@@ -55,25 +85,12 @@ impl Finder for Jwt {
         if input[pos] != b'e' {
             return None;
         }
+        // Boundary before: an immediately preceding base64url character
+        // means `pos` is inside a longer run.
         if pos > 0 && Self::is_base64url(input[pos - 1]) {
             return None;
         }
-        let header_end = Self::read_segment(input, pos)?;
-        if !Self::looks_like_jwt_header(input, pos, header_end) {
-            return None;
-        }
-        if header_end >= input.len() || input[header_end] != b'.' {
-            return None;
-        }
-        let payload_end = Self::read_segment(input, header_end + 1)?;
-        if payload_end >= input.len() || input[payload_end] != b'.' {
-            return None;
-        }
-        let sig_end = Self::read_segment(input, payload_end + 1)?;
-        if sig_end < input.len() && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.') {
-            return None;
-        }
-        Some(pos..sig_end)
+        Self::match_end(input, pos).map(|end| pos..end)
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
@@ -81,66 +98,12 @@ impl Finder for Jwt {
         let mut idx = 0;
 
         while idx < input.len() {
-            // JWT headers always start with "eyJ" (base64 of '{"')
-            if input[idx] == b'e' {
-                // Boundary before
-                if idx > 0 && Self::is_base64url(input[idx - 1]) {
-                    idx += 1;
-                    continue;
-                }
-
-                let header_end = match Self::read_segment(input, idx) {
-                    Some(end) => end,
-                    None => {
-                        idx += 1;
-                        continue;
-                    }
-                };
-
-                if !Self::looks_like_jwt_header(input, idx, header_end) {
-                    idx += 1;
-                    continue;
-                }
-
-                // First dot
-                if header_end >= input.len() || input[header_end] != b'.' {
-                    idx += 1;
-                    continue;
-                }
-
-                // Payload
-                let payload_end = match Self::read_segment(input, header_end + 1) {
-                    Some(end) => end,
-                    None => {
-                        idx += 1;
-                        continue;
-                    }
-                };
-
-                // Second dot
-                if payload_end >= input.len() || input[payload_end] != b'.' {
-                    idx += 1;
-                    continue;
-                }
-
-                // Signature
-                let sig_end = match Self::read_segment(input, payload_end + 1) {
-                    Some(end) => end,
-                    None => {
-                        idx += 1;
-                        continue;
-                    }
-                };
-
-                // Boundary after: not followed by base64url chars or dot
-                if sig_end < input.len()
-                    && (Self::is_base64url(input[sig_end]) || input[sig_end] == b'.')
-                {
-                    idx += 1;
-                    continue;
-                }
-
-                return Some(idx..sig_end);
+            // JWT headers always start with "eyJ" (base64 of '{"').
+            if input[idx] == b'e'
+                && (idx == 0 || !Self::is_base64url(input[idx - 1]))
+                && let Some(end) = Self::match_end(input, idx)
+            {
+                return Some(idx..end);
             }
             idx += 1;
         }
@@ -283,13 +246,21 @@ mod tests {
     }
 
     #[test]
-    fn find_four_segments_finds_inner_jwt() {
+    fn find_four_segments_with_non_json_tail_yields_none() {
+        // `JWT.extra`: the only inner candidate would use the original
+        // signature ("SflK...") as its payload, which cannot be a base64url
+        // JSON object (no leading 'e'), so nothing matches.
         let finder = Jwt::default();
         let input = format!("{}.extra", JWT_HS256);
-        let range = finder.find(&input).unwrap();
-        let found = &input[range];
-        assert!(found.starts_with("eyJzdWIi"));
-        assert!(found.ends_with("extra"));
+        assert!(finder.find(&input).is_none());
+    }
+
+    #[test]
+    fn find_four_eyj_segments_finds_inner_jwt() {
+        let finder = Jwt::default();
+        let input = "eyJab.eyJcd.eyJef.extra";
+        let range = finder.find(input).unwrap();
+        assert_eq!("eyJcd.eyJef.extra", &input[range]);
     }
 
     #[test]
