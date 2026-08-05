@@ -8,13 +8,32 @@ use super::Finder;
 use std::ops::Range;
 
 #[inline]
-fn is_label_byte(b: u8) -> bool {
+pub(crate) fn is_label_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-'
 }
 
 #[inline]
-fn looks_like_tld(s: &[u8]) -> bool {
+pub(crate) fn looks_like_tld(s: &[u8]) -> bool {
     (2..=24).contains(&s.len()) && s.iter().all(|b| b.is_ascii_alphabetic())
+}
+
+/// True when the byte immediately before `pos` ends a two-byte UTF-8
+/// sequence (Latin-1 Supplement through Greek/Cyrillic and friends).
+///
+/// An identifier candidate glued to such a character is a truncation of a
+/// word (`bücher.de` must not yield `cher.de`), so callers reject it.
+/// Three- and four-byte sequences (CJK, emoji) are kept as legitimate
+/// delimiters, matching the pinned behavior in tests/multibyte.rs.
+#[inline]
+pub(crate) fn glued_to_two_byte_char(input: &[u8], pos: usize) -> bool {
+    pos >= 2 && input[pos - 1] & 0xC0 == 0x80 && input[pos - 2] & 0xE0 == 0xC0
+}
+
+/// Bytes that may make up an email local part, used to detect domain
+/// candidates that are really the local part of an email address.
+#[inline]
+fn is_email_local_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-')
 }
 
 #[derive(Default)]
@@ -47,6 +66,7 @@ impl Finder for Domain {
                     || prev == b'.'
                     || prev == b'-'
                     || prev == b'_'
+                    || glued_to_two_byte_char(input, i)
                 {
                     i += 1;
                     continue;
@@ -66,6 +86,12 @@ impl Finder for Domain {
                 if is_label_byte(b) {
                     end += 1;
                 } else if b == b'.' {
+                    // A dot not followed by a label byte (ellipsis, end of
+                    // sentence or token) ends the domain here instead of
+                    // invalidating the candidate.
+                    if end + 1 >= input.len() || !is_label_byte(input[end + 1]) {
+                        break;
+                    }
                     let label_len = end - label_start;
                     if label_len == 0
                         || label_len > 63
@@ -84,29 +110,28 @@ impl Finder for Domain {
                 }
             }
 
-            // Strip trailing dot.
-            if end > start && input[end - 1] == b'.' {
-                if dot_count > 0 && last_dot == end - 1 {
-                    dot_count -= 1;
-                    last_dot = input[start..end - 1]
-                        .iter()
-                        .rposition(|&b| b == b'.')
-                        .map(|p| start + p)
-                        .unwrap_or(0);
-                }
-                end -= 1;
-            }
-
             if !valid || dot_count == 0 || end <= last_dot + 1 {
                 i = if end > i { end + 1 } else { i + 1 };
                 continue;
             }
 
-            // Disallow trailing characters that would make this part of a path/email.
+            // Disallow trailing characters that would make this part of a path/URL.
             if end < input.len() {
                 let next = input[end];
-                if next == b'@' || next == b'/' || next == b':' {
+                if next == b'/' || next == b':' {
                     i = end + 1;
+                    continue;
+                }
+                // If the token continues as an email local part that ends at
+                // '@', this candidate sits inside an email address (e.g. the
+                // `first.last` of `first.last+tag@company.co.uk`): suppress
+                // it and skip past the token.
+                let mut probe = end;
+                while probe < input.len() && is_email_local_byte(input[probe]) {
+                    probe += 1;
+                }
+                if probe < input.len() && input[probe] == b'@' {
+                    i = probe + 1;
                     continue;
                 }
             }

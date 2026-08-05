@@ -1,4 +1,5 @@
 use super::Finder;
+use crate::domain::{is_label_byte, looks_like_tld};
 use std::ops::Range;
 
 const LOCAL_CHARS: [bool; 256] = {
@@ -86,34 +87,48 @@ impl Email {
             return None;
         }
 
-        // Walk forwards for domain, validating in a single pass
+        // RFC 5322 dot-atom: no consecutive dots inside the local part.
+        if input[local_start..at_pos].windows(2).any(|w| w == b"..") {
+            return None;
+        }
+
+        // Walk forwards for domain, validating in a single pass with the
+        // same label rules as the domain finder.
         let domain_start = at_pos + 1;
         let mut domain_end = domain_start;
         let mut dot_count = 0u32;
         let mut last_dot = 0usize;
         let mut label_start = domain_start;
-        let mut label_valid = true;
 
         while domain_end < input.len() {
             let b = input[domain_end];
             if b == b'.' {
-                let label_len = domain_end - label_start;
-                if label_len == 0 || input[label_start] == b'-' || input[domain_end - 1] == b'-' {
-                    label_valid = false;
+                // A dot not followed by a label byte (ellipsis, end of
+                // sentence or token) ends the domain here instead of
+                // invalidating the candidate.
+                if domain_end + 1 >= input.len() || !is_label_byte(input[domain_end + 1]) {
                     break;
+                }
+                let label_len = domain_end - label_start;
+                if label_len == 0
+                    || label_len > 63
+                    || input[label_start] == b'-'
+                    || input[domain_end - 1] == b'-'
+                {
+                    return None;
                 }
                 dot_count += 1;
                 last_dot = domain_end;
                 label_start = domain_end + 1;
                 domain_end += 1;
-            } else if b.is_ascii_alphanumeric() || b == b'-' {
+            } else if is_label_byte(b) {
                 domain_end += 1;
             } else {
                 break;
             }
         }
 
-        if domain_end == domain_start || !label_valid {
+        if domain_end == domain_start {
             return None;
         }
 
@@ -148,9 +163,9 @@ impl Email {
             return None;
         }
 
-        // TLD must be >= 2 chars and all alpha
+        // TLD rules shared with the domain finder: alphabetic, 2..=24 chars.
         let tld = &input[last_dot + 1..domain_end];
-        if tld.len() < 2 || !tld.iter().all(|b| b.is_ascii_alphabetic()) {
+        if !looks_like_tld(tld) {
             return None;
         }
 

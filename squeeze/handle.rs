@@ -5,6 +5,7 @@
 //! Mastodon-style `@user@host.tld`.
 
 use super::Finder;
+use crate::domain::looks_like_tld;
 use std::ops::Range;
 
 #[derive(Default)]
@@ -13,6 +14,21 @@ pub struct Handle {}
 #[inline]
 fn is_handle_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+/// A Mastodon-style host must look like a real domain: at least two
+/// non-empty dot-separated labels, the last of which is a plausible TLD.
+fn is_valid_host(host: &[u8]) -> bool {
+    let mut labels = 0usize;
+    let mut last: &[u8] = &[];
+    for label in host.split(|&b| b == b'.') {
+        if label.is_empty() {
+            return false;
+        }
+        labels += 1;
+        last = label;
+    }
+    labels >= 2 && looks_like_tld(last)
 }
 
 impl Finder for Handle {
@@ -61,25 +77,24 @@ impl Finder for Handle {
         if end < input.len() && input[end] == b'@' {
             let host_start = end + 1;
             let mut host_end = host_start;
-            let mut had_dot = false;
             while host_end < input.len() {
                 let b = input[host_end];
-                if b.is_ascii_alphanumeric() || b == b'-' {
-                    host_end += 1;
-                } else if b == b'.' {
-                    had_dot = true;
+                if b.is_ascii_alphanumeric() || b == b'-' || b == b'.' {
                     host_end += 1;
                 } else {
                     break;
                 }
             }
-            // Strip trailing dots and hyphens.
+            // Strip trailing dots and hyphens (sentence punctuation).
             while host_end > host_start
                 && (input[host_end - 1] == b'.' || input[host_end - 1] == b'-')
             {
                 host_end -= 1;
             }
-            if had_dot && host_end > host_start {
+            // Validate what remains as a domain-shaped host; on an invalid
+            // host, fall back to the bare handle (consistent with the
+            // dotless-host fallback).
+            if is_valid_host(&input[host_start..host_end]) {
                 end = host_end;
             }
         }
