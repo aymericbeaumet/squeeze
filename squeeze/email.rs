@@ -1,5 +1,5 @@
 use super::Finder;
-use crate::domain::{is_label_byte, looks_like_tld};
+use crate::domain::{glued_to_two_byte_char, is_label_byte, looks_like_tld};
 use std::ops::Range;
 
 const LOCAL_CHARS: [bool; 256] = {
@@ -84,6 +84,19 @@ impl Email {
 
         // Local part must be non-empty and not start/end with '.'
         if local_start == at_pos || input[local_start] == b'.' || input[at_pos - 1] == b'.' {
+            return None;
+        }
+
+        // A fediverse mention, not an email: in `@alice@hachyderm.io` the
+        // whole span belongs to the handle finder (README's canonical
+        // `@user@example.social` example).
+        if local_start > 0 && input[local_start - 1] == b'@' {
+            return None;
+        }
+
+        // Glued to a truncated word: `müller@x.com` must not yield the
+        // corrupted `ller@x.com` (same policy as the domain finder).
+        if glued_to_two_byte_char(input, local_start) {
             return None;
         }
 

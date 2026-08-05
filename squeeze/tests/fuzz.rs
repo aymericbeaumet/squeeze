@@ -113,7 +113,11 @@ proptest! {
         match (all.first(), first) {
             (None, None) => {} // OK
             (Some(a), Some(f)) => {
-                prop_assert!(f.range.start <= a.range.start);
+                // scan_line_first must return exactly scan_line()[0]:
+                // same start, same finder (ties broken by index), same end.
+                prop_assert_eq!(f.range.start, a.range.start);
+                prop_assert_eq!(f.finder_index, a.finder_index);
+                prop_assert_eq!(f.range.end, a.range.end);
             }
             (Some(_), None) => {
                 prop_assert!(false, "scan_line found matches but scan_line_first didn't");
@@ -494,9 +498,14 @@ proptest! {
         prop_assert_eq!(&input[matches[0].range.clone()], hash_md5());
     }
 
+    // The prefix is safe junk that cannot change the email's meaning: no
+    // local-part chars (would extend the local part), no '@' (would turn it
+    // into a fediverse handle, which email rejects by design), and no 2-byte
+    // UTF-8 chars (glued-word truncation is rejected by design). The CJK char
+    // pins the 3-byte-glue acceptance policy.
     #[test]
     fn scanner_with_embedded_email(
-        prefix in "[^a-zA-Z0-9.!#$%&'*+/=?^_`{|}~\\-]{0,20}",
+        prefix in "[ \\t(),;:<>\\[\\]\"火]{0,20}",
         suffix in "[ \\t\\n]{0,5}"
     ) {
         let input = format!("{}{}{}", prefix, sample_email(), suffix);

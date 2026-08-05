@@ -124,15 +124,10 @@ fn mastodon_handle_with_email_present() {
         Box::new(Handle::default()),
         Box::new(Email::default()),
     ]);
-    // Mastodon handle '@alice@social.example' is reported by handle; the email
-    // finder would otherwise capture 'alice@social.example' so we must ensure
-    // it does not double-match.
+    // Mastodon handle '@alice@social.example' belongs to the handle finder
+    // alone: the email finder rejects a local part preceded by '@'.
     let spans = matched_spans(&scanner, "follow @alice@social.example");
-    // Email finder will still see "alice@social.example" — that is acceptable
-    // because both interpretations are valid. We assert both spans appear,
-    // ordered by start.
-    let ids: Vec<&str> = spans.iter().map(|(id, _)| *id).collect();
-    assert!(ids.contains(&"handle"));
+    assert_eq!(spans, vec![("handle", "@alice@social.example")]);
 }
 
 // --- path / domain ---

@@ -14,7 +14,8 @@ Currently supported:
 | Datetimes | `--datetime` | `2024-01-15`, `2024-01-15T10:30:00Z` |
 | Domains | `--domain` | `example.com`, `mail.example.co.uk` |
 | Emails | `--email` | `user@example.com`, `first.last+tag@company.co.uk` |
-| Env vars | `--env` | `$HOME`, `${PATH}` |
+| Emojis | `--emoji` | `😀`, `👨‍👩‍👧‍👦`, `1️⃣` |
+| Env vars | `--env` | `$HOME`, `${PATH}`, `${VAR:-default}` |
 | Handles | `--handle` | `@alice`, `@user@example.social` |
 | Hashes | `--hash`, `--md5`, `--sha256` | `5d41402abc4b2a76b9719d911017c592` |
 | IPs | `--ip`, `--ipv4`, `--ipv6` | `192.168.1.1`, `::1`, `2001:db8::1` |

@@ -194,18 +194,23 @@ fn domain_accepts_four_byte_emoji_glue() {
     );
 }
 
-// KNOWN LIMITATION (email side of fix 2 not applied): the frozen fuzz
-// property `scanner_with_embedded_email` (tests/fuzz.rs) generates arbitrary
-// non-local-part prefixes -- measured ~8.6% of them end with a 2-byte char --
-// glued to `user@example.com` and requires the email to match. Rejecting
-// 2-byte glue in the email finder would therefore fail the fuzz suite, which
-// may not be modified. The truncated match below documents that accepted
-// trade-off.
+// Email applies the same policy as the domain finder: a local part glued to
+// a 2-byte UTF-8 char is a word truncation (`müller@x.com` must not yield
+// the corrupted `ller@x.com`); 3-/4-byte scripts (CJK, emoji) still count as
+// delimiters.
 #[test]
-fn email_two_byte_glue_known_limitation() {
+fn email_rejects_two_byte_latin_glue() {
     assert_eq!(
-        Some("ller@example.com".to_string()),
+        None,
         find_one(&Email::default(), "mail müller@example.com now")
+    );
+}
+
+#[test]
+fn email_accepts_three_byte_cjk_glue() {
+    assert_eq!(
+        Some("user@example.com".to_string()),
+        find_one(&Email::default(), "火user@example.com")
     );
 }
 
@@ -270,24 +275,24 @@ fn domain_followed_by_space_then_local_chars_not_suppressed() {
 }
 
 // ============================================================================
-// Fix 4 (documented conflict): email on fediverse handles
+// Fix 4: email must not fire on fediverse handles
 //
-// KNOWN LIMITATION: rejecting an email whose local part is preceded by '@'
-// would break the frozen fuzz property `scanner_with_embedded_email`
-// (tests/fuzz.rs): its random prefix ends with '@' in ~7% of cases (measured)
-// and the property requires `<prefix>user@example.com` to yield the email.
-// `@user@example.com` (prefix "@") and `@alice@hachyderm.io` are byte-wise
-// the same shape, so the finder cannot reject one and accept the other. The
-// handle finder owns the full `@alice@hachyderm.io` span; the email overlap
-// is the same accepted behavior pinned by
-// `mastodon_handle_with_email_present` in tests/incompatibility.rs.
+// `@alice@hachyderm.io` is the README's canonical *handle* example; the email
+// finder rejects a local part preceded by '@' so the handle finder owns the
+// whole span. (The fuzz generator `scanner_with_embedded_email` was adjusted
+// to stop gluing '@' prefixes that turned its embedded email into a handle.)
 // ============================================================================
 
 #[test]
-fn email_fediverse_overlap_known_limitation() {
+fn email_rejects_fediverse_mention() {
+    assert_eq!(None, find_one(&Email::default(), "@alice@hachyderm.io"));
+}
+
+#[test]
+fn email_still_matches_after_non_at_junk() {
     assert_eq!(
         Some("alice@hachyderm.io".to_string()),
-        find_one(&Email::default(), "@alice@hachyderm.io")
+        find_one(&Email::default(), "<alice@hachyderm.io>")
     );
 }
 
@@ -300,14 +305,11 @@ fn handle_matches_fediverse_fully() {
 }
 
 #[test]
-fn scanner_fediverse_handle_and_email_overlap() {
+fn scanner_fediverse_handle_only_no_email_overlap() {
     let finders: Vec<Box<dyn Finder>> =
         vec![Box::new(Handle::default()), Box::new(Email::default())];
     assert_eq!(
-        vec![
-            ("handle".to_string(), "@alice@hachyderm.io".to_string()),
-            ("email".to_string(), "alice@hachyderm.io".to_string()),
-        ],
+        vec![("handle".to_string(), "@alice@hachyderm.io".to_string())],
         scan_ids_texts(finders, "ping @alice@hachyderm.io ok")
     );
 }

@@ -6,9 +6,9 @@
 //! Every helper asserts the core contracts on each returned range:
 //! `start < end` and both ends land on char boundaries.
 
+use squeeze::Finder;
 use squeeze::emoji::Emoji;
 use squeeze::scanner::Scanner;
-use squeeze::Finder;
 
 /// Collect all matches using the documented `find()` loop (relative ranges).
 fn find_matches(input: &str) -> Vec<String> {

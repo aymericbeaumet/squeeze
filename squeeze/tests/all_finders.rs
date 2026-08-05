@@ -6,6 +6,7 @@
 //! span, this suite will fail loudly so the new behavior is reviewed.
 
 use squeeze::{
+    Finder,
     cidr::Cidr,
     codetag::Codetag,
     color::Color,
@@ -27,7 +28,6 @@ use squeeze::{
     semver::Semver,
     uri::URI,
     uuid::Uuid,
-    Finder,
 };
 
 fn all_finders() -> Vec<Box<dyn Finder>> {

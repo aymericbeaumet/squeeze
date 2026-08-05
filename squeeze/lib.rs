@@ -69,6 +69,22 @@ use std::ops::Range;
 /// All finders implement this trait. A finder implementation should be stateless;
 /// it's up to the caller to call it repeatedly until no more results can be extracted.
 ///
+/// # Contract
+///
+/// - Returned ranges are non-empty (`start < end`) and lie on UTF-8 character
+///   boundaries.
+/// - [`try_at`](Finder::try_at)/[`try_trigger_at`](Finder::try_trigger_at)
+///   receive positions into the whole line and return absolute ranges.
+/// - Matches produced through the [`scanner::Scanner`] are disjoint per
+///   finder and position-sorted.
+///
+/// Note that iterating with `find` over advancing sub-slices (as below) erases
+/// the left context at each slice boundary, so finders that reject matches
+/// based on what precedes them (e.g. a handle glued to a word) can accept a
+/// match at position 0 of a sub-slice that the [`scanner::Scanner`] — which
+/// always sees the whole line — would reject. The Scanner behavior is
+/// authoritative; prefer it over hand-rolled `find` loops.
+///
 /// # Example
 ///
 /// ```
