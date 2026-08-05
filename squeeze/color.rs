@@ -27,8 +27,10 @@ impl Color {
 
         let hex_len = hex_end - after_hash;
 
-        // Check boundary after: must not be followed by a hex digit
-        let has_boundary = hex_end >= input.len() || !Self::is_hex(input[hex_end]);
+        // Check boundary after: the hex run must not be glued to more
+        // identifier characters (`#deadline` is a word, not `#dead` + junk).
+        let has_boundary = hex_end >= input.len()
+            || (!input[hex_end].is_ascii_alphanumeric() && input[hex_end] != b'_');
         if !has_boundary {
             return None;
         }
@@ -67,10 +69,16 @@ impl Color {
             return None;
         }
 
-        let mut end = pos + matched_len;
+        // Cap the closing-paren search: real CSS color functions are short,
+        // and unclosed `rgb(` candidates must not scan to end-of-line each.
+        const MAX_BODY_SEARCH: usize = 256;
+
+        let body_start = pos + matched_len; // first byte after '('
+        let limit = input.len().min(body_start + MAX_BODY_SEARCH);
+        let mut end = body_start;
         let mut depth = 1;
 
-        while end < input.len() && depth > 0 {
+        while end < limit && depth > 0 {
             match input[end] {
                 b'(' => depth += 1,
                 b')' => depth -= 1,

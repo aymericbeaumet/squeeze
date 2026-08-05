@@ -18,7 +18,19 @@ impl Semver {
             return true;
         }
         let b = input[pos];
-        !b.is_ascii_alphanumeric() && b != b'.' && b != b'-' && b != b'+'
+        if b.is_ascii_alphanumeric() {
+            return false;
+        }
+        // A trailing '.' is sentence/file punctuation (`Upgrade to 1.2.3.`,
+        // `pkg-1.2.3.tar.gz`) unless it extends a dotted-number run
+        // (`1.2.3.4`, IPv4-and-friends stay rejected).
+        if b == b'.' {
+            return !(pos + 1 < input.len() && input[pos + 1].is_ascii_digit());
+        }
+        // '-'/'+' reach this point only when no valid prerelease/build
+        // identifier followed them, so they are ordinary boundaries
+        // (`1.0.0->2.0.0`, `1.2.3+`), not vetoes.
+        true
     }
 
     fn parse_digits(input: &[u8], pos: usize) -> Option<usize> {
@@ -112,94 +124,12 @@ impl Finder for Semver {
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
+        // Single code path: find() is the try_at scan, so the two can
+        // never diverge.
         let input = s.as_bytes();
-        let mut idx = 0;
-
-        while idx < input.len() {
-            let start = idx;
-            let mut pos = idx;
-
-            // Optional v/V prefix
-            if pos < input.len() && (input[pos] == b'v' || input[pos] == b'V') {
-                if pos + 1 < input.len() && input[pos + 1].is_ascii_digit() {
-                    pos += 1;
-                } else {
-                    idx += 1;
-                    continue;
-                }
-            } else if pos < input.len() && input[pos].is_ascii_digit() {
-                // ok
-            } else {
-                idx += 1;
-                continue;
-            }
-
-            if !Self::is_boundary_before(input, start) {
-                idx += 1;
-                continue;
-            }
-
-            // MAJOR
-            let major_end = match Self::parse_digits(input, pos) {
-                Some(e) => e,
-                None => {
-                    idx += 1;
-                    continue;
-                }
-            };
-
-            // .MINOR
-            if major_end >= input.len() || input[major_end] != b'.' {
-                idx += 1;
-                continue;
-            }
-            let minor_end = match Self::parse_digits(input, major_end + 1) {
-                Some(e) => e,
-                None => {
-                    idx += 1;
-                    continue;
-                }
-            };
-
-            // .PATCH
-            if minor_end >= input.len() || input[minor_end] != b'.' {
-                idx += 1;
-                continue;
-            }
-            let patch_end = match Self::parse_digits(input, minor_end + 1) {
-                Some(e) => e,
-                None => {
-                    idx += 1;
-                    continue;
-                }
-            };
-
-            let mut end = patch_end;
-
-            // Optional -prerelease
-            if end < input.len() && input[end] == b'-' {
-                let pre_end = Self::parse_prerelease_or_build(input, end + 1);
-                if pre_end > end + 1 {
-                    end = pre_end;
-                }
-            }
-
-            // Optional +buildmeta
-            if end < input.len() && input[end] == b'+' {
-                let build_end = Self::parse_prerelease_or_build(input, end + 1);
-                if build_end > end + 1 {
-                    end = build_end;
-                }
-            }
-
-            if Self::is_boundary_after(input, end) {
-                return Some(start..end);
-            }
-
-            idx += 1;
-        }
-
-        None
+        (0..input.len())
+            .filter(|&idx| self.could_start_at(input[idx]))
+            .find_map(|idx| self.try_at(input, idx))
     }
 }
 
@@ -423,15 +353,19 @@ mod tests {
     }
 
     #[test]
-    fn find_rejects_trailing_dot_in_prerelease() {
+    fn find_backtracks_trailing_dot_in_prerelease() {
+        // The trailing '.' is punctuation, not part of the prerelease.
         let finder = Semver::default();
-        assert!(finder.find("1.0.0-beta.").is_none());
+        let input = "1.0.0-beta.";
+        let range = finder.find(input).unwrap();
+        assert_eq!("1.0.0-beta", &input[range]);
     }
 
     #[test]
     fn find_prerelease_with_trailing_dot_in_text() {
         let finder = Semver::default();
         let input = "use 1.0.0-beta. done";
-        assert!(finder.find(input).is_none());
+        let range = finder.find(input).unwrap();
+        assert_eq!("1.0.0-beta", &input[range]);
     }
 }

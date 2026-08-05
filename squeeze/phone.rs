@@ -13,8 +13,10 @@ impl Default for Phone {
         let regex = RE.get_or_init(|| {
             Regex::new(concat!(
                 r"(?:",
-                // E.164 international: +CC with digits/separators
-                r"\+[1-9]\d{0,2}[\s.\-]?(?:\(?\d{1,4}\)?[\s.\-]?){1,4}\d",
+                // E.164 international: +CC with digits/separators. Up to 7
+                // digit groups covers pair-grouped numbers such as
+                // `+33 1 42 96 12 34`; total digits are validated later.
+                r"\+[1-9]\d{0,2}[\s.\-]?(?:\(?\d{1,4}\)?[\s.\-]?){1,7}\d",
                 r"|",
                 // North American: (XXX) XXX-XXXX
                 r"\(\d{3}\)[\s.\-]?\d{3}[\s.\-]?\d{4}",
@@ -40,31 +42,23 @@ impl Finder for Phone {
         "phone"
     }
 
-    fn dispatchable(&self) -> bool {
-        true
-    }
-
-    fn could_start_at(&self, byte: u8) -> bool {
-        byte == b'+' || byte == b'(' || byte.is_ascii_digit()
-    }
-
-    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
-        if !self.could_start_at(input[pos]) {
-            return None;
-        }
-        let s = std::str::from_utf8(input).ok()?;
-        let m = self.regex.find_at(s, pos)?;
-        if m.start() != pos {
-            return None;
-        }
-        self.validate_match(s, m.start(), m.end())
-    }
-
+    // Phone is a plain scan-mode finder: a single anchored-resume regex pass
+    // per find() call. It deliberately does not implement dispatchable/
+    // could_start_at/try_at — the previous dispatch implementation ran an
+    // unanchored regex search at every digit/'+'/'(' position, which was
+    // O(n^2) on digit-heavy lines (~60s for a 100KB digit run).
     fn find(&self, s: &str) -> Option<Range<usize>> {
-        for m in self.regex.find_iter(s) {
+        let mut at = 0;
+        while at < s.len() {
+            let m = self.regex.find_at(s, at)?;
             if let Some(range) = self.validate_match(s, m.start(), m.end()) {
                 return Some(range);
             }
+            // Resume *inside* the failed candidate: a valid number may
+            // overlap it (e.g. `415.555.1234` inside `x+415.555.1234`).
+            // Every candidate starts with an ASCII byte ('+', '(' or a
+            // digit), so start+1 is always a char boundary.
+            at = m.start() + 1;
         }
         None
     }
@@ -88,6 +82,19 @@ impl Phone {
         let digit_count = Self::count_digits(matched);
         if !(7..=15).contains(&digit_count) {
             return None;
+        }
+
+        // A '+' number written with separators must lead with a plausible
+        // country code (1-3 digits before the first separator):
+        // `+2024-01-15 ...` is a diff-line date, not a phone number.
+        // Compact `+14155551234` (no separators) is unaffected.
+        let bytes = matched.as_bytes();
+        if bytes[0] == b'+' {
+            let first_group = bytes[1..].iter().take_while(|b| b.is_ascii_digit()).count();
+            let has_separators = 1 + first_group < bytes.len();
+            if has_separators && first_group > 3 {
+                return None;
+            }
         }
 
         Some(start..end)

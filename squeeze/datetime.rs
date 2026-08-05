@@ -11,9 +11,17 @@ impl Datetime {
             return None;
         }
 
-        // Boundary before: not preceded by digit or dash
-        if idx > 0 && (input[idx - 1].is_ascii_digit() || input[idx - 1] == b'-') {
-            return None;
+        // Boundary before: not preceded by a digit. A preceding '-' is a
+        // valid boundary when it is not glued to a digit run, so kebab names
+        // like `backup-2024-01-15` match while `01-2024-01-15` stays vetoed.
+        if idx > 0 {
+            let prev = input[idx - 1];
+            if prev.is_ascii_digit() {
+                return None;
+            }
+            if prev == b'-' && idx >= 2 && input[idx - 2].is_ascii_digit() {
+                return None;
+            }
         }
 
         // YYYY
@@ -53,20 +61,26 @@ impl Datetime {
 
         let mut end = idx + 10;
 
-        // Optional time component: T or space followed by HH:MM
+        // Optional time component: T/t (RFC 3339) or space followed by HH:MM
         if end < input.len()
-            && (input[end] == b'T' || input[end] == b' ')
+            && (input[end] == b'T' || input[end] == b't' || input[end] == b' ')
             && let Some(time_end) = Self::try_time(input, end + 1)
         {
-            // Only accept space separator if it's 'T' or if followed by valid time
-            if input[end] == b'T' || time_end > end + 1 {
-                end = time_end;
-            }
+            end = time_end;
         }
 
-        // Boundary after: not followed by digit or dash
-        if end < input.len() && (input[end].is_ascii_digit() || input[end] == b'-') {
-            return None;
+        // Boundary after: never followed by a digit. A trailing '-' is only a
+        // veto when a digit follows and no timezone consumed it
+        // (`2024-01-15-01` stays ambiguous), while `2024-01-15-my-post` is a
+        // kebab-case boundary.
+        if end < input.len() {
+            let next = input[end];
+            if next.is_ascii_digit() {
+                return None;
+            }
+            if next == b'-' && end + 1 < input.len() && input[end + 1].is_ascii_digit() {
+                return None;
+            }
         }
 
         Some(idx..end)
@@ -106,8 +120,9 @@ impl Datetime {
             if second <= 60 {
                 end += 3;
 
-                // Optional fractional seconds
-                if end < input.len() && input[end] == b'.' {
+                // Optional fractional seconds: '.' or the ISO-preferred ','
+                // (only consumed when at least one digit follows)
+                if end < input.len() && (input[end] == b'.' || input[end] == b',') {
                     let frac_start = end + 1;
                     let mut frac_end = frac_start;
                     while frac_end < input.len() && input[frac_end].is_ascii_digit() {
@@ -120,16 +135,34 @@ impl Datetime {
             }
         }
 
-        // Optional timezone: Z, +HH:MM, -HH:MM
-        if end < input.len() && input[end] == b'Z' {
+        // Optional timezone (only ever after a time component): Z/z,
+        // ±HH:MM, ±HHMM, or ±HH.
+        if end < input.len() && (input[end] == b'Z' || input[end] == b'z') {
             end += 1;
-        } else if end + 6 <= input.len()
-            && (input[end] == b'+' || input[end] == b'-')
-            && Self::is_2_digits(input, end + 1)
-            && input[end + 3] == b':'
-            && Self::is_2_digits(input, end + 4)
-        {
-            end += 6;
+        } else if end < input.len() && (input[end] == b'+' || input[end] == b'-') {
+            // Count the digits directly after the sign (capped: 5 means
+            // "5 or more", which is never a valid offset).
+            let mut digits = 0;
+            while digits < 5
+                && end + 1 + digits < input.len()
+                && input[end + 1 + digits].is_ascii_digit()
+            {
+                digits += 1;
+            }
+            if digits == 2 {
+                if end + 6 <= input.len()
+                    && input[end + 3] == b':'
+                    && Self::is_2_digits(input, end + 4)
+                {
+                    end += 6; // ±HH:MM
+                } else {
+                    end += 3; // ±HH
+                }
+            } else if digits == 4 {
+                end += 5; // ±HHMM
+            }
+            // Any other digit count: leave the sign unconsumed; the
+            // boundary check in try_date decides what happens next.
         }
 
         Some(end)
