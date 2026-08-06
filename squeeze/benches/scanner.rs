@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 fn all_finders() -> Vec<Box<dyn Finder>> {
     let mut hash = Hash::default();
     for algorithm in ["md5", "sha1", "sha256", "sha512"] {
-        hash.add_algorithm(algorithm);
+        assert!(hash.add_algorithm(algorithm));
     }
 
     vec![

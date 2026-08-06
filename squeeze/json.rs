@@ -9,8 +9,8 @@
 //! JSON literals are `true`, `false`, and `null`. Inputs whose braces happen
 //! to balance but contain garbage (`{not really json}`) are rejected.
 //!
-//! Documents nested deeper than [`MAX_DEPTH`] are refused outright: they
-//! yield no match at all rather than an arbitrary inner fragment.
+//! Documents nested deeper than `MAX_DEPTH` (256 levels) are refused outright:
+//! they yield no match at all rather than an arbitrary inner fragment.
 
 use super::Finder;
 use std::ops::Range;
@@ -22,7 +22,7 @@ const MAX_DEPTH: usize = 256;
 enum ParseError {
     /// Malformed JSON.
     Syntax,
-    /// Well-formed so far but nested deeper than [`MAX_DEPTH`].
+    /// Well-formed so far but nested deeper than `MAX_DEPTH`.
     TooDeep,
 }
 

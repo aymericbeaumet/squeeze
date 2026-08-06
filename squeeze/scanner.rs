@@ -381,13 +381,13 @@ impl Scanner {
             while bits != 0 {
                 let i = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                if let Some(range) = self.finders[i].find(line) {
-                    if beats(&best, range.start, i) {
-                        best = Some(Match {
-                            finder_index: i,
-                            range,
-                        });
-                    }
+                if let Some(range) = self.finders[i].find(line)
+                    && beats(&best, range.start, i)
+                {
+                    best = Some(Match {
+                        finder_index: i,
+                        range,
+                    });
                 }
             }
         }
@@ -399,10 +399,10 @@ impl Scanner {
             for pos in 0..input.len() {
                 // Dispatch matches start at `pos`, so once `pos` passes the best
                 // start no candidate can win (ties at equal start still can).
-                if let Some(b) = &best {
-                    if pos > b.range.start {
-                        break;
-                    }
+                if let Some(b) = &best
+                    && pos > b.range.start
+                {
+                    break;
                 }
                 let mut candidates = self.dispatch[input[pos] as usize] & active_dispatch;
                 while candidates != 0 {
