@@ -100,13 +100,16 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
 ///
 /// # Strict Mode
 ///
-/// By default, the finder excludes trailing `'` and `)` characters from URIs
-/// to handle common text patterns like markdown links `[text](url)` or quotes.
-/// Set [`URI::strict`] to `true` to strictly follow RFC 3986.
+/// By default, the finder excludes `'` characters, unbalanced trailing `)`
+/// characters (so markdown links `[text](url)` work while
+/// `…/Sport_(disambiguation)` stays intact), and trailing sentence
+/// punctuation (`.,;:!?`) from URIs. Set [`URI::strict`] to `true` to
+/// strictly follow RFC 3986.
 #[derive(Default)]
 pub struct URI {
     schemes: Vec<String>,
-    /// When `true`, strictly follows RFC 3986 and includes trailing `'` and `)` in URIs.
+    /// When `true`, strictly follows RFC 3986 and includes trailing `'`, `)`,
+    /// and punctuation in URIs.
     /// When `false` (default), excludes these characters for better text extraction.
     pub strict: bool,
 }
@@ -176,32 +179,102 @@ impl URI {
 
         let scheme_idx = self.rlook_scheme(&input[..colon_idx])?;
         let scheme = std::str::from_utf8(&input[scheme_idx..colon_idx]).ok()?;
+        // Check the scheme allowlist before parsing the rest of the URI.
+        if !self.schemes.is_empty() && !self.schemes.iter().any(|s| s.eq_ignore_ascii_case(scheme))
+        {
+            return None;
+        }
         let scheme_config = SCHEMES_CONFIGS.get_ascii_case_insensitive(scheme);
 
         let mut idx = colon_idx + 1;
-        idx += self.look_hier_part(&input[idx..], scheme_config)?;
+        let hier_len = self.look_hier_part(&input[idx..], scheme_config)?;
+        idx += hier_len;
         idx += self.look_question_mark_query(&input[idx..]).unwrap_or(0);
         idx += self.look_sharp_fragment(&input[idx..]).unwrap_or(0);
 
-        if self.schemes.is_empty() || self.schemes.iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
-            Some(scheme_idx..idx)
-        } else {
-            None
+        if !self.strict {
+            idx = Self::trim_lax(input, colon_idx, idx);
+            // A URI with an empty hier-part, or whose entire tail is
+            // punctuation, is only trusted at the start of the input or after
+            // prose (whitespace, quotes, opening brackets…). Glued to URI
+            // innards ("path/x:", "?q=x:", "a:=x:", "a:#x:.", …) it is junk —
+            // and accepting it would desynchronize trigger dispatch from
+            // slice-based find() restarts.
+            let trivial_tail = input[colon_idx + 1..idx]
+                .iter()
+                .all(|&b| matches!(b, b'.' | b',' | b';' | b':' | b'!' | b'?' | b'#'));
+            if (hier_len == 0 || trivial_tail)
+                && scheme_idx > 0
+                && !Self::is_prose_delimiter(input[scheme_idx - 1])
+            {
+                return None;
+            }
         }
+
+        Some(scheme_idx..idx)
+    }
+
+    /// Lax-mode cleanup of a parsed candidate: cut at the first `)` that has
+    /// no matching `(` inside the candidate, then drop trailing punctuation
+    /// that is almost certainly prose. Never trims past the scheme colon.
+    fn trim_lax(input: &[u8], colon_idx: usize, mut end: usize) -> usize {
+        let body_start = colon_idx + 1;
+
+        let mut depth = 0usize;
+        for (i, &b) in input[body_start..end].iter().enumerate() {
+            match b {
+                b'(' => depth += 1,
+                b')' => {
+                    if depth == 0 {
+                        end = body_start + i;
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+
+        while end > body_start && matches!(input[end - 1], b'.' | b',' | b';' | b':' | b'!' | b'?')
+        {
+            end -= 1;
+        }
+
+        end
+    }
+
+    // Bytes that cannot appear inside a lax URI match; a bare "scheme:" is
+    // only accepted right after one of these (or at the start of the input).
+    #[inline]
+    fn is_prose_delimiter(b: u8) -> bool {
+        b <= b' '
+            || b >= 0x80
+            || matches!(
+                b,
+                b'"' | b'\'' | b'<' | b'>' | b'\\' | b'^' | b'`' | b'{' | b'|' | b'}' | b'(' | b'['
+            )
     }
 
     // ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )
     fn rlook_scheme(&self, input: &[u8]) -> Option<usize> {
         let start = input.len().saturating_sub(MAX_SCHEME_LEN);
         let mut idx = None;
+        let mut run_start = input.len();
         for (i, &c) in input[start..].iter().enumerate().rev() {
             if Self::is_alpha(c) {
                 idx = Some(start + i);
+                run_start = start + i;
             } else if Self::is_digit(c) || c == b'+' || c == b'-' || c == b'.' {
-                // noop
+                run_start = start + i;
             } else {
                 break;
             }
+        }
+        // A run glued to leading digits ("2024-01-15T10:") is a number, not a
+        // scheme. Runs starting with "." / "+" / "-" still anchor on their
+        // first ALPHA ("(http://x", "-http://x").
+        if run_start < input.len() && Self::is_digit(input[run_start]) {
+            return None;
         }
         idx
     }
@@ -212,12 +285,13 @@ impl URI {
     //           / path-empty
     fn look_hier_part(&self, input: &[u8], sc: SchemeConfig) -> Option<usize> {
         // "//" authority path-abempty
-        if let Some(idx) = self
-            .look_slash_slash(input)
-            .and_then(|idx| Some(idx + self.look_authority(&input[idx..], sc)?))
-            .map(|idx| idx + self.look_path_abempty(&input[idx..]))
-        {
-            return Some(idx);
+        // When the input starts with "//" this is the only valid production:
+        // path-absolute requires a non-empty first segment, so a failed
+        // authority must reject the candidate instead of degrading to a
+        // "scheme:/" stub.
+        if let Some(idx) = self.look_slash_slash(input) {
+            let idx = idx + self.look_authority(&input[idx..], sc)?;
+            return Some(idx + self.look_path_abempty(&input[idx..]));
         }
 
         // Some schemes disallow empty hosts
@@ -254,14 +328,20 @@ impl URI {
         idx += self
             .look_host(&input[idx..])
             .filter(|&i| !(i == 0 && sc.has(DISALLOW_EMPTY_HOST)))?;
-        idx += self.look_colon_port(&input[idx..]).unwrap_or(0);
-        Some(idx)
-    }
-
-    fn look_colon_port(&self, input: &[u8]) -> Option<usize> {
-        let mut idx = 0;
-        idx += self.look_colon(&input[idx..])?;
-        idx += self.look_port(&input[idx..]);
+        if let Some(i) = self.look_colon(&input[idx..]) {
+            idx += i;
+            let port_len = self.look_port(&input[idx..]);
+            idx += port_len;
+            // A port glued to further scheme-run characters ("…:80foo") would
+            // end the match mid-token; reject the candidate instead so the
+            // Scanner and slice-based find() restarts stay in sync.
+            let glued = input.get(idx).is_some_and(|&b| {
+                b.is_ascii_alphanumeric() || b == b'+' || b == b'-' || (b == b'.' && port_len > 0)
+            });
+            if glued {
+                return None;
+            }
+        }
         Some(idx)
     }
 
@@ -312,12 +392,32 @@ impl URI {
 
     // IP-literal / IPv4address / reg-name
     fn look_host(&self, input: &[u8]) -> Option<usize> {
-        self.look_ip_literal(input)
-            .or_else(|| self.look_ipv4_address(input))
-            .or_else(|| self.look_hostname(input))
+        if let Some(idx) = self.look_ip_literal(input) {
+            // "[::1]x" — an IP-literal glued to further token characters is
+            // invalid (only ":" port, path, query, or fragment may follow
+            // "]") and would end the match mid-token: reject the candidate.
+            if input
+                .get(idx)
+                .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'.' || b == b'+' || b == b'-')
+            {
+                return None;
+            }
+            return Some(idx);
+        }
+        if let Some(idx) = self.look_ipv4_address(input) {
+            match input.get(idx) {
+                // The dotted quad is only a prefix of a longer reg-name
+                // ("10.0.0.1.nip.io", "1.2.3.4.5"): parse it as a hostname.
+                Some(&b) if b == b'.' || b == b'-' || b == b'_' || b.is_ascii_alphanumeric() => {}
+                // Host glued to non-ASCII is IRI garbage: reject.
+                Some(&b) if b >= 0x80 => return None,
+                _ => return Some(idx),
+            }
+        }
+        self.look_hostname(input)
     }
 
-    // "[" ( IPv6address / IPvFuture  ) "]"
+    // "[" ( IPv6address / IPv6addrz / IPvFuture ) "]"
     fn look_ip_literal(&self, input: &[u8]) -> Option<usize> {
         let mut idx = 0;
         idx += self.look_left_bracket(&input[idx..])?;
@@ -325,63 +425,33 @@ impl URI {
         if right_bracket_index > 0 {
             let end = idx + right_bracket_index;
             let slice = &input[idx..end];
-            if self.is_ipv6address(slice) || self.is_ipvfuture(slice) {
+            if self.is_ipv6address(slice) || self.is_ipv6addrz(slice) || self.is_ipvfuture(slice) {
                 return Some(end + 1);
             }
         }
         None
     }
 
-    // https://tools.ietf.org/html/rfc4291#section-2.2
-    fn is_ipv6address(&self, input: &[u8]) -> bool {
-        let mut idx = 0;
-
-        let mut bytes_count = 0;
-        let mut double_colon_found = false;
-
-        while idx < input.len() {
-            let mut last_is_colon = false;
-            while let Some(i) = self.look_colon(&input[idx..]) {
-                if last_is_colon {
-                    if double_colon_found {
-                        return false;
-                    }
-                    double_colon_found = true;
-                    bytes_count += 2;
-                }
-                last_is_colon = true;
-                idx += i;
-            }
-
-            if last_is_colon || idx == 0 {
-                if (bytes_count == 12 || double_colon_found)
-                    && let Some(i) = self.look_ipv4_address(&input[idx..])
-                {
-                    bytes_count += 4;
-                    idx += i;
-                    break;
-                }
-                if let Some(i) = self.look_h16(&input[idx..]) {
-                    bytes_count += 2;
-                    idx += i;
-                    continue;
-                }
-            }
-
-            break;
+    // IPv6addrz = IPv6address "%25" ZoneID (RFC 6874). Leniently, a bare "%"
+    // separator is also accepted ("[fe80::1%eth0]" as produced by OS tools).
+    fn is_ipv6addrz(&self, input: &[u8]) -> bool {
+        let Some(pct) = input.iter().position(|&b| b == b'%') else {
+            return false;
+        };
+        if !self.is_ipv6address(&input[..pct]) {
+            return false;
         }
-
-        idx == input.len() && (bytes_count == 16 || (double_colon_found && bytes_count <= 12))
+        let mut zone = &input[pct + 1..];
+        if zone.starts_with(b"25") && zone.len() > 2 {
+            zone = &zone[2..]; // RFC 6874 "%25" delimiter
+        }
+        !zone.is_empty() && zone.iter().all(|&b| Self::is_unreserved(b))
     }
 
-    // 1*4HEXDIG
-    fn look_h16(&self, input: &[u8]) -> Option<usize> {
-        let idx = input
-            .iter()
-            .take_while(|&&b| Self::is_hexdig(b))
-            .take(4)
-            .count();
-        if idx >= 1 { Some(idx) } else { None }
+    // Delegates to the std-exact validator in `crate::ipv6`, which handles
+    // embedded IPv4 tails ("::ffff:127.0.0.1", "64:ff9b::192.0.2.33").
+    fn is_ipv6address(&self, input: &[u8]) -> bool {
+        crate::ipv6::is_valid_ipv6(input)
     }
 
     // "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
@@ -484,52 +554,58 @@ impl URI {
     }
 
     // https://en.wikipedia.org/wiki/Hostname#Restrictions_on_valid_hostnames
+    //
+    // Rejecting (rather than truncating) oversized labels/hostnames keeps
+    // matches from ending mid-token, which would desynchronize the Scanner
+    // from slice-based find() restarts.
     fn look_hostname(&self, input: &[u8]) -> Option<usize> {
-        let mut idx = 0;
-        while idx < input.len() && idx < 253 {
-            if idx > 0 {
-                if let Some(i) = self.look_dot(&input[idx..]) {
-                    idx += i;
-                } else {
-                    break;
-                }
-            }
-            if let Some(i) = self.look_label(&input[idx..]) {
-                idx += i;
-            } else {
-                break;
-            }
-        }
-        Some(idx)
-    }
+        const MAX_LABEL: usize = 63; // RFC 1035
+        const MAX_HOSTNAME: usize = 253;
 
-    fn look_label(&self, input: &[u8]) -> Option<usize> {
         let mut idx = 0;
-        if idx < input.len()
-            && (Self::is_alpha(input[idx]) || Self::is_digit(input[idx]) || input[idx] == b'_')
-        {
-            idx += 1;
-        } else {
+        loop {
+            let run = Self::label_run_len(&input[idx..]);
+            if run == 0 {
+                break; // only reachable at idx == 0 (possibly-empty host)
+            }
+            if run > MAX_LABEL {
+                return None;
+            }
+            idx += run;
+            // Consume a "." only when another label follows (a trailing dot is
+            // sentence punctuation, not part of the host).
+            if input.get(idx) == Some(&b'.') && Self::label_run_len(&input[idx + 1..]) > 0 {
+                idx += 1;
+                continue;
+            }
+            break;
+        }
+        if idx > MAX_HOSTNAME {
             return None;
         }
-        while idx < input.len()
-            && idx < 62
-            && (Self::is_alpha(input[idx])
-                || Self::is_digit(input[idx])
-                || input[idx] == b'_'
-                || input[idx] == b'-')
-        {
-            idx += 1;
+        // A host that stops right before a non-ASCII byte (also right after an
+        // unconsumed dot) is the ASCII prefix of an IRI: reject the candidate.
+        match input.get(idx) {
+            Some(&b) if b >= 0x80 => return None,
+            Some(&b'.') if input.get(idx + 1).is_some_and(|&b| b >= 0x80) => return None,
+            _ => {}
         }
         Some(idx)
     }
 
-    fn look_dot(&self, input: &[u8]) -> Option<usize> {
-        if !input.is_empty() && input[0] == b'.' {
-            Some(1)
-        } else {
-            None
+    // Length of the maximal label-character run: [A-Za-z0-9_] first, then also
+    // "-". Returns 0 when no label starts here.
+    fn label_run_len(input: &[u8]) -> usize {
+        let starts = input
+            .first()
+            .is_some_and(|&b| b.is_ascii_alphanumeric() || b == b'_');
+        if !starts {
+            return 0;
         }
+        input
+            .iter()
+            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            .count()
     }
 
     // *DIGIT
@@ -588,11 +664,20 @@ impl URI {
     }
 
     // unreserved / pct-encoded / sub-delims / ":" / "@"
+    //
+    // In lax mode ")" is additionally accepted at pchar positions (path,
+    // query, fragment) so that balanced parentheses survive; any unmatched
+    // ")" is cut afterwards by `trim_lax`. Userinfo keeps rejecting it.
     #[inline]
     fn look_pchar(&self, input: &[u8]) -> Option<usize> {
         if !input.is_empty() {
             let b = input[0];
-            if Self::is_unreserved(b) || self.is_sub_delim(b) || b == b':' || b == b'@' {
+            if Self::is_unreserved(b)
+                || self.is_sub_delim(b)
+                || b == b':'
+                || b == b'@'
+                || (!self.strict && b == b')')
+            {
                 return Some(1);
             }
         }
@@ -824,12 +909,10 @@ mod tests {
             "http://foobar:@localhost",
             "http://foobar:baz@localhost",
             // port
-            "http://foobar:@localhost:",
             "http://foobar:@localhost:8080",
             // path
             "http://localhost/lorem",
             // query
-            "http://foobar:@localhost:8080?",
             "http://foobar:@localhost:8080?a=b",
             // fragment
             "http://foobar:@localhost:8080#",
@@ -889,7 +972,15 @@ mod tests {
     fn it_should_properly_behave_in_strict_mode() {
         let mut finder = URI::default();
         finder.strict = true;
-        for &input in &["http://localhost/)", "http://localhost/'"] {
+        for &input in &[
+            "http://localhost/)",
+            "http://localhost/'",
+            // Trailing empty port / empty query / "!" are trimmed in lax mode
+            // but strictly valid per RFC 3986.
+            "http://foobar:@localhost:",
+            "http://foobar:@localhost:8080?",
+            "data:,Hello%2C%20World!",
+        ] {
             assert_eq!(Some(input), finder.find(input).map(|r| &input[r]));
         }
     }
@@ -958,7 +1049,7 @@ mod tests {
         for input in vec![
             "data:text/plain;base64,SGVsbG8=",
             "data:image/png;base64,iVBORw0KGgo=",
-            "data:,Hello%2C%20World!",
+            "data:,Hello%2C%20World",
             "data:text/html,%3Ch1%3EHello%3C%2Fh1%3E",
         ] {
             assert_eq!(
