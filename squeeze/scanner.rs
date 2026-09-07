@@ -83,8 +83,7 @@ static BYTE_CLASSES: [u16; 256] = build_byte_class_table();
 #[inline]
 fn prescan(input: &[u8]) -> u16 {
     let mut classes = 0u16;
-    let chunks = input.chunks_exact(8);
-    let remainder = chunks.remainder();
+    let (chunks, remainder) = input.as_chunks::<8>();
     for chunk in chunks {
         classes |= BYTE_CLASSES[chunk[0] as usize]
             | BYTE_CLASSES[chunk[1] as usize]
