@@ -64,6 +64,7 @@ jobs:
         run: rustup set default-host "$TARGET"
       - uses: jdx/mise-action@v4
         with:
+          version: 2026.8.4
           cache: false
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v6
