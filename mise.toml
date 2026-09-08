@@ -1,0 +1,95 @@
+[tools]
+rust = { version = "1.96.0", profile = "minimal", components = [
+  "clippy",
+  "rustfmt",
+] }
+
+[tasks.build]
+description = "Build the workspace"
+run = "cargo build --workspace --locked"
+
+[tasks.release]
+description = "Build the optimized CLI"
+run = "cargo build --release --locked -p squeeze-cli"
+
+[tasks.test]
+description = "Run workspace tests and doctests"
+run = [
+  "cargo test --workspace --all-targets --locked",
+  "cargo test --workspace --doc --locked",
+]
+
+[tasks.test-verbose]
+run = "cargo test --workspace --locked -- --nocapture"
+
+[tasks.bench]
+description = "Benchmark scanner throughput"
+run = "cargo bench --locked -p squeeze --bench scanner"
+
+[tasks.lint]
+description = "Lint all targets"
+run = "cargo clippy --workspace --all-targets --locked -- --deny warnings"
+
+[tasks.fmt]
+description = "Format Rust code"
+run = "cargo fmt --all"
+
+[tasks.fmt-check]
+description = "Check Rust formatting"
+run = "cargo fmt --all -- --check"
+
+[tasks.doc]
+description = "Build and open documentation"
+run = "cargo doc -p squeeze --locked --no-deps --all-features --open"
+
+[tasks.doc-check]
+description = "Check documentation without warnings"
+env.RUSTDOCFLAGS = "-D warnings"
+run = [
+  "cargo doc -p squeeze --locked --no-deps --all-features",
+  "cargo doc -p squeeze-cli --locked --no-deps --all-features",
+]
+
+[tasks.check]
+description = "Run formatting, lint, tests, and documentation checks"
+run = [
+  { task = "fmt-check" },
+  { task = "lint" },
+  { task = "test" },
+  { task = "doc-check" },
+]
+
+[tasks.clean]
+run = "cargo clean"
+
+[tasks.install]
+description = "Install the CLI locally"
+run = "cargo install --locked --path squeeze-cli"
+
+[tasks.msrv]
+description = "Build and test with the minimum supported Rust version"
+tools.rust = "1.95.0"
+run = [
+  "cargo build --workspace --locked",
+  "cargo test --workspace --all-targets --locked",
+  "cargo test --workspace --doc --locked",
+]
+
+[tasks.watch]
+run = "mise watch test"
+
+[tasks.watch-check]
+run = "mise watch check"
+
+[tasks.update]
+run = "cargo update"
+
+[tasks.outdated]
+run = "cargo outdated"
+
+[tasks.audit]
+run = "cargo audit"
+
+[tasks.run]
+description = "Run the CLI (pass options after --)"
+run = "cargo run --locked -p squeeze-cli --"

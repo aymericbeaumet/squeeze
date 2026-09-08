@@ -34,6 +34,13 @@ the install and getting started instructions.
 
 ## Install
 
+### Prebuilt binaries
+
+Download an archive from [GitHub Releases](https://github.com/aymericbeaumet/squeeze/releases/latest)
+for Linux, macOS, or Windows and your architecture (`amd64` or `arm64`). Extract
+it and place `squeeze` (`squeeze.exe` on Windows) on your `PATH`. Each release
+includes SHA-256 checksums for the archives.
+
 ### Using Homebrew (macOS/Linux)
 
 ```shell
@@ -179,15 +186,25 @@ urls() { fc -rl 1 | squeeze --url | sort -u; }
 
 ## Development
 
-### Run binary
+Install [mise](https://mise.jdx.dev/getting-started.html), then set up the pinned
+Rust toolchain and run the same checks as CI:
 
 ```shell
-echo 'http://localhost' | cargo run -- --url
+mise trust
+mise install
+mise run check
 ```
 
-### Run tests
+Common tasks:
 
 ```shell
-cargo test
-watchexec --clear --restart 'cargo test'
+mise run build
+mise run release
+mise run test
+mise run msrv
+echo 'http://localhost' | mise run run -- --url
 ```
+
+Run `mise tasks` for the full list. Existing Make targets delegate to mise.
+See [development and releases](docs/development.md) for tooling and the
+automatic release process.
