@@ -130,6 +130,7 @@ jobs:
       - name: Update Homebrew formula
         uses: mislav/bump-homebrew-formula-action@v4
         with:
+          commit-message: 'chore: update {{formulaName}} to {{version}}'
           formula-name: squeeze
           homebrew-tap: aymericbeaumet/homebrew-tap
           tag-name: ${{ needs.prepare.outputs.tag }}
