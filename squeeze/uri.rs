@@ -50,7 +50,9 @@ const SUB_DELIMS_LAX: [bool; 256] = {
     table
 };
 
-const MAX_SCHEME_LEN: usize = 32;
+// Covers every IANA-registered scheme (the longest is 36 bytes) so opaque
+// URIs using them are not truncated out of the registry lookup.
+const MAX_SCHEME_LEN: usize = 64;
 
 #[derive(Default, Clone, Copy)]
 struct SchemeConfig(u8);
@@ -1587,9 +1589,26 @@ mod tests {
     }
 
     #[test]
+    fn registered_schemes_should_fit_the_scheme_lookback() {
+        for scheme in crate::iana::URI_SCHEMES.iter() {
+            assert!(scheme.len() <= MAX_SCHEME_LEN, "{scheme}");
+        }
+    }
+
+    #[test]
+    fn find_should_keep_long_registered_opaque_uris() {
+        let finder = URI::default();
+        let input = "open microsoft.windows.camera.multipicker:photo now";
+        assert_eq!(
+            Some("microsoft.windows.camera.multipicker:photo"),
+            finder.find(input).map(|r| &input[r])
+        );
+    }
+
+    #[test]
     fn rlook_scheme_exceeds_cap() {
         let finder = URI::default();
-        let scheme = "a".repeat(40);
+        let scheme = "a".repeat(MAX_SCHEME_LEN + 8);
         let input = format!("{}://host", scheme);
         // Scheme longer than MAX_SCHEME_LEN gets truncated, but the URI
         // is still found with a shorter scheme prefix
