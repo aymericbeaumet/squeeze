@@ -5,10 +5,10 @@ authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "CLI tool to extract rich information from any text"
+description = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text"
 repository = "https://github.com/aymericbeaumet/squeeze"
 readme = "../readme.md"
-keywords = ["uri", "url", "cli", "extractor", "codetag"]
+keywords = ["extract", "url", "email", "grep", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 
 [[bin]]

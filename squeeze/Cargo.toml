@@ -5,10 +5,10 @@ authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
-description = "Extract rich information from any text (URIs, codetags, etc.)"
+description = "Finders for URLs, emails, IPs, hashes, TODOs, and more in free-form text"
 repository = "https://github.com/aymericbeaumet/squeeze"
 readme = "../readme.md"
-keywords = ["uri", "url", "parser", "extractor", "codetag"]
+keywords = ["extract", "url", "email", "parser", "text"]
 categories = ["text-processing", "parsing", "command-line-utilities"]
 
 [lib]
