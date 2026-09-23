@@ -381,7 +381,8 @@ fn domain_label_length_bounds_guard() {
 
 #[test]
 fn domain_tld_length_bounds_guard() {
-    let ok = format!("example.{}", "a".repeat(24));
+    // The TLD must also be delegated (Fix 9), so probe with a long real one.
+    let ok = "example.travelersinsurance".to_string();
     assert_eq!(Some(ok.clone()), find_one(&Domain::default(), &ok));
     let too_long = format!("example.{}", "a".repeat(25));
     assert_eq!(None, find_one(&Domain::default(), &too_long));
@@ -481,8 +482,136 @@ fn handle_host_trailing_dots_stripped_then_valid() {
 }
 
 // ============================================================================
+// Fix 9: a domain must end in a delegated or special-use TLD
+//
+// Member accesses and file names (`out.write`, `opts.all`, `squeeze.exe`)
+// are TLD-shaped but name no TLD. Email and handle keep the TLD-shape check:
+// the '@' is signal enough.
+// ============================================================================
+
+#[test]
+fn domain_rejects_undelegated_tlds() {
+    for input in [
+        "out.write(x)",
+        "opts.all",
+        "finders.push(f)",
+        "result.value",
+        "squeeze.exe",
+        "node.js",
+    ] {
+        assert_eq!(None, find_one(&Domain::default(), input), "{input}");
+    }
+}
+
+#[test]
+fn domain_rejects_method_calls_on_cctld_names() {
+    for input in [
+        "e.to_string()",
+        "value.is_empty()",
+        "source.map(f)",
+        "text.as_bytes()",
+    ] {
+        assert_eq!(None, find_one(&Domain::default(), input), "{input}");
+    }
+    assert_eq!(
+        Some("example.com".to_string()),
+        find_one(&Domain::default(), "(see example.com)")
+    );
+}
+
+#[test]
+fn domain_accepts_delegated_and_special_use_tlds() {
+    for input in [
+        "EXAMPLE.COM",
+        "docs.rs",
+        "example.museum",
+        "news.ycombinator.com",
+        "printer.local",
+        "api.internal",
+        "foo.test",
+        "www.example",
+        "hidden.onion",
+    ] {
+        assert_eq!(
+            Some(input.to_string()),
+            find_one(&Domain::default(), input),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn email_keeps_tld_shape_check() {
+    assert_eq!(
+        Some("admin@intranet.corp".to_string()),
+        find_one(&Email::default(), "admin@intranet.corp")
+    );
+}
+
+// ============================================================================
+// Fix 10: an email local part starts with an alphanumeric
+//
+// Leading quotes, backticks, braces and Markdown emphasis are valid RFC 5322
+// atext but in practice always wrap the address.
+// ============================================================================
+
+#[test]
+fn email_strips_wrapping_punctuation() {
+    for input in [
+        "`a@b.com`",
+        "'a@b.com'",
+        "{a@b.com}",
+        "**a@b.com**",
+        "_a@b.com_",
+        "|a@b.com|",
+        "a`a@b.com",
+    ] {
+        assert_eq!(
+            Some("a@b.com".to_string()),
+            find_one(&Email::default(), input),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn email_keeps_inner_atext() {
+    for input in ["o'brien@example.com", "first.last+tag@example.com"] {
+        assert_eq!(
+            Some(input.to_string()),
+            find_one(&Email::default(), input),
+            "{input}"
+        );
+    }
+}
+
+#[test]
+fn email_with_only_punctuation_local_part_is_rejected() {
+    assert_eq!(None, find_one(&Email::default(), "'@b.com"));
+}
+
+// ============================================================================
 // Pinned non-bugs (intentional behavior, do not "fix")
 // ============================================================================
+
+#[test]
+fn email_treats_equals_as_a_delimiter() {
+    // `key=a@b.com` is far more common in logs and command lines than VERP
+    // bounce addresses, which lose everything up to their last `=`.
+    for (input, expected) in [
+        ("--author=user@example.com", "user@example.com"),
+        (
+            "bounce+user=example.com@list.example.org",
+            "example.com@list.example.org",
+        ),
+    ] {
+        assert_eq!(
+            Some(expected.to_string()),
+            find_one(&Email::default(), input),
+            "{input}"
+        );
+    }
+}
 
 #[test]
 fn pin_domain_with_port_yields_nothing() {
@@ -501,18 +630,10 @@ fn pin_email_ip_literal_unsupported() {
 
 #[test]
 fn pin_domain_matches_readme_md() {
-    // TLD-shape heuristic, pinned.
+    // `.md` is a delegated ccTLD, so file names can still collide.
     assert_eq!(
         Some("README.md".to_string()),
         find_one(&Domain::default(), "README.md")
-    );
-}
-
-#[test]
-fn pin_domain_matches_node_js() {
-    assert_eq!(
-        Some("node.js".to_string()),
-        find_one(&Domain::default(), "node.js")
     );
 }
 
@@ -556,6 +677,7 @@ fn scanner_email_parity_on_corpus() {
         "ping @alice@hachyderm.io ok",
         "user@example..com",
         "git@github.com:org/repo.git",
+        "`user@example.com` and 'a@b.com' **c@d.org**",
     ];
     for input in corpus {
         let via_find = find_all(&Email::default(), input);
@@ -587,6 +709,7 @@ fn scanner_domain_parity_on_corpus() {
         "example.com:8080 sub.example.com/path",
         "example.com and other.org",
         "дexample.com... ok",
+        "out.write(x) and printer.local then EXAMPLE.COM",
     ];
     for input in corpus {
         let via_find = find_all(&Domain::default(), input);

@@ -61,6 +61,26 @@ impl Path {
         end
     }
 
+    /// Extends a path from its prefix up to whitespace or a backtick (a
+    /// Markdown code span delimiter), then strips trailing punctuation that's
+    /// likely sentence-level, not path-level. `:digits` line references
+    /// survive because the colon is not trailing — it's followed by digits.
+    ///
+    /// Returns `None` unless the body names something: `//`, `///` and `/*`
+    /// are comment markers.
+    fn match_end(input: &[u8], start: usize, prefix_len: usize) -> Option<usize> {
+        let body_start = start + prefix_len;
+        let mut end = body_start;
+        while end < input.len() && !input[end].is_ascii_whitespace() && input[end] != b'`' {
+            end += 1;
+        }
+        let end = Self::strip_trailing(input, start, body_start, end);
+        let names_something = input[body_start..end]
+            .iter()
+            .any(|&b| b.is_ascii_alphanumeric() || b >= 0x80 || matches!(b, b'.' | b'_' | b'-'));
+        names_something.then_some(end)
+    }
+
     fn find_prefix(&self, input: &[u8], from: usize) -> Option<(usize, usize)> {
         let mut idx = from;
         while idx < input.len() {
@@ -157,18 +177,7 @@ impl Finder for Path {
             _ => return None,
         };
 
-        let start = pos;
-        let mut end = pos + prefix_len;
-        while end < input.len() && !input[end].is_ascii_whitespace() {
-            end += 1;
-        }
-        let end = Self::strip_trailing(input, start, start + prefix_len, end);
-
-        if end > start + prefix_len {
-            Some(start..end)
-        } else {
-            None
-        }
+        Self::match_end(input, pos, prefix_len).map(|end| pos..end)
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
@@ -177,21 +186,9 @@ impl Finder for Path {
 
         while search_from < input.len() {
             let (start, prefix_len) = self.find_prefix(input, search_from)?;
-
-            let mut end = start + prefix_len;
-            while end < input.len() && !input[end].is_ascii_whitespace() {
-                end += 1;
-            }
-
-            // Strip trailing punctuation that's likely sentence-level, not
-            // path-level. `:digits` line references survive because the colon
-            // is not trailing — it's followed by digits.
-            let end = Self::strip_trailing(input, start, start + prefix_len, end);
-
-            if end > start + prefix_len {
+            if let Some(end) = Self::match_end(input, start, prefix_len) {
                 return Some(start..end);
             }
-
             search_from = start + 1;
         }
 

@@ -48,6 +48,7 @@ pub mod emoji;
 pub mod env;
 pub mod handle;
 pub mod hash;
+pub(crate) mod iana;
 pub mod ip;
 pub(crate) mod ipv6;
 pub mod json;

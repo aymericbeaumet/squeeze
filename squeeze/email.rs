@@ -2,6 +2,8 @@ use super::Finder;
 use crate::domain::{glued_to_two_byte_char, is_label_byte, looks_like_tld};
 use std::ops::Range;
 
+// RFC 5322 atext, minus "=" and "`": in extracted text they almost always
+// delimit the address (`--author=a@b.com`, `` `a@b.com` ``).
 const LOCAL_CHARS: [bool; 256] = {
     let mut table = [false; 256];
     let mut i = 0u16;
@@ -19,11 +21,9 @@ const LOCAL_CHARS: [bool; 256] = {
                     | b'*'
                     | b'+'
                     | b'/'
-                    | b'='
                     | b'?'
                     | b'^'
                     | b'_'
-                    | b'`'
                     | b'{'
                     | b'|'
                     | b'}'
@@ -80,6 +80,14 @@ impl Email {
         let mut local_start = at_pos;
         while local_start > 0 && LOCAL_CHARS[input[local_start - 1] as usize] {
             local_start -= 1;
+        }
+        // Leading atext punctuation is valid RFC 5322 but in practice wraps
+        // the address: `'a@b.com'`, `{a@b.com}`, `**a@b.com**`.
+        while local_start < at_pos
+            && input[local_start] != b'.'
+            && !input[local_start].is_ascii_alphanumeric()
+        {
+            local_start += 1;
         }
 
         // Local part must be non-empty and not start/end with '.'
@@ -194,6 +202,18 @@ mod tests {
     fn id_should_return_email() {
         let finder = Email::default();
         assert_eq!("email", finder.id());
+    }
+
+    #[test]
+    fn find_should_stop_the_local_part_at_an_assignment() {
+        let finder = Email::default();
+        for input in [
+            "git commit --author=ops@example.com",
+            "EMAIL=ops@example.com",
+        ] {
+            let range = finder.find(input).unwrap();
+            assert_eq!("ops@example.com", &input[range], "{input}");
+        }
     }
 
     #[test]

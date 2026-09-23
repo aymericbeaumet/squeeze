@@ -6,6 +6,9 @@
   `mise run msrv` when changing dependencies or the minimum supported Rust version.
 - Keep both crate versions and their entries in `Cargo.lock` synchronized.
   A new version on `main` triggers publication; see [release details](docs/development.md).
+- Finders favor precision. After changing one, smoke-test false positives with
+  `mise run run -- --all --with-kind readme.md squeeze-cli/main.rs` and pin
+  intentional trade-offs in the `squeeze/tests/hardening_*.rs` suites.
 - CI and releases cover Linux, macOS, and Windows on both amd64 and arm64.
   Preserve all six native targets when changing workflows.
 - After changing release automation, run `actionlint` and, with Python 3.11+,

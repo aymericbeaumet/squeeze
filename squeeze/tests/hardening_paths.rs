@@ -206,6 +206,45 @@ fn path_after_equals_without_path_prefix_still_none() {
 }
 
 // ===========================================================================
+// path: comment markers and Markdown code spans are not paths (bug 9)
+// ===========================================================================
+
+#[test]
+fn path_rejects_separator_only_candidates() {
+    for input in [
+        "//",
+        "///",
+        "// comment",
+        "/// doc comment",
+        "/* block */",
+        "/**",
+        "~//",
+    ] {
+        assert_eq!(None, path_one(input), "{input:?}");
+    }
+}
+
+#[test]
+fn path_stops_at_backtick() {
+    assert_eq!(None, path_one("`-1`/`--first`"));
+    assert_eq!(Some("/etc/hosts"), path_one("see `/etc/hosts`."));
+    assert_eq!(Some("/a/b"), path_one("`/a/b`c"));
+}
+
+#[test]
+fn path_keeps_dot_only_relative_paths() {
+    assert_eq!(Some("../../"), path_one("cd ../../ now"));
+    assert_eq!(Some("./.config"), path_one("ls ./.config"));
+}
+
+#[test]
+fn path_try_at_rejects_comment_marker() {
+    let finder = PathFinder::default();
+    assert_eq!(None, finder.try_at(b"// x", 0));
+    assert_eq!(None, finder.try_at(b"`/`x", 1));
+}
+
+// ===========================================================================
 // path: known non-bugs stay pinned
 // ===========================================================================
 
@@ -319,6 +358,9 @@ fn path_scanner_parity_corpus() {
             "/",
             "/.",
             "",
+            "// comment /// doc /* block */",
+            "`-1`/`--first` and `/etc/hosts`.",
+            "cd ../.. && ~//",
         ],
     );
 }

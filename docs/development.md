@@ -12,6 +12,11 @@ builds the optimized CLI. Cargo tasks use `--locked` so CI and release builds
 use the committed dependency resolution. After changing crate versions or
 dependencies, refresh `Cargo.lock` with Cargo and review the diff.
 
+`squeeze/iana.rs` embeds the IANA root-zone TLDs and registered URI schemes
+that the domain and URI finders use to reject lookalikes such as `opts.all` or
+`key:value`. Refresh it with `mise run update-iana` (Python 3, network
+access) and review the diff; the registries change a few times a year.
+
 `mise run watch` and `mise run watch-check` use mise's watcher. The optional
 `outdated` and `audit` tasks require the corresponding Cargo extensions.
 The Makefile forwards existing commands to mise.

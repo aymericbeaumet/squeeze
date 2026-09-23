@@ -1,8 +1,8 @@
 //! Domain name finder.
 //!
 //! Extracts standalone DNS-style domain names (e.g. `example.com`,
-//! `sub.example.co.uk`). Anything preceded by `@` or `://` is skipped
-//! to avoid eating the host part of emails and URLs.
+//! `sub.example.co.uk`) whose TLD exists. Anything preceded by `@` or `://`
+//! is skipped to avoid eating the host part of emails and URLs.
 
 use super::Finder;
 use std::ops::Range;
@@ -15,6 +15,27 @@ pub(crate) fn is_label_byte(b: u8) -> bool {
 #[inline]
 pub(crate) fn looks_like_tld(s: &[u8]) -> bool {
     (2..=24).contains(&s.len()) && s.iter().all(|b| b.is_ascii_alphabetic())
+}
+
+/// A TLD-shaped label that is delegated in the root zone or reserved for
+/// special use (RFC 6761, RFC 7686, RFC 9476, ICANN's `.internal`), so
+/// `printer.local` matches while `out.write` does not.
+fn is_known_tld(s: &[u8]) -> bool {
+    if !looks_like_tld(s) {
+        return false;
+    }
+    let mut buf = [0u8; 24];
+    let lower = &mut buf[..s.len()];
+    lower.copy_from_slice(s);
+    lower.make_ascii_lowercase();
+    let Ok(tld) = std::str::from_utf8(lower) else {
+        return false;
+    };
+    crate::iana::TLDS.contains(tld)
+        || matches!(
+            tld,
+            "alt" | "example" | "internal" | "invalid" | "local" | "localhost" | "onion" | "test"
+        )
 }
 
 /// True when the byte immediately before `pos` ends a two-byte UTF-8
@@ -115,10 +136,11 @@ impl Finder for Domain {
                 continue;
             }
 
-            // Disallow trailing characters that would make this part of a path/URL.
+            // Disallow trailing characters that would make this part of a
+            // path/URL or of code (`e.to_string()`, `source.map(f)`).
             if end < input.len() {
                 let next = input[end];
-                if next == b'/' || next == b':' {
+                if matches!(next, b'/' | b':' | b'_' | b'(') {
                     i = end + 1;
                     continue;
                 }
@@ -138,7 +160,7 @@ impl Finder for Domain {
 
             // Validate final label as TLD.
             let tld = &input[last_dot + 1..end];
-            if !looks_like_tld(tld) {
+            if !is_known_tld(tld) {
                 i = end;
                 continue;
             }

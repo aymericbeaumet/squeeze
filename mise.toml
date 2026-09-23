@@ -84,6 +84,10 @@ run = "mise watch check"
 [tasks.update]
 run = "cargo update"
 
+[tasks.update-iana]
+description = "Refresh the embedded IANA TLD and URI scheme registries"
+run = "python3 scripts/update_iana.py"
+
 [tasks.outdated]
 run = "cargo outdated"
 

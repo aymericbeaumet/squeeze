@@ -85,6 +85,16 @@ impl SchemeConfigs {
     }
 }
 
+fn is_registered_scheme(scheme: &str) -> bool {
+    let mut buf = [0u8; MAX_SCHEME_LEN];
+    let Some(lower) = buf.get_mut(..scheme.len()) else {
+        return false;
+    };
+    lower.copy_from_slice(scheme.as_bytes());
+    lower.make_ascii_lowercase();
+    std::str::from_utf8(lower).is_ok_and(|s| crate::iana::URI_SCHEMES.contains(s))
+}
+
 const DISALLOW_EMPTY_HOST: u8 = 1 << 0;
 
 static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
@@ -95,22 +105,25 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
 
 /// A finder that extracts URIs from text according to RFC 3986.
 ///
-/// By default, all URI schemes are matched. Use [`URI::add_scheme`] to filter
-/// by specific schemes.
+/// By default, any scheme is matched, subject to the lax-mode heuristics
+/// below. Use [`URI::add_scheme`] to filter by specific schemes.
 ///
 /// # Strict Mode
 ///
 /// By default, the finder excludes `'` characters, unbalanced trailing `)`
 /// characters (so markdown links `[text](url)` work while
 /// `…/Sport_(disambiguation)` stays intact), and trailing sentence
-/// punctuation (`.,;:!?`) from URIs. Set [`URI::strict`] to `true` to
-/// strictly follow RFC 3986.
+/// punctuation (`.,;:!?`) from URIs. It also skips prose and code that
+/// happens to parse as a URI: bare `scheme:` labels, `a::b` paths, and opaque
+/// URIs (no `//` after the colon) whose scheme is neither IANA-registered nor
+/// added with [`URI::add_scheme`]. Set [`URI::strict`] to `true` to strictly
+/// follow RFC 3986.
 #[derive(Default)]
 pub struct URI {
     schemes: Vec<String>,
-    /// When `true`, strictly follows RFC 3986 and includes trailing `'`, `)`,
-    /// and punctuation in URIs.
-    /// When `false` (default), excludes these characters for better text extraction.
+    /// When `true`, strictly follows RFC 3986: any scheme matches and
+    /// trailing `'`, `)`, and punctuation are kept.
+    /// When `false` (default), applies the text-extraction heuristics above.
     pub strict: bool,
 }
 
@@ -186,6 +199,12 @@ impl URI {
         }
         let scheme_config = SCHEMES_CONFIGS.get_ascii_case_insensitive(scheme);
 
+        // "Self::Error", "io::Result", "db8::/32": in lax mode a second colon
+        // marks a code path or an IPv6 tail, not a URI.
+        if !self.strict && input.get(colon_idx + 1) == Some(&b':') {
+            return None;
+        }
+
         let mut idx = colon_idx + 1;
         let hier_len = self.look_hier_part(&input[idx..], scheme_config)?;
         idx += hier_len;
@@ -194,18 +213,27 @@ impl URI {
 
         if !self.strict {
             idx = Self::trim_lax(input, colon_idx, idx);
-            // A URI with an empty hier-part, or whose entire tail is
-            // punctuation, is only trusted at the start of the input or after
-            // prose (whitespace, quotes, opening brackets…). Glued to URI
-            // innards ("path/x:", "?q=x:", "a:=x:", "a:#x:.", …) it is junk —
-            // and accepting it would desynchronize trigger dispatch from
-            // slice-based find() restarts.
-            let trivial_tail = input[colon_idx + 1..idx]
+            let tail = &input[colon_idx + 1..idx];
+            // A bare "scheme:" or a punctuation-only tail is prose ("TODO:",
+            // "Note: …").
+            if tail
                 .iter()
-                .all(|&b| matches!(b, b'.' | b',' | b';' | b':' | b'!' | b'?' | b'#'));
-            if (hier_len == 0 || trivial_tail)
-                && scheme_idx > 0
-                && !Self::is_prose_delimiter(input[scheme_idx - 1])
+                .all(|&b| matches!(b, b'.' | b',' | b';' | b':' | b'!' | b'?' | b'#'))
+            {
+                return None;
+            }
+            // An empty hier-part ("magnet:?xt=…") is only trusted at the start
+            // of the input or after prose (whitespace, quotes, opening
+            // brackets…). Glued to URI innards ("?q=x:?y", "a:=x:#y", …) it is
+            // junk — and accepting it would desynchronize trigger dispatch
+            // from slice-based find() restarts.
+            if hier_len == 0 && scheme_idx > 0 && !Self::is_prose_delimiter(input[scheme_idx - 1]) {
+                return None;
+            }
+            // Without "//", "key:value", "main.rs:42" and "${VAR:-x}" parse
+            // as opaque URIs; only trust schemes the user asked for or IANA
+            // registered.
+            if self.schemes.is_empty() && !tail.starts_with(b"//") && !is_registered_scheme(scheme)
             {
                 return None;
             }
@@ -936,8 +964,6 @@ mod tests {
             "http://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]",
             "http://[::ffff:192.0.2.128]",
             "http://[::ffff:c000:0280]",
-            // scheme only
-            "foobar:",
             // rfc examples
             "file:///etc/hosts",
             "http://localhost/",
