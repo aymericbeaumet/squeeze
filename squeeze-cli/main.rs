@@ -1,4 +1,4 @@
-use clap::{CommandFactory, Parser, ValueEnum};
+use clap::{Args, CommandFactory, Parser, ValueEnum};
 use rayon::{ThreadPool, prelude::*};
 use squeeze::{
     Finder,
@@ -71,7 +71,14 @@ enum Precedence {
     name = "squeeze",
     version = VERSION,
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
-    about = "Extract rich information from any text"
+    about = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text",
+    after_help = "\
+Examples:
+  echo 'docs at https://example.com' | squeeze --url
+  git log | squeeze --email --sort --uniq
+  squeeze --todo --fixme --with-location 'src/**/*.rs'
+  kubectl logs my-pod | squeeze --ip --uuid --with-kind
+  squeeze --all --with-kind --output json notes.md"
 )]
 struct Opts {
     // flags
@@ -89,7 +96,7 @@ struct Opts {
     uniq: bool,
     #[arg(long = "copy", help = "copy the results to the clipboard")]
     copy: bool,
-    #[arg(long = "open", help = "open the results")]
+    #[arg(long = "open", help = "open the results with the default application")]
     open: bool,
     #[arg(
         long = "output",
@@ -105,10 +112,16 @@ struct Opts {
         help = "scan lines in parallel (1 = sequential streaming)"
     )]
     jobs: usize,
-    #[arg(long = "all", help = "enable all finders")]
-    all: bool,
-    #[arg(long = "with-kind", help = "include finder kind in output")]
+    #[arg(
+        long = "with-kind",
+        help = "include the finder kind (and match position in structured output)"
+    )]
     with_kind: bool,
+    #[arg(
+        long = "with-location",
+        help = "include the match position (path:line:column: in text output)"
+    )]
+    with_location: bool,
     #[arg(long = "no-overlap", help = "suppress overlapping matches")]
     no_overlap: bool,
     #[arg(
@@ -119,12 +132,29 @@ struct Opts {
     )]
     precedence: Precedence,
 
+    #[arg(
+        value_name = "INPUT",
+        help = "files or glob patterns to scan; omit for stdin"
+    )]
+    inputs: Vec<String>,
+
+    #[command(flatten)]
+    finders: FinderOpts,
+}
+
+/// Which finders to run, and their modifiers.
+#[derive(Args)]
+#[command(next_help_heading = "Finders")]
+struct FinderOpts {
+    #[arg(long = "all", help = "enable all finders")]
+    all: bool,
+
     // cidr
     #[arg(long = "cidr", help = "search for CIDR notation")]
     cidr: bool,
 
     // codetag
-    #[arg(long = "codetag", help = "search for codetags")]
+    #[arg(long = "codetag", require_equals = true, help = "search for codetags")]
     mnemonic: Option<Option<String>>,
     #[arg(long = "hide-mnemonic", help = "hide the mnemonics in the results")]
     hide_mnemonic: bool,
@@ -162,7 +192,7 @@ struct Opts {
     handle: bool,
 
     // hash
-    #[arg(long = "hash", help = "search for hashes")]
+    #[arg(long = "hash", require_equals = true, help = "search for hashes")]
     hash_algo: Option<Option<String>>,
     #[arg(long = "md5", help = "alias for: --hash=md5")]
     md5: bool,
@@ -194,7 +224,7 @@ struct Opts {
     mac: bool,
 
     // mirror
-    #[arg(long = "mirror", help = "[debug] mirror the input")]
+    #[arg(long = "mirror", hide = true, help = "[debug] mirror the input")]
     mirror: bool,
 
     // modeline
@@ -214,11 +244,11 @@ struct Opts {
     semver: bool,
 
     // uri
-    #[arg(long = "uri", help = "search for uris")]
+    #[arg(long = "uri", require_equals = true, help = "search for URIs")]
     scheme: Option<Option<String>>,
     #[arg(
         long = "strict",
-        help = "strictly respect the URI RFC in regards to closing ' and )"
+        help = "match URIs exactly as RFC 3986 allows: any scheme, trailing ' and )"
     )]
     strict: bool,
     #[arg(
@@ -234,17 +264,11 @@ struct Opts {
     // uuid
     #[arg(long = "uuid", help = "search for UUIDs")]
     uuid: bool,
-
-    #[arg(
-        value_name = "INPUT",
-        help = "files or glob patterns to scan; omit for stdin"
-    )]
-    inputs: Vec<String>,
 }
 
-impl TryFrom<&Opts> for Cidr {
+impl TryFrom<&FinderOpts> for Cidr {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.cidr) {
             return Err(());
         }
@@ -252,9 +276,9 @@ impl TryFrom<&Opts> for Cidr {
     }
 }
 
-impl TryFrom<&Opts> for Color {
+impl TryFrom<&FinderOpts> for Color {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.color) {
             return Err(());
         }
@@ -262,9 +286,9 @@ impl TryFrom<&Opts> for Color {
     }
 }
 
-impl TryFrom<&Opts> for Datetime {
+impl TryFrom<&FinderOpts> for Datetime {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.datetime) {
             return Err(());
         }
@@ -272,9 +296,9 @@ impl TryFrom<&Opts> for Datetime {
     }
 }
 
-impl TryFrom<&Opts> for Domain {
+impl TryFrom<&FinderOpts> for Domain {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.domain) {
             return Err(());
         }
@@ -282,9 +306,9 @@ impl TryFrom<&Opts> for Domain {
     }
 }
 
-impl TryFrom<&Opts> for Email {
+impl TryFrom<&FinderOpts> for Email {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.email) {
             return Err(());
         }
@@ -292,9 +316,9 @@ impl TryFrom<&Opts> for Email {
     }
 }
 
-impl TryFrom<&Opts> for Emoji {
+impl TryFrom<&FinderOpts> for Emoji {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.emoji) {
             return Err(());
         }
@@ -302,9 +326,9 @@ impl TryFrom<&Opts> for Emoji {
     }
 }
 
-impl TryFrom<&Opts> for Env {
+impl TryFrom<&FinderOpts> for Env {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.env) {
             return Err(());
         }
@@ -312,9 +336,9 @@ impl TryFrom<&Opts> for Env {
     }
 }
 
-impl TryFrom<&Opts> for Handle {
+impl TryFrom<&FinderOpts> for Handle {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.handle) {
             return Err(());
         }
@@ -343,9 +367,9 @@ fn explicit_entries(value: &Option<Option<String>>) -> Vec<&str> {
     }
 }
 
-impl TryFrom<&Opts> for Hash {
+impl TryFrom<&FinderOpts> for Hash {
     type Error = FinderError;
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all
             || opts.hash_algo.is_some()
             || opts.md5
@@ -388,9 +412,9 @@ impl TryFrom<&Opts> for Hash {
     }
 }
 
-impl TryFrom<&Opts> for Ip {
+impl TryFrom<&FinderOpts> for Ip {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.ip || opts.ipv4 || opts.ipv6) {
             return Err(());
         }
@@ -401,9 +425,9 @@ impl TryFrom<&Opts> for Ip {
     }
 }
 
-impl TryFrom<&Opts> for Json {
+impl TryFrom<&FinderOpts> for Json {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.json) {
             return Err(());
         }
@@ -411,9 +435,9 @@ impl TryFrom<&Opts> for Json {
     }
 }
 
-impl TryFrom<&Opts> for Jwt {
+impl TryFrom<&FinderOpts> for Jwt {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.jwt) {
             return Err(());
         }
@@ -421,9 +445,9 @@ impl TryFrom<&Opts> for Jwt {
     }
 }
 
-impl TryFrom<&Opts> for Mac {
+impl TryFrom<&FinderOpts> for Mac {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.mac) {
             return Err(());
         }
@@ -431,9 +455,9 @@ impl TryFrom<&Opts> for Mac {
     }
 }
 
-impl TryFrom<&Opts> for Modeline {
+impl TryFrom<&FinderOpts> for Modeline {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.modeline) {
             return Err(());
         }
@@ -441,9 +465,9 @@ impl TryFrom<&Opts> for Modeline {
     }
 }
 
-impl TryFrom<&Opts> for Codetag {
+impl TryFrom<&FinderOpts> for Codetag {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.mnemonic.is_some() || opts.fixme || opts.todo) {
             return Err(());
         }
@@ -468,9 +492,9 @@ impl TryFrom<&Opts> for Codetag {
     }
 }
 
-impl TryFrom<&Opts> for Mirror {
+impl TryFrom<&FinderOpts> for Mirror {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !opts.mirror {
             return Err(());
         }
@@ -478,9 +502,9 @@ impl TryFrom<&Opts> for Mirror {
     }
 }
 
-impl TryFrom<&Opts> for Path {
+impl TryFrom<&FinderOpts> for Path {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.path) {
             return Err(());
         }
@@ -488,9 +512,9 @@ impl TryFrom<&Opts> for Path {
     }
 }
 
-impl TryFrom<&Opts> for Phone {
+impl TryFrom<&FinderOpts> for Phone {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.phone) {
             return Err(());
         }
@@ -498,9 +522,9 @@ impl TryFrom<&Opts> for Phone {
     }
 }
 
-impl TryFrom<&Opts> for Semver {
+impl TryFrom<&FinderOpts> for Semver {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.semver) {
             return Err(());
         }
@@ -508,9 +532,9 @@ impl TryFrom<&Opts> for Semver {
     }
 }
 
-impl TryFrom<&Opts> for URI {
+impl TryFrom<&FinderOpts> for URI {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.scheme.is_some() || opts.url || opts.http || opts.https) {
             return Err(());
         }
@@ -546,9 +570,9 @@ impl TryFrom<&Opts> for URI {
     }
 }
 
-impl TryFrom<&Opts> for Uuid {
+impl TryFrom<&FinderOpts> for Uuid {
     type Error = ();
-    fn try_from(opts: &Opts) -> Result<Self, Self::Error> {
+    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
         if !(opts.all || opts.uuid) {
             return Err(());
         }
@@ -556,7 +580,7 @@ impl TryFrom<&Opts> for Uuid {
     }
 }
 
-fn build_finders(opts: &Opts) -> Result<Vec<Box<dyn Finder>>, String> {
+fn build_finders(opts: &FinderOpts) -> Result<Vec<Box<dyn Finder>>, String> {
     let mut finders: Vec<Box<dyn Finder>> = Vec::new();
     if let Ok(f) = TryInto::<Cidr>::try_into(opts) {
         finders.push(Box::new(f));
@@ -693,17 +717,59 @@ impl OutputState {
     }
 }
 
+/// Optional fields printed alongside each result value.
+#[derive(Clone, Copy, Debug, Default)]
+struct Detail {
+    kind: bool,
+    location: bool,
+}
+
+impl Detail {
+    fn new(opts: &Opts) -> Self {
+        Detail {
+            kind: opts.with_kind,
+            location: opts.with_location,
+        }
+    }
+
+    /// Structured formats emit the full match metadata once any detail is
+    /// requested.
+    fn structured(self) -> bool {
+        self.kind || self.location
+    }
+}
+
+/// Where a result was found, printed grep-style as `path:line:column:`.
+struct Location<'a> {
+    source: Option<&'a str>,
+    line: usize,
+    column: usize,
+}
+
+impl<'a> Location<'a> {
+    fn of(result: &'a ResultItem) -> Self {
+        Location {
+            source: result.source.as_deref(),
+            line: result.line,
+            column: result.column,
+        }
+    }
+}
+
 fn write_formatted<W: Write>(
     out: &mut W,
     results: &[ResultItem],
     format: Format,
-    with_kind: bool,
+    detail: Detail,
 ) -> io::Result<()> {
+    let with_kind = detail.structured();
     match format {
         Format::None => {}
         Format::Text => {
             for r in results {
-                write_text_result(out, r, with_kind)?;
+                let location = detail.location.then(|| Location::of(r));
+                let kind = detail.kind.then_some(r.kind);
+                write_text_line(out, location.as_ref(), kind, &r.value)?;
             }
         }
         Format::Json => {
@@ -748,16 +814,22 @@ fn write_formatted<W: Write>(
     Ok(())
 }
 
-fn write_text_result<W: Write + ?Sized>(
+fn write_text_line<W: Write + ?Sized>(
     out: &mut W,
-    result: &ResultItem,
-    with_kind: bool,
+    location: Option<&Location>,
+    kind: Option<&str>,
+    value: &str,
 ) -> io::Result<()> {
-    if with_kind {
-        writeln!(out, "{}\t{}", result.kind, result.value)
-    } else {
-        writeln!(out, "{}", result.value)
+    if let Some(location) = location {
+        if let Some(source) = location.source {
+            write!(out, "{source}:")?;
+        }
+        write!(out, "{}:{}:", location.line, location.column)?;
     }
+    if let Some(kind) = kind {
+        write!(out, "{kind}\t")?;
+    }
+    writeln!(out, "{value}")
 }
 
 fn write_json_string<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
@@ -952,10 +1024,15 @@ fn byte_column(line: &str, byte_pos: usize) -> usize {
     line[..byte_pos].chars().count() + 1
 }
 
-/// Only the structured formats ever print the column, so the char-count walk
-/// over the line prefix in [`byte_column`] is skipped everywhere else.
+/// Only locations and structured formats print the column, so the char-count
+/// walk over the line prefix in [`byte_column`] is skipped everywhere else.
 fn output_needs_column(opts: &Opts) -> bool {
-    opts.with_kind && matches!(opts.output, Format::Json | Format::Yaml | Format::Csv)
+    let needs = |format| match format {
+        Format::Text => opts.with_location,
+        Format::Json | Format::Yaml | Format::Csv => Detail::new(opts).structured(),
+        Format::None => false,
+    };
+    needs(opts.output) || (opts.copy && needs(clipboard_format(opts.output)))
 }
 
 fn apply_overlap_policy(matches: &mut Vec<Match>, precedence: Precedence) {
@@ -1072,14 +1149,11 @@ fn emit_streaming_value(
     out: &mut dyn Write,
     opts: &Opts,
     flush: bool,
+    location: Option<&Location>,
     kind: &str,
     value: &str,
 ) -> io::Result<()> {
-    if opts.with_kind {
-        writeln!(out, "{kind}\t{value}")?;
-    } else {
-        writeln!(out, "{value}")?;
-    }
+    write_text_line(out, location, opts.with_kind.then_some(kind), value)?;
     if flush {
         out.flush()?;
     }
@@ -1103,7 +1177,15 @@ fn handle_result(
     if let Some(buffer) = state.buffer.as_mut() {
         buffer.push(result);
     } else {
-        emit_streaming_value(out, opts, state.flush_streaming, result.kind, &result.value)?;
+        let location = opts.with_location.then(|| Location::of(&result));
+        emit_streaming_value(
+            out,
+            opts,
+            state.flush_streaming,
+            location.as_ref(),
+            result.kind,
+            &result.value,
+        )?;
     }
 
     Ok(opts.first)
@@ -1156,7 +1238,19 @@ fn scan_lines_sequential(
             }
             if streaming {
                 let kind = scanner.finders()[m.finder_index].id();
-                emit_streaming_value(out, opts, state.flush_streaming, kind, value)?;
+                let location = opts.with_location.then(|| Location {
+                    source,
+                    line: line_number,
+                    column: byte_column(&line, m.range.start),
+                });
+                emit_streaming_value(
+                    out,
+                    opts,
+                    state.flush_streaming,
+                    location.as_ref(),
+                    kind,
+                    value,
+                )?;
                 if opts.first {
                     return Ok(true);
                 }
@@ -1308,7 +1402,7 @@ fn finalize_results(
     }
 
     let mut formatted = Vec::new();
-    write_formatted(&mut formatted, &results, opts.output, opts.with_kind)?;
+    write_formatted(&mut formatted, &results, opts.output, Detail::new(opts))?;
     // Print before copying: on Linux the copy waits for a display server round-trip, and a
     // clipboard that is unavailable should not cost the user their results.
     out.write_all(&formatted)?;
@@ -1319,7 +1413,7 @@ fn finalize_results(
             &mut clipboard,
             &results,
             clipboard_format(opts.output),
-            opts.with_kind,
+            Detail::new(opts),
         )?;
         let text = String::from_utf8_lossy(&clipboard);
         copy_to_clipboard(&text).map_err(io::Error::other)?;
@@ -1354,14 +1448,14 @@ fn main() -> ExitCode {
 
     let opts = Opts::parse();
 
-    // Validated before the empty-finders early return so `--jobs 0` fails
-    // even when no finder flags are given.
+    // Validated before the empty-finders check so `--jobs 0` reports its own
+    // error even when no finder flags are given.
     if opts.jobs == 0 {
         eprintln!("--jobs must be >= 1");
         return ExitCode::FAILURE;
     }
 
-    let finders = match build_finders(&opts) {
+    let finders = match build_finders(&opts.finders) {
         Ok(finders) => finders,
         Err(message) => {
             // Same path clap takes for its own invalid values: usage error on
@@ -1373,7 +1467,12 @@ fn main() -> ExitCode {
     };
 
     if finders.is_empty() {
-        return ExitCode::SUCCESS;
+        let mut cmd = Opts::command();
+        cmd.error(
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "no finder selected; pass one such as --url or --email, or --all to enable every finder",
+        )
+        .exit()
     }
 
     let scanner = match Scanner::try_new(finders) {
@@ -1514,12 +1613,12 @@ mod tests {
         let mut stdout = Vec::new();
         let mut clipboard = Vec::new();
 
-        write_formatted(&mut stdout, &results, Format::None, false).unwrap();
+        write_formatted(&mut stdout, &results, Format::None, Detail::default()).unwrap();
         write_formatted(
             &mut clipboard,
             &results,
             clipboard_format(Format::None),
-            false,
+            Detail::default(),
         )
         .unwrap();
 
@@ -1557,7 +1656,7 @@ mod tests {
     #[test]
     fn hash_options_should_reject_unknown_algorithms() {
         let opts = Opts::try_parse_from(["squeeze", "--hash=md5,bogus"]).unwrap();
-        match TryInto::<Hash>::try_into(&opts) {
+        match TryInto::<Hash>::try_into(&opts.finders) {
             Err(FinderError::Invalid(message)) => assert!(message.contains("bogus")),
             _ => panic!("expected an invalid-value error"),
         }
@@ -1566,7 +1665,7 @@ mod tests {
     #[test]
     fn bare_hash_with_alias_should_stay_unrestricted() {
         let opts = Opts::try_parse_from(["squeeze", "--hash", "--md5"]).unwrap();
-        let Ok(finder) = TryInto::<Hash>::try_into(&opts) else {
+        let Ok(finder) = TryInto::<Hash>::try_into(&opts.finders) else {
             panic!("expected the hash finder to be built");
         };
         // sha1 still matches: the bare --hash means every algorithm.
