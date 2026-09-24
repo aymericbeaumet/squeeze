@@ -50,7 +50,53 @@ const SUB_DELIMS_LAX: [bool; 256] = {
     table
 };
 
-const MAX_SCHEME_LEN: usize = 32;
+/// Byte classes of the URI body, one table per mode: `PCHAR` is
+/// unreserved / sub-delims / ":" / "@" (plus ")" in lax mode), `QUERY` adds
+/// "/" and "?", `USERINFO` is unreserved / sub-delims / ":". Percent
+/// encoding is handled separately.
+const PCHAR: u8 = 1 << 0;
+const QUERY: u8 = 1 << 1;
+const USERINFO: u8 = 1 << 2;
+/// Hostname label bytes: ASCII alphanumerics, `_` and `-`.
+const LABEL: u8 = 1 << 3;
+
+const fn body_classes(strict: bool) -> [u8; 256] {
+    let mut table = [0u8; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        let c = b as u8;
+        let unreserved =
+            c.is_ascii_alphanumeric() || c == b'-' || c == b'.' || c == b'_' || c == b'~';
+        let sub_delim = if strict {
+            SUB_DELIMS_STRICT[b]
+        } else {
+            SUB_DELIMS_LAX[b]
+        };
+        let mut flags = 0u8;
+        if unreserved || sub_delim || c == b':' {
+            flags |= USERINFO;
+        }
+        if unreserved || sub_delim || c == b':' || c == b'@' || (!strict && c == b')') {
+            flags |= PCHAR;
+        }
+        if flags & PCHAR != 0 || c == b'/' || c == b'?' {
+            flags |= QUERY;
+        }
+        if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' {
+            flags |= LABEL;
+        }
+        table[b] = flags;
+        b += 1;
+    }
+    table
+}
+
+static BODY_CLASSES_STRICT: [u8; 256] = body_classes(true);
+static BODY_CLASSES_LAX: [u8; 256] = body_classes(false);
+
+// Covers every IANA-registered scheme (the longest is 36 bytes) so opaque
+// URIs using them are not truncated out of the registry lookup.
+const MAX_SCHEME_LEN: usize = 64;
 
 #[derive(Default, Clone, Copy)]
 struct SchemeConfig(u8);
@@ -85,6 +131,48 @@ impl SchemeConfigs {
     }
 }
 
+/// Whether the two bytes before a colon can end a registered scheme (ASCII
+/// case-insensitive). In lax mode an unregistered scheme needs `//` after
+/// the colon, so a colon followed by anything else can only start a URI
+/// when this says so: an O(1) rejection of every timestamp and `key:value`
+/// colon before the scheme is walked back.
+fn can_end_registered_scheme(prev2: u8, prev1: u8) -> bool {
+    static TABLE: std::sync::OnceLock<Box<[u64; 1024]>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut table = Box::new([0u64; 1024]);
+        let mut set = |a: u8, b: u8| {
+            let index = usize::from(a) << 8 | usize::from(b);
+            table[index >> 6] |= 1 << (index & 63);
+        };
+        for scheme in crate::iana::URI_SCHEMES.iter() {
+            let bytes = scheme.as_bytes();
+            match bytes {
+                [] => {}
+                [only] => {
+                    for a in 0..=255u8 {
+                        set(a, *only);
+                    }
+                }
+                [.., a, b] => set(*a, *b),
+            }
+        }
+        table
+    });
+    let index =
+        usize::from(prev2.to_ascii_lowercase()) << 8 | usize::from(prev1.to_ascii_lowercase());
+    table[index >> 6] & (1 << (index & 63)) != 0
+}
+
+fn is_registered_scheme(scheme: &str) -> bool {
+    let mut buf = [0u8; MAX_SCHEME_LEN];
+    let Some(lower) = buf.get_mut(..scheme.len()) else {
+        return false;
+    };
+    lower.copy_from_slice(scheme.as_bytes());
+    lower.make_ascii_lowercase();
+    std::str::from_utf8(lower).is_ok_and(|s| crate::iana::URI_SCHEMES.contains(s))
+}
+
 const DISALLOW_EMPTY_HOST: u8 = 1 << 0;
 
 static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
@@ -95,22 +183,25 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
 
 /// A finder that extracts URIs from text according to RFC 3986.
 ///
-/// By default, all URI schemes are matched. Use [`URI::add_scheme`] to filter
-/// by specific schemes.
+/// By default, any scheme is matched, subject to the lax-mode heuristics
+/// below. Use [`URI::add_scheme`] to filter by specific schemes.
 ///
 /// # Strict Mode
 ///
 /// By default, the finder excludes `'` characters, unbalanced trailing `)`
 /// characters (so markdown links `[text](url)` work while
 /// `…/Sport_(disambiguation)` stays intact), and trailing sentence
-/// punctuation (`.,;:!?`) from URIs. Set [`URI::strict`] to `true` to
-/// strictly follow RFC 3986.
+/// punctuation (`.,;:!?`) from URIs. It also skips prose and code that
+/// happens to parse as a URI: bare `scheme:` labels, `a::b` paths, and opaque
+/// URIs (no `//` after the colon) whose scheme is neither IANA-registered nor
+/// added with [`URI::add_scheme`]. Set [`URI::strict`] to `true` to strictly
+/// follow RFC 3986.
 #[derive(Default)]
 pub struct URI {
     schemes: Vec<String>,
-    /// When `true`, strictly follows RFC 3986 and includes trailing `'`, `)`,
-    /// and punctuation in URIs.
-    /// When `false` (default), excludes these characters for better text extraction.
+    /// When `true`, strictly follows RFC 3986: any scheme matches and
+    /// trailing `'`, `)`, and punctuation are kept.
+    /// When `false` (default), applies the text-extraction heuristics above.
     pub strict: bool,
 }
 
@@ -123,8 +214,64 @@ impl Finder for URI {
         true
     }
 
+    fn line_agnostic(&self) -> bool {
+        // Every walk stops at whitespace, which includes line terminators.
+        true
+    }
+
     fn could_trigger_at(&self, byte: u8) -> bool {
         byte == b':'
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        // `rlook_scheme` needs at least one scheme byte right before the colon.
+        Self::is_alpha(prev) || Self::is_digit(prev) || matches!(prev, b'+' | b'-' | b'.')
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        if self.strict {
+            return true;
+        }
+        // Lax mode: a second colon marks a code path, and a byte that cannot
+        // begin a hier-part, query or fragment leaves a prose-only tail.
+        next.is_ascii_alphanumeric()
+            || matches!(
+                next,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'%'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b'@'
+                    | b'/'
+                    | b'?'
+                    | b'#'
+            )
+    }
+
+    fn has_trigger_context(&self) -> bool {
+        // Lax mode without an allowlist rejects most colons from the two
+        // bytes before them; the scanner tabulates that once.
+        !self.strict && self.schemes.is_empty()
+    }
+
+    // Both mirror the first test of `try_at_colon`.
+    fn trigger_context(&self, prev2: u8, prev1: u8) -> bool {
+        self.strict || !self.schemes.is_empty() || can_end_registered_scheme(prev2, prev1)
+    }
+
+    fn trigger_context_exempt(&self, next: Option<u8>) -> bool {
+        next == Some(b'/')
     }
 
     fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
@@ -177,6 +324,25 @@ impl URI {
             return None;
         }
 
+        // Lax mode without an allowlist: anything but `//` after the colon
+        // requires a registered scheme, whose last two bytes sit right
+        // before the colon. Checked first, before any walk.
+        if !self.strict
+            && self.schemes.is_empty()
+            && input.get(colon_idx + 1) != Some(&b'/')
+            && colon_idx >= 1
+        {
+            let prev1 = input[colon_idx - 1];
+            let prev2 = if colon_idx >= 2 {
+                input[colon_idx - 2]
+            } else {
+                b' '
+            };
+            if !can_end_registered_scheme(prev2, prev1) {
+                return None;
+            }
+        }
+
         let scheme_idx = self.rlook_scheme(&input[..colon_idx])?;
         let scheme = std::str::from_utf8(&input[scheme_idx..colon_idx]).ok()?;
         // Check the scheme allowlist before parsing the rest of the URI.
@@ -186,6 +352,12 @@ impl URI {
         }
         let scheme_config = SCHEMES_CONFIGS.get_ascii_case_insensitive(scheme);
 
+        // "Self::Error", "io::Result", "db8::/32": in lax mode a second colon
+        // marks a code path or an IPv6 tail, not a URI.
+        if !self.strict && input.get(colon_idx + 1) == Some(&b':') {
+            return None;
+        }
+
         let mut idx = colon_idx + 1;
         let hier_len = self.look_hier_part(&input[idx..], scheme_config)?;
         idx += hier_len;
@@ -194,18 +366,27 @@ impl URI {
 
         if !self.strict {
             idx = Self::trim_lax(input, colon_idx, idx);
-            // A URI with an empty hier-part, or whose entire tail is
-            // punctuation, is only trusted at the start of the input or after
-            // prose (whitespace, quotes, opening brackets…). Glued to URI
-            // innards ("path/x:", "?q=x:", "a:=x:", "a:#x:.", …) it is junk —
-            // and accepting it would desynchronize trigger dispatch from
-            // slice-based find() restarts.
-            let trivial_tail = input[colon_idx + 1..idx]
+            let tail = &input[colon_idx + 1..idx];
+            // A bare "scheme:" or a punctuation-only tail is prose ("TODO:",
+            // "Note: …").
+            if tail
                 .iter()
-                .all(|&b| matches!(b, b'.' | b',' | b';' | b':' | b'!' | b'?' | b'#'));
-            if (hier_len == 0 || trivial_tail)
-                && scheme_idx > 0
-                && !Self::is_prose_delimiter(input[scheme_idx - 1])
+                .all(|&b| matches!(b, b'.' | b',' | b';' | b':' | b'!' | b'?' | b'#'))
+            {
+                return None;
+            }
+            // An empty hier-part ("magnet:?xt=…") is only trusted at the start
+            // of the input or after prose (whitespace, quotes, opening
+            // brackets…). Glued to URI innards ("?q=x:?y", "a:=x:#y", …) it is
+            // junk — and accepting it would desynchronize trigger dispatch
+            // from slice-based find() restarts.
+            if hier_len == 0 && scheme_idx > 0 && !Self::is_prose_delimiter(input[scheme_idx - 1]) {
+                return None;
+            }
+            // Without "//", "key:value", "main.rs:42" and "${VAR:-x}" parse
+            // as opaque URIs; only trust schemes the user asked for or IANA
+            // registered.
+            if self.schemes.is_empty() && !tail.starts_with(b"//") && !is_registered_scheme(scheme)
             {
                 return None;
             }
@@ -220,18 +401,21 @@ impl URI {
     fn trim_lax(input: &[u8], colon_idx: usize, mut end: usize) -> usize {
         let body_start = colon_idx + 1;
 
-        let mut depth = 0usize;
-        for (i, &b) in input[body_start..end].iter().enumerate() {
-            match b {
-                b'(' => depth += 1,
-                b')' => {
-                    if depth == 0 {
-                        end = body_start + i;
-                        break;
+        // Only a body holding ")" needs its parentheses balanced.
+        if memchr::memchr(b')', &input[body_start..end]).is_some() {
+            let mut depth = 0usize;
+            for (i, &b) in input[body_start..end].iter().enumerate() {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        if depth == 0 {
+                            end = body_start + i;
+                            break;
+                        }
+                        depth -= 1;
                     }
-                    depth -= 1;
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -362,14 +546,38 @@ impl URI {
 
     // *pchar
     fn look_segment(&self, input: &[u8]) -> usize {
+        self.look_run(input, PCHAR)
+    }
+
+    /// Length of the run of bytes in the body class `class` or
+    /// percent-encoded triples starting `input`.
+    #[inline]
+    fn look_run(&self, input: &[u8], class: u8) -> usize {
+        let table = self.body_classes();
         let mut idx = 0;
         while idx < input.len() {
-            idx += match self.look_pchar(&input[idx..]) {
-                Some(n) => n,
-                None => break,
-            };
+            let b = input[idx];
+            if table[b as usize] & class != 0 {
+                idx += 1;
+            } else if b == b'%' {
+                match self.look_pct_encoded(&input[idx..]) {
+                    Some(n) => idx += n,
+                    None => break,
+                }
+            } else {
+                break;
+            }
         }
         idx
+    }
+
+    #[inline]
+    fn body_classes(&self) -> &'static [u8; 256] {
+        if self.strict {
+            &BODY_CLASSES_STRICT
+        } else {
+            &BODY_CLASSES_LAX
+        }
     }
 
     // 1*pchar
@@ -381,13 +589,26 @@ impl URI {
     }
 
     // userinfo "@"
+    //
+    // Walks the userinfo run instead of searching for "@" first, so a host
+    // without userinfo costs its own length rather than a 256-byte search.
     fn look_userinfo_at(&self, input: &[u8]) -> Option<usize> {
-        let arobase_idx = input.iter().take(256).position(|&b| b == b'@')?;
-        if self.is_userinfo(&input[..arobase_idx]) {
-            Some(arobase_idx + 1)
-        } else {
-            None
+        let table = self.body_classes();
+        let mut idx = 0;
+        while idx < input.len() && idx < 256 {
+            let b = input[idx];
+            if b == b'@' {
+                return Some(idx + 1);
+            }
+            if table[b as usize] & USERINFO != 0 {
+                idx += 1;
+            } else if b == b'%' {
+                idx += self.look_pct_encoded(&input[idx..])?;
+            } else {
+                return None;
+            }
         }
+        None
     }
 
     // IP-literal / IPv4address / reg-name
@@ -602,10 +823,13 @@ impl URI {
         if !starts {
             return 0;
         }
-        input
-            .iter()
-            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            .count()
+        // Both modes share the label class.
+        let table = &BODY_CLASSES_LAX;
+        let mut len = 1;
+        while len < input.len() && table[input[len] as usize] & LABEL != 0 {
+            len += 1;
+        }
+        len
     }
 
     // *DIGIT
@@ -622,20 +846,7 @@ impl URI {
 
     // *( pchar / "/" / "?" )
     fn look_query(&self, input: &[u8]) -> usize {
-        let mut idx = 0;
-        while idx < input.len() {
-            let b = input[idx];
-            if b == b'/' || b == b'?' {
-                idx += 1;
-                continue;
-            }
-            if let Some(i) = self.look_pchar(&input[idx..]) {
-                idx += i;
-                continue;
-            }
-            break;
-        }
-        idx
+        self.look_run(input, QUERY)
     }
 
     fn look_sharp_fragment(&self, input: &[u8]) -> Option<usize> {
@@ -647,41 +858,7 @@ impl URI {
 
     // *( pchar / "/" / "?" )
     fn look_fragment(&self, input: &[u8]) -> usize {
-        let mut idx = 0;
-        while idx < input.len() {
-            let b = input[idx];
-            if b == b'/' || b == b'?' {
-                idx += 1;
-                continue;
-            }
-            if let Some(i) = self.look_pchar(&input[idx..]) {
-                idx += i;
-                continue;
-            }
-            break;
-        }
-        idx
-    }
-
-    // unreserved / pct-encoded / sub-delims / ":" / "@"
-    //
-    // In lax mode ")" is additionally accepted at pchar positions (path,
-    // query, fragment) so that balanced parentheses survive; any unmatched
-    // ")" is cut afterwards by `trim_lax`. Userinfo keeps rejecting it.
-    #[inline]
-    fn look_pchar(&self, input: &[u8]) -> Option<usize> {
-        if !input.is_empty() {
-            let b = input[0];
-            if Self::is_unreserved(b)
-                || self.is_sub_delim(b)
-                || b == b':'
-                || b == b'@'
-                || (!self.strict && b == b')')
-            {
-                return Some(1);
-            }
-        }
-        self.look_pct_encoded(input)
+        self.look_run(input, QUERY)
     }
 
     // "%" HEXDIG HEXDIG
@@ -761,38 +938,10 @@ impl URI {
         }
     }
 
-    // *( unreserved / pct-encoded / sub-delims / ":" )
-    fn is_userinfo(&self, input: &[u8]) -> bool {
-        let mut idx = 0;
-        while idx < input.len() {
-            let c = input[idx];
-            if Self::is_unreserved(c) || self.is_sub_delim(c) || c == b':' {
-                idx += 1;
-                continue;
-            }
-            if let Some(i) = self.look_pct_encoded(&input[idx..]) {
-                idx += i;
-                continue;
-            }
-            return false;
-        }
-        true
-    }
-
     // ALPHA / DIGIT / "-" / "." / "_" / "~"
     #[inline]
     fn is_unreserved(c: u8) -> bool {
         c.is_ascii_alphanumeric() || c == b'-' || c == b'.' || c == b'_' || c == b'~'
-    }
-
-    // "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
-    #[inline]
-    fn is_sub_delim(&self, c: u8) -> bool {
-        if self.strict {
-            SUB_DELIMS_STRICT[c as usize]
-        } else {
-            SUB_DELIMS_LAX[c as usize]
-        }
     }
 
     #[inline]
@@ -936,8 +1085,6 @@ mod tests {
             "http://[2001:0db8:85a3:0000:0000:8a2e:0370:7334]",
             "http://[::ffff:192.0.2.128]",
             "http://[::ffff:c000:0280]",
-            // scheme only
-            "foobar:",
             // rfc examples
             "file:///etc/hosts",
             "http://localhost/",
@@ -1561,9 +1708,26 @@ mod tests {
     }
 
     #[test]
+    fn registered_schemes_should_fit_the_scheme_lookback() {
+        for scheme in crate::iana::URI_SCHEMES.iter() {
+            assert!(scheme.len() <= MAX_SCHEME_LEN, "{scheme}");
+        }
+    }
+
+    #[test]
+    fn find_should_keep_long_registered_opaque_uris() {
+        let finder = URI::default();
+        let input = "open microsoft.windows.camera.multipicker:photo now";
+        assert_eq!(
+            Some("microsoft.windows.camera.multipicker:photo"),
+            finder.find(input).map(|r| &input[r])
+        );
+    }
+
+    #[test]
     fn rlook_scheme_exceeds_cap() {
         let finder = URI::default();
-        let scheme = "a".repeat(40);
+        let scheme = "a".repeat(MAX_SCHEME_LEN + 8);
         let input = format!("{}://host", scheme);
         // Scheme longer than MAX_SCHEME_LEN gets truncated, but the URI
         // is still found with a shorter scheme prefix

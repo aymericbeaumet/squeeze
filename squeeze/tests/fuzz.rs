@@ -160,6 +160,18 @@ proptest! {
     }
 
     #[test]
+    fn domain_trigger_consistent(
+        s in "( |\\.|\\.\\.|@|/|:|-|_|\\(|\\)|,|[a-z]{1,4}|[0-9]{1,3}|com|org|uk|co\\.uk|museum|x|example\\.com|user@|https?://|bücher|ü|ß|日本|😀|\\+tag|first\\.last|192\\.168\\.1\\.1|v2){0,14}"
+    ) {
+        check_dispatch_consistency(Box::new(squeeze::domain::Domain::default()), &s);
+    }
+
+    #[test]
+    fn domain_trigger_consistent_on_arbitrary_input(s in "\\PC{0,80}") {
+        check_dispatch_consistency(Box::new(squeeze::domain::Domain::default()), &s);
+    }
+
+    #[test]
     fn color_dispatch_consistent(s in "[#a-fA-F0-9rgbhslRGBHSL() ,%.]{0,100}") {
         check_dispatch_consistency(Box::new(squeeze::color::Color::default()), &s);
     }
@@ -739,5 +751,701 @@ fn dispatch_consistent_cidr_known() {
     ];
     for input in &cases {
         check_dispatch_consistency(Box::new(squeeze::cidr::Cidr::default()), input);
+    }
+}
+
+/// Every dispatch finder, including the ones the scanner-level suites leave
+/// out, so the gate contract is checked for the complete set.
+fn dispatch_finders() -> Vec<Box<dyn Finder>> {
+    let mut hash = squeeze::hash::Hash::default();
+    for algorithm in ["md5", "sha1", "sha256", "sha512"] {
+        assert!(hash.add_algorithm(algorithm));
+    }
+    vec![
+        Box::new(squeeze::cidr::Cidr::default()),
+        Box::new(squeeze::color::Color::default()),
+        Box::new(squeeze::datetime::Datetime::default()),
+        Box::new(squeeze::emoji::Emoji::default()),
+        Box::new(squeeze::env::Env::default()),
+        Box::new(squeeze::handle::Handle::default()),
+        Box::new(hash),
+        Box::new(squeeze::ip::Ip::default()),
+        Box::new(squeeze::ip::Ip {
+            ipv4: true,
+            ipv6: false,
+        }),
+        Box::new(squeeze::ip::Ip {
+            ipv4: false,
+            ipv6: true,
+        }),
+        Box::new(squeeze::json::Json::default()),
+        Box::new(squeeze::jwt::Jwt::default()),
+        Box::new(squeeze::mac::Mac::default()),
+        Box::new(squeeze::path::Path::default()),
+        Box::new(squeeze::semver::Semver::default()),
+        Box::new(squeeze::uuid::Uuid::default()),
+        Box::new(squeeze::email::Email::default()),
+        Box::new(squeeze::uri::URI::default()),
+        Box::new({
+            let mut strict = squeeze::uri::URI::default();
+            strict.strict = true;
+            strict
+        }),
+    ]
+}
+
+/// The scanner skips `try_at` wherever a gate says no, so a gate that is
+/// stricter than its finder would silently lose matches. Check the contract
+/// at every position of the input, whatever the scanner would have done.
+fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
+    let input = line.as_bytes();
+    for finder in finders {
+        let trigger = finder.triggerable();
+        assert!(finder.dispatchable() || trigger);
+        for pos in 0..input.len() {
+            let cur = input[pos];
+            if trigger {
+                if !finder.could_trigger_at(cur) {
+                    continue;
+                }
+                let rules = finder.run_rules();
+                let prev1 = if pos > 0 { input[pos - 1] } else { b' ' };
+                let prev2 = if pos > 1 { input[pos - 2] } else { b' ' };
+                let gated = (pos > 0 && !finder.could_start_after(input[pos - 1], cur))
+                    || (pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]))
+                    || (finder.has_trigger_context()
+                        && !finder.trigger_context_exempt(input.get(pos + 1).copied())
+                        && !finder.trigger_context(prev2, prev1))
+                    || !squeeze::RunRule::allow(
+                        &rules,
+                        cur,
+                        &squeeze::Runs::at(input, pos),
+                        input,
+                        pos,
+                    );
+                if gated {
+                    assert_eq!(
+                        finder.try_trigger_at(input, pos),
+                        None,
+                        "{} trigger gate rejected {line:?} at {pos} but try_trigger_at matched",
+                        finder.id()
+                    );
+                }
+                continue;
+            }
+            if !finder.could_start_at(cur) {
+                continue;
+            }
+            let gated_prev = pos > 0 && !finder.could_start_after(input[pos - 1], cur);
+            let gated_next =
+                pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]);
+            let rules = finder.run_rules();
+            let gated_run =
+                !squeeze::RunRule::allow(&rules, cur, &squeeze::Runs::at(input, pos), input, pos);
+            if gated_prev || gated_next || gated_run {
+                assert_eq!(
+                    finder.try_at(input, pos),
+                    None,
+                    "{} gate rejected {line:?} at {pos} (prev gate: {gated_prev}, next gate: {gated_next}, run gate: {gated_run}) but try_at matched",
+                    finder.id()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn dispatch_gates_hold_on_shaped_tokens() {
+    for line in [
+        "fe80::1%eth0",
+        "a::b ",
+        "a::b)",
+        "a:b:: x",
+        "a:b::c/64",
+        "1:2:3:4:5:6:7:8",
+        "1::",
+        "12:34:56 ",
+        "12:34",
+        "3.14 ",
+        "1.2.3.4",
+        "10.0.0.0/8",
+        "2001:db8::/32",
+        "2024-01-15T10:00:00Z",
+        "1.2.3-rc.1",
+        "aa:bb:cc:dd:ee:ff",
+        "aaaa.bbbb.cccc",
+        "123-456-7890",
+        "123.456.7890",
+        "١٢٣-456-7890",
+        "12٣-456-7890",
+        "123-٤٥٦-7890",
+        "123-45٦-7890",
+        "123-456-٧٨٩٠",
+        "123-456-78٩0",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ] {
+        assert_gates_agree(&dispatch_finders(), line);
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_dense_input(
+        s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ %?!,;*&-]{0,48}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_shaped_tokens(
+        s in "( |-|\\.|:|/|x|[0-9]{1,4}|[0-9]{3}-[0-9]{3}-[0-9]{4}|[0-9]{3}\\.[0-9]{3}\\.[0-9]{4}|[0-9]{3}-[0-9]{3}-[٠-٩]{4}|[0-9]{3}-[٠-٩][0-9]{2}-[0-9]{4}|١٢٣-456-7890|12٣-456-7890|123-٤٥٦-7890|123-45٦-7890|123-456-٧٨٩٠|123-456-78٩0|\\+1 415 555 1234|\\(415\\) 555-1234|[0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){1,7}|a::b|a:b::|::1|1::|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}([:-][0-9A-F]{2}){5}|[0-9A-F]{4}(\\.[0-9A-F]{4}){2}|20[0-9]{2}-[01][0-9]-[0-3][0-9]|v?[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}|3\\.14|12:34:56|12:34|10\\.0\\.0\\.0/8|2001:db8::/32){0,10}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_word_tokens(
+        s in "( |:|\\(|\\)|-|_|é|ü|TODO|todo|Todo|FIXME|fixme|BUG|bug|XXX|\\?\\?\\?|!!!|NOTE|REF|STATUS|ſtatus|HAC\u{212A}|hack|FR|fr|vim|VIM|vi|ex|EX|vim700|vim<702|vim=703|set|ts=4|rgb|RGB|hsl|rgba|hsla|#fff|#a1b2c3|255|0\\.5|%|[a-z]{1,5}|[A-Z]{1,4}|[0-9]{1,3}|[a-z]{2,4}\\(|[a-z]{2,4}:){0,12}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_long_runs(
+        s in "( |-|:|\\.|/|x|[0-9a-f]{28,45}|[0-9a-f]{60,70}|[0-9a-f]{125,135}|[0-9]{1,5}|[0-9]{126,132}){1,6}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_structured_input(
+        s in "( |\\.|:|/|@|-|_|[a-z]{1,4}|v?[0-9]{1,4}|0x[0-9a-f]{2,8}|#[0-9a-fA-F]{3,8}|rgb\\([0-9, ]{5,11}\\)|\\$\\{?[A-Z_]{1,6}\\}?|eyJ[a-zA-Z0-9_-]{2,10}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}(:[0-9A-F]{2}){5}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z?)?|[0-9a-f]{32}|[0-9a-f]{40}|[0-9]️⃣|#️⃣|😀|🎉|©|~/[a-z]{1,4}|\\./[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|\\{\"[a-z]{1,3}\": [0-9]{1,3}\\}|\\[[0-9, ]{0,6}\\]){0,12}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_arbitrary_input(s in "\\PC{0,40}") {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+}
+
+/// One scanner per strategy and backend, built once: constructing the gate
+/// tables is far more expensive than a scan, especially in debug builds.
+fn strategy_scanners() -> &'static [Scanner] {
+    static SCANNERS: std::sync::OnceLock<Vec<Scanner>> = std::sync::OnceLock::new();
+    SCANNERS.get_or_init(|| {
+        let mut scanners = Vec::new();
+        for &strategy in squeeze::scanner::Strategy::ALL {
+            for scalar in [false, true] {
+                let mut scanner = Scanner::new(all_finders());
+                scanner.set_strategy(strategy);
+                if scalar {
+                    scanner.use_scalar_backend();
+                }
+                scanners.push(scanner);
+            }
+        }
+        scanners
+    })
+}
+
+/// Strategies and backends must agree byte for byte: the vector stage may
+/// only ever add candidates that the exact gates then reject.
+fn assert_strategies_agree(line: &str) {
+    let scanners = strategy_scanners();
+    let reference = scanners[0].scan_line(line);
+    assert_eq!(scanners[0].strategy(), squeeze::scanner::Strategy::Legacy);
+    for scanner in scanners {
+        let got = scanner.scan_line(line);
+        assert_eq!(
+            got,
+            reference,
+            "{} ({}) disagrees with legacy on {line:?}",
+            scanner.strategy().name(),
+            scanner.backend()
+        );
+        let first = scanner.scan_line_first(line);
+        assert_eq!(first, reference.first().cloned(), "first match on {line:?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn strategies_agree_on_dense_input(
+        s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ -]{0,70}"
+    ) {
+        assert_strategies_agree(&s);
+    }
+
+    #[test]
+    fn strategies_agree_on_structured_input(
+        s in "( |\\.|:|/|@|-|_|[a-z]{1,4}|v?[0-9]{1,4}|0x[0-9a-f]{2,8}|#[0-9a-fA-F]{3,8}|rgb\\([0-9, ]{5,11}\\)|\\$\\{?[A-Z_]{1,6}\\}?|eyJ[a-zA-Z0-9_-]{2,10}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}(:[0-9A-F]{2}){5}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z?)?|[0-9a-f]{32}|[0-9a-f]{40}|[0-9]️⃣|#️⃣|😀|🎉|©|~/[a-z]{1,4}|\\./[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|\\{\"[a-z]{1,3}\": [0-9]{1,3}\\}|\\[[0-9, ]{0,6}\\]|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|TODO: |vim: set ts=4:|\\+1-415-555-[0-9]{4}){0,14}"
+    ) {
+        assert_strategies_agree(&s);
+    }
+
+    #[test]
+    fn strategies_agree_on_arbitrary_input(s in "\\PC{0,50}") {
+        assert_strategies_agree(&s);
+    }
+}
+
+#[test]
+fn strategies_agree_around_block_boundaries() {
+    // Matches straddling or touching 16-byte block edges, at every offset.
+    let items = [
+        "5d41402abc4b2a76b9719d911017c592",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "https://example.com/a",
+        "user@example.com",
+        "192.168.1.1",
+        "2024-01-15T10:30:00Z",
+        "$HOME",
+        "#ff00aa",
+        "./src/main.rs",
+        "1️⃣",
+        "😀",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+        "00:1A:2B:3C:4D:5E",
+        "v1.2.3",
+        "{\"a\": 1}",
+    ];
+    for item in items {
+        for pad in 0..40 {
+            let line = format!("{}{item}{}", "x".repeat(pad), " tail".repeat(pad % 3));
+            assert_strategies_agree(&line);
+            let line = format!("{}{item}", " ".repeat(pad));
+            assert_strategies_agree(&line);
+        }
+    }
+}
+
+/// `scan_buffer` must report exactly what `scan_line` reports for every
+/// line of the buffer, with line offsets, terminators and `\r`s handled
+/// as the CLI's per-line path does.
+fn assert_buffer_agrees(text: &str) {
+    let scanners = strategy_scanners();
+    let reference = &scanners[0]; // legacy, per line
+    let mut expected = Vec::new();
+    let mut pos = 0;
+    let bytes = text.as_bytes();
+    while pos < bytes.len() {
+        let nl = bytes[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| pos + i);
+        let mut end = nl;
+        while end > pos && bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let matches = reference.scan_line(&text[pos..end]);
+        if !matches.is_empty() {
+            expected.push((pos, end, matches));
+        }
+        pos = nl + 1;
+    }
+    for scanner in scanners {
+        let mut got = Vec::new();
+        let stopped = scanner.scan_buffer(text, |start, end, matches| {
+            got.push((start, end, matches.to_vec()));
+            false
+        });
+        assert!(!stopped);
+        assert_eq!(
+            got,
+            expected,
+            "{} ({}) scan_buffer disagrees with per-line scanning on {text:?}",
+            scanner.strategy().name(),
+            scanner.backend()
+        );
+        // Stopping after the first emitted line.
+        if let Some(first) = expected.first() {
+            let mut seen = Vec::new();
+            let stopped = scanner.scan_buffer(text, |start, end, matches| {
+                seen.push((start, end, matches.to_vec()));
+                true
+            });
+            assert!(stopped);
+            assert_eq!(seen, vec![first.clone()]);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn scan_buffer_agrees_with_per_line_scanning(
+        lines in proptest::collection::vec(
+            "( |\\.|:|/|@|-|_|\r|[a-z]{1,4}|v?[0-9]{1,4}|0x[0-9a-f]{2,8}|#[0-9a-fA-F]{3,8}|\\$\\{?[A-Z_]{1,6}\\}?|eyJ[a-zA-Z0-9_-]{2,10}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}(:[0-9A-F]{2}){5}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z?)?|[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|😀|©|~/[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|\\{\"[a-z]{1,3}\": [0-9]{1,3}\\}|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|TODO: |vim: set ts=4:|\\+1-415-555-[0-9]{4}){0,10}",
+            0..8
+        ),
+        crlf in proptest::bool::ANY,
+        trailing_newline in proptest::bool::ANY,
+    ) {
+        let sep = if crlf { "\r\n" } else { "\n" };
+        let mut text = lines.join(sep);
+        if trailing_newline {
+            text.push_str(sep);
+        }
+        assert_buffer_agrees(&text);
+    }
+
+    #[test]
+    fn scan_buffer_agrees_on_arbitrary_input(s in "(\\PC|\n|\r){0,120}") {
+        assert_buffer_agrees(&s);
+        assert_sparse_buffers_agree(&s);
+    }
+
+    #[test]
+    fn sparse_scan_buffer_agrees_on_structured_lines(
+        lines in proptest::collection::vec(
+            "( |:|/|@|\\.|-|\r|[a-z]{1,4}|[0-9]{1,4}|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|mailto:[a-z]{2,5}@[a-z]{2,5}\\.com|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\$\\{?[A-Z_]{1,6}\\}?|~/[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|[0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}){0,10}",
+            0..8
+        ),
+        crlf in proptest::bool::ANY,
+    ) {
+        let sep = if crlf { "\r\n" } else { "\n" };
+        let text = lines.join(sep);
+        assert_sparse_buffers_agree(&text);
+    }
+}
+
+#[test]
+fn scan_buffer_handles_edges() {
+    for text in [
+        "",
+        "\n",
+        "\r\n\r\n",
+        "a@b.co",
+        "a@b.co\n",
+        "\na@b.co",
+        "x\n\n5d41402abc4b2a76b9719d911017c592\r\n\nhttps://e.com\n",
+        "550e8400-e29b-41d4-a716-446655440000\n192.168.1.1\n$HOME\n",
+        &format!("{}\n{}", "1".repeat(200), "a@b.co ".repeat(40)),
+        &format!("{}\r\nend@x.io", "deadbeef".repeat(20)),
+    ] {
+        assert_buffer_agrees(text);
+    }
+}
+
+/// Anchor contract: every dispatch match contains an anchor byte, reached
+/// from the match start over `walk` bytes only.
+fn assert_anchors_hold(finders: &[Box<dyn Finder>], line: &str) {
+    let input = line.as_bytes();
+    for finder in finders {
+        let Some(anchor) = finder.anchor() else {
+            continue;
+        };
+        for pos in 0..input.len() {
+            if !finder.could_start_at(input[pos]) {
+                continue;
+            }
+            if let Some(range) = finder.try_at(input, pos) {
+                let first = range
+                    .clone()
+                    .find(|&i| anchor.bytes.contains(input[i]))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} match {:?} in {line:?} has no anchor byte",
+                            finder.id(),
+                            range
+                        )
+                    });
+                for (i, &b) in input.iter().enumerate().take(first).skip(range.start) {
+                    assert!(
+                        anchor.walk.contains(b),
+                        "{} match {:?} in {line:?}: byte {i} before the anchor is not a walk byte",
+                        finder.id(),
+                        range
+                    );
+                }
+                if let Some(back) = anchor.back {
+                    assert_eq!(
+                        first - range.start,
+                        back as usize,
+                        "{} match {:?} in {line:?}: first anchor is not {back} bytes in",
+                        finder.id(),
+                        range
+                    );
+                }
+                if let Some(check) = anchor
+                    .checks
+                    .iter()
+                    .flatten()
+                    .find(|check| check.anchors.contains(input[first]))
+                {
+                    let seen = check.offsets().iter().any(|&offset| {
+                        input
+                            .get(first + offset as usize)
+                            .is_some_and(|&b| check.bytes.contains(b))
+                    });
+                    assert!(
+                        seen,
+                        "{} match {:?} in {line:?}: no confirming byte at {:?} after the first anchor",
+                        finder.id(),
+                        range,
+                        check.offsets()
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Every anchored finder scanned alone uses the anchor plan; it must agree
+/// with the plain dispatch walk of the legacy strategy.
+fn anchored_pairs() -> &'static [(Scanner, Scanner)] {
+    static PAIRS: std::sync::OnceLock<Vec<(Scanner, Scanner)>> = std::sync::OnceLock::new();
+    PAIRS.get_or_init(|| {
+        let singles: Vec<Box<dyn Fn() -> Box<dyn Finder>>> = vec![
+            Box::new(|| Box::new(squeeze::uuid::Uuid::default())),
+            Box::new(|| Box::new(squeeze::ip::Ip::default())),
+            Box::new(|| {
+                Box::new(squeeze::ip::Ip {
+                    ipv4: true,
+                    ipv6: false,
+                })
+            }),
+            Box::new(|| {
+                Box::new(squeeze::ip::Ip {
+                    ipv4: false,
+                    ipv6: true,
+                })
+            }),
+            Box::new(|| Box::new(squeeze::cidr::Cidr::default())),
+            Box::new(|| Box::new(squeeze::datetime::Datetime::default())),
+            Box::new(|| Box::new(squeeze::semver::Semver::default())),
+            Box::new(|| Box::new(squeeze::mac::Mac::default())),
+            Box::new(|| Box::new(squeeze::color::Color::default())),
+        ];
+        let mut pairs = Vec::new();
+        for make in &singles {
+            let anchored = Scanner::new(vec![make()]);
+            assert!(
+                anchored.plan().starts_with("anchors("),
+                "{}: {}",
+                anchored.finders()[0].id(),
+                anchored.plan()
+            );
+            let _ = &anchored;
+            let mut legacy = Scanner::new(vec![make()]);
+            legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+            pairs.push((anchored, legacy));
+        }
+        // Block-plan scanners with a minimum hex run: hash alone, and a
+        // single algorithm.
+        for make in [
+            (|| Box::new(squeeze::hash::Hash::default()) as Box<dyn Finder>)
+                as fn() -> Box<dyn Finder>,
+            || {
+                let mut hash = squeeze::hash::Hash::default();
+                assert!(hash.add_algorithm("sha256"));
+                Box::new(hash)
+            },
+            || {
+                let mut hash = squeeze::hash::Hash::default();
+                assert!(hash.add_algorithm("md5"));
+                Box::new(hash)
+            },
+        ] {
+            let fast = Scanner::new(vec![make()]);
+            assert_eq!(fast.plan(), "blocks");
+            let mut legacy = Scanner::new(vec![make()]);
+            legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+            pairs.push((fast, legacy));
+        }
+        // Two anchored finders together, and an anchored finder with a trigger one.
+        let mut legacy = Scanner::new(vec![
+            Box::new(squeeze::datetime::Datetime::default()),
+            Box::new(squeeze::ip::Ip::default()),
+        ]);
+        legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+        pairs.push((
+            Scanner::new(vec![
+                Box::new(squeeze::datetime::Datetime::default()),
+                Box::new(squeeze::ip::Ip::default()),
+            ]),
+            legacy,
+        ));
+        let mut legacy = Scanner::new(vec![
+            Box::new(squeeze::uuid::Uuid::default()),
+            Box::new(squeeze::email::Email::default()),
+        ]);
+        legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+        pairs.push((
+            Scanner::new(vec![
+                Box::new(squeeze::uuid::Uuid::default()),
+                Box::new(squeeze::email::Email::default()),
+            ]),
+            legacy,
+        ));
+        pairs
+    })
+}
+
+/// Scanners that walk whole buffers (memchr passes, line-agnostic finders
+/// probed with absolute positions, block passes resolving lines lazily)
+/// must agree with per-line scanning.
+fn assert_sparse_buffers_agree(text: &str) {
+    let scanners = buffer_scanners();
+    for (fast, legacy) in scanners {
+        let mut expected = Vec::new();
+        let bytes = text.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let nl = bytes[pos..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(bytes.len(), |i| pos + i);
+            let mut end = nl;
+            while end > pos && bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+            let matches = legacy.scan_line(&text[pos..end]);
+            if !matches.is_empty() {
+                expected.push((pos, end, matches));
+            }
+            pos = nl + 1;
+        }
+        let mut got = Vec::new();
+        fast.scan_buffer(text, |s, e, m| {
+            got.push((s, e, m.to_vec()));
+            false
+        });
+        assert_eq!(
+            got,
+            expected,
+            "{} plan for {:?} disagrees with per-line scanning on {text:?}",
+            fast.plan(),
+            fast.finders().iter().map(|f| f.id()).collect::<Vec<_>>()
+        );
+    }
+}
+
+fn buffer_scanners() -> &'static [(Scanner, Scanner)] {
+    static PAIRS: std::sync::OnceLock<Vec<(Scanner, Scanner)>> = std::sync::OnceLock::new();
+    PAIRS.get_or_init(|| {
+        type Make = Box<dyn Fn() -> Vec<Box<dyn Finder>>>;
+        let mut sets: Vec<Make> = vec![
+            Box::new(|| vec![Box::new(squeeze::ip::Ip::default())]),
+            Box::new(|| vec![Box::new(squeeze::cidr::Cidr::default())]),
+            Box::new(|| vec![Box::new(squeeze::datetime::Datetime::default())]),
+            Box::new(|| vec![Box::new(squeeze::semver::Semver::default())]),
+            Box::new(|| vec![Box::new(squeeze::mac::Mac::default())]),
+            Box::new(|| vec![Box::new(squeeze::color::Color::default())]),
+            Box::new(|| vec![Box::new(squeeze::handle::Handle::default())]),
+            Box::new(|| vec![Box::new(squeeze::jwt::Jwt::default())]),
+            Box::new(|| vec![Box::new(squeeze::emoji::Emoji::default())]),
+            Box::new(|| {
+                let mut hash = squeeze::hash::Hash::default();
+                for algorithm in ["md5", "sha1", "sha256", "sha512"] {
+                    assert!(hash.add_algorithm(algorithm));
+                }
+                vec![Box::new(hash)]
+            }),
+            Box::new(|| {
+                let mut hash = squeeze::hash::Hash::default();
+                assert!(hash.add_algorithm("sha256"));
+                vec![
+                    Box::new(hash),
+                    Box::new(squeeze::uuid::Uuid::default()),
+                    Box::new(squeeze::uri::URI::default()),
+                    Box::new(squeeze::email::Email::default()),
+                    Box::new(squeeze::ip::Ip::default()),
+                ]
+            }),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::json::Json::default()),
+                    Box::new(squeeze::uuid::Uuid::default()),
+                    Box::new(squeeze::phone::Phone::default()),
+                ]
+            }),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::path::Path::default()),
+                    Box::new(squeeze::env::Env::default()),
+                    Box::new(squeeze::handle::Handle::default()),
+                    Box::new(squeeze::mac::Mac::default()),
+                ]
+            }),
+        ];
+        sets.extend::<Vec<Make>>(vec![
+            Box::new(|| vec![Box::new(squeeze::uri::URI::default())]),
+            Box::new(|| vec![Box::new(squeeze::email::Email::default())]),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::uri::URI::default()),
+                    Box::new(squeeze::email::Email::default()),
+                ]
+            }),
+            Box::new(|| vec![Box::new(squeeze::uuid::Uuid::default())]),
+            Box::new(|| vec![Box::new(squeeze::env::Env::default())]),
+            Box::new(|| vec![Box::new(squeeze::path::Path::default())]),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::ip::Ip::default()),
+                    Box::new(squeeze::email::Email::default()),
+                ]
+            }),
+        ]);
+        sets.iter()
+            .map(|make| {
+                let fast = Scanner::new(make());
+                let mut legacy = Scanner::new(make());
+                legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+                (fast, legacy)
+            })
+            .collect()
+    })
+}
+
+fn assert_anchored_agree(line: &str) {
+    for (anchored, legacy) in anchored_pairs() {
+        assert_eq!(
+            anchored.scan_line(line),
+            legacy.scan_line(line),
+            "anchor plan for {} disagrees on {line:?}",
+            anchored.finders()[0].id()
+        );
+        assert_eq!(anchored.scan_line_first(line), legacy.scan_line_first(line));
+        let mut buffered = Vec::new();
+        anchored.scan_buffer(line, |s, e, m| {
+            buffered.push((s, e, m.to_vec()));
+            false
+        });
+        let expected: Vec<_> = {
+            let m = legacy.scan_line(line);
+            if m.is_empty() {
+                Vec::new()
+            } else {
+                vec![(0, line.len(), m)]
+            }
+        };
+        assert_eq!(buffered, expected, "anchored scan_buffer on {line:?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn anchors_hold_on_structured_input(
+        s in "( |\\.|:|/|@|-|_|\\[|\\]|v|#|\\(|\\)|rgb|hsl|[a-z]{1,4}|[0-9]{1,4}|[0-9a-f]{1,8}|[0-9a-f]{30,34}|[0-9a-f]{38,42}|[0-9a-f]{62,66}|x[0-9a-f]{32}|[0-9a-f]{16}x[0-9a-f]{16}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}(/[0-9]{1,3})?|::ffff:[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,3})?|\\[[0-9a-f:]{2,12}\\](/[0-9]{1,3})?|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}([:-][0-9A-F]{2}){5}|[0-9A-F]{4}(\\.[0-9A-F]{4}){2}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,3})?Z?)?|v?[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}(-[a-z0-9.]{1,6})?(\\+[a-z0-9.]{1,6})?|#[0-9a-fA-F]{3,8}|rgba?\\([0-9, .%]{5,14}\\)|hsla?\\([0-9, .%]{5,14}\\)|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)){0,12}"
+    ) {
+        assert_anchors_hold(&dispatch_finders(), &s);
+        assert_anchored_agree(&s);
+    }
+
+    #[test]
+    fn anchors_hold_on_arbitrary_input(s in "\\PC{0,50}") {
+        assert_anchors_hold(&dispatch_finders(), &s);
+        assert_anchored_agree(&s);
     }
 }

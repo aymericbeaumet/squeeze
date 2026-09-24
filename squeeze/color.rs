@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -92,6 +92,12 @@ impl Color {
 }
 
 impl Finder for Color {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "color"
     }
@@ -102,6 +108,30 @@ impl Finder for Color {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte == b'#' || matches!(byte, b'r' | b'R' | b'h' | b'H')
+    }
+
+    fn could_start_after(&self, prev: u8, cur: u8) -> bool {
+        cur == b'#' || !prev.is_ascii_alphanumeric()
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        match cur {
+            b'#' => Self::is_hex(next),
+            b'r' | b'R' => next.eq_ignore_ascii_case(&b'g'),
+            _ => next.eq_ignore_ascii_case(&b's'),
+        }
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `rgb(`, `rgba(`, `hsl(`, `hsla(`; `#` starts are not word bytes.
+        vec![RunRule::new(RunClass::Word, 3, 4).followed_by(b"(")]
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor::new(
+            ByteSet::from_bytes(b"#("),
+            ByteSet::from_fn(|b| b.is_ascii_alphabetic()),
+        ))
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

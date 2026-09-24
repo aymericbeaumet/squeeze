@@ -42,6 +42,8 @@ impl Env {
                     depth -= 1;
                     i += 1;
                 }
+                // An expression never spans lines.
+                b'\n' | b'\r' => return None,
                 _ => i += 1,
             }
         }
@@ -87,6 +89,12 @@ impl Env {
 }
 
 impl Finder for Env {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "env"
     }
@@ -97,6 +105,10 @@ impl Finder for Env {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte == b'$'
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next == b'{' || Self::is_name_start(next)
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

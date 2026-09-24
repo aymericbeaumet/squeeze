@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -9,31 +9,69 @@ impl Uuid {
         b.is_ascii_hexdigit()
     }
 
+    /// Whether the 36 bytes at `start` are `8-4-4-4-12` hex groups.
     fn check_pattern(input: &[u8], start: usize) -> bool {
-        if start + 36 > input.len() {
+        let Some(bytes) = input.get(start..start + 36) else {
             return false;
+        };
+        let bytes: &[u8; 36] = bytes.try_into().expect("36 bytes");
+        #[cfg(target_arch = "aarch64")]
+        {
+            Self::check_pattern_neon(bytes)
         }
-        let groups = [8, 4, 4, 4, 12];
-        let mut pos = start;
-        for (i, &len) in groups.iter().enumerate() {
-            if i > 0 {
-                if input[pos] != b'-' {
-                    return false;
-                }
-                pos += 1;
-            }
-            for _ in 0..len {
-                if !Self::is_hex(input[pos]) {
-                    return false;
-                }
-                pos += 1;
-            }
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            Self::check_pattern_scalar(bytes)
         }
-        true
+    }
+
+    #[cfg(any(test, not(target_arch = "aarch64")))]
+    fn check_pattern_scalar(bytes: &[u8; 36]) -> bool {
+        bytes.iter().enumerate().all(|(i, &b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => Self::is_hex(b),
+        })
+    }
+
+    /// The same test on two 16-byte vectors and a 4-byte tail: every byte
+    /// is a hex digit except the dashes at 8, 13, 18 and 23.
+    #[cfg(target_arch = "aarch64")]
+    fn check_pattern_neon(bytes: &[u8; 36]) -> bool {
+        use core::arch::aarch64::*;
+        // Dash positions within each 16-byte block: 8, 13 | 18, 23.
+        const DASHES_LO: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0, 0, 0, 0, 0xFF, 0, 0];
+        const DASHES_HI: [u8; 16] = [0, 0, 0xFF, 0, 0, 0, 0, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0];
+        // SAFETY: NEON is part of the aarch64 baseline; the loads read 16
+        // bytes at offsets 0 and 16 of a 36-byte array.
+        unsafe {
+            let hex_ok = |v: uint8x16_t| -> uint8x16_t {
+                let digit = vcltq_u8(vsubq_u8(v, vdupq_n_u8(b'0')), vdupq_n_u8(10));
+                let lower = vorrq_u8(v, vdupq_n_u8(0x20));
+                let alpha = vcltq_u8(vsubq_u8(lower, vdupq_n_u8(b'a')), vdupq_n_u8(6));
+                vorrq_u8(digit, alpha)
+            };
+            let check = |v: uint8x16_t, dashes: uint8x16_t| -> bool {
+                let is_dash = vceqq_u8(v, vdupq_n_u8(b'-'));
+                // Dash lanes must be dashes, the others hex digits.
+                let ok = vbslq_u8(dashes, is_dash, hex_ok(v));
+                vminvq_u8(ok) == 0xFF
+            };
+            let lo = vld1q_u8(bytes.as_ptr());
+            let hi = vld1q_u8(bytes.as_ptr().add(16));
+            check(lo, vld1q_u8(DASHES_LO.as_ptr()))
+                && check(hi, vld1q_u8(DASHES_HI.as_ptr()))
+                && bytes[32..36].iter().all(|&b| Self::is_hex(b))
+        }
     }
 }
 
 impl Finder for Uuid {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "uuid"
     }
@@ -44,6 +82,38 @@ impl Finder for Uuid {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte.is_ascii_hexdigit()
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !(Self::is_hex(prev) || prev == b'-')
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        Self::is_hex(next)
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        // The first dash sits at offset 8, the second at 13.
+        Some(
+            Anchor::new(
+                ByteSet::from_bytes(b"-"),
+                ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
+            )
+            .confirm(b"-", &[5], b"-")
+            .back(8),
+        )
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `xxxxxxxx-xxxx-xxxx-`.
+        vec![
+            RunRule::new(RunClass::Hex, 8, 8)
+                .followed_by(b"-")
+                .then(RunClass::Hex, 4, 4)
+                .followed_by(b"-")
+                .then(RunClass::Hex, 4, 4)
+                .followed_by(b"-"),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
@@ -282,5 +352,38 @@ mod tests {
         let finder = Uuid::default();
         assert!(finder.find("abc").is_none());
         assert!(finder.find("a").is_none());
+    }
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::Uuid;
+
+    #[test]
+    fn vector_pattern_check_agrees_with_the_scalar_one() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let alphabet = b"0123456789abcdefABCDEF-gG/ :";
+        for round in 0..20_000 {
+            let mut bytes = *b"550e8400-e29b-41d4-a716-446655440000";
+            // Mostly valid UUIDs with a few bytes disturbed.
+            let flips = round % 4;
+            for _ in 0..flips {
+                let at = (next() % 36) as usize;
+                bytes[at] = alphabet[(next() % alphabet.len() as u64) as usize];
+            }
+            let input = bytes.to_vec();
+            assert_eq!(
+                Uuid::check_pattern(&input, 0),
+                Uuid::check_pattern_scalar(&bytes),
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
     }
 }

@@ -18,9 +18,10 @@
 //! }
 //! ```
 
-use super::Finder;
-use regex::Regex;
+use super::{ByteSet, Finder, RunClass, RunRule};
+use crate::word::{boundary_after, boundary_before, char_at};
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -132,6 +133,140 @@ fn default_mnemonics() -> &'static HashSet<String> {
     })
 }
 
+/// A mnemonic prepared for matching.
+struct Mnemonic {
+    /// Case-folded characters; the input is folded the same way while
+    /// comparing.
+    folded: Vec<char>,
+    /// Alphanumeric mnemonics must sit on word boundaries (`\b`); others
+    /// (`???`, `!!!`) match anywhere.
+    word: bool,
+    /// Byte length when every character is ASCII: a word mnemonic can then
+    /// only match an ASCII word of exactly that length.
+    ascii_len: Option<usize>,
+}
+
+/// Simple case folding as used by regex `(?i)`: one character maps to one
+/// character. Only the Kelvin sign and the long s fold onto ASCII letters;
+/// everything else folds through its single-character lowercase form.
+fn fold(c: char) -> char {
+    match c {
+        '\u{212A}' => 'k',
+        '\u{017F}' => 's',
+        _ => {
+            let mut lower = c.to_lowercase();
+            match (lower.next(), lower.next()) {
+                (Some(l), None) => l,
+                _ => c,
+            }
+        }
+    }
+}
+
+impl Mnemonic {
+    /// End of the mnemonic when it matches at `pos`, case-insensitively.
+    fn match_at(&self, input: &[u8], pos: usize) -> Option<usize> {
+        let mut p = pos;
+        for &want in &self.folded {
+            let (c, width) = char_at(input, p)?;
+            let same = if c.is_ascii() && want.is_ascii() {
+                c.eq_ignore_ascii_case(&want)
+            } else {
+                fold(c) == want
+            };
+            if !same {
+                return None;
+            }
+            p += width;
+        }
+        Some(p)
+    }
+}
+
+/// Matching tables derived from the mnemonic set.
+struct Index {
+    mnemonics: Vec<Mnemonic>,
+    /// Mnemonic ids by first byte, word mnemonics first.
+    by_first: Vec<Vec<u16>>,
+    /// Bytes that may follow a given start byte inside a match.
+    next_after: Vec<ByteSet>,
+    /// Start bytes of mnemonics matching anywhere (no `\b`).
+    anywhere: ByteSet,
+}
+
+impl Index {
+    fn build(mnemonics: impl Iterator<Item = String>) -> Index {
+        let mut prepared: Vec<Mnemonic> = mnemonics
+            .map(|m| Mnemonic {
+                word: m.chars().all(|c| c.is_alphanumeric()),
+                ascii_len: m.is_ascii().then_some(m.len()),
+                folded: m.chars().map(fold).collect(),
+            })
+            .collect();
+        // Deterministic priority: word mnemonics first, then by text.
+        prepared.sort_by(|a, b| b.word.cmp(&a.word).then_with(|| a.folded.cmp(&b.folded)));
+
+        let mut by_first = vec![Vec::new(); 256];
+        let mut next_after = vec![ByteSet::EMPTY; 256];
+        let mut anywhere = ByteSet::EMPTY;
+        for (id, m) in prepared.iter().enumerate() {
+            let Some(&first) = m.folded.first() else {
+                continue;
+            };
+            let second = m.folded.get(1).copied();
+            for variant in case_variants(first) {
+                let mut buf = [0u8; 4];
+                let bytes = variant.encode_utf8(&mut buf).as_bytes();
+                let lead = bytes[0];
+                if !by_first[lead as usize].contains(&(id as u16)) {
+                    by_first[lead as usize].push(id as u16);
+                }
+                if !m.word {
+                    anywhere = anywhere.with(lead);
+                }
+                let mut next = next_after[lead as usize];
+                if bytes.len() > 1 {
+                    next = next.with(bytes[1]);
+                } else {
+                    match second {
+                        Some(c) => {
+                            for v in case_variants(c) {
+                                let mut buf = [0u8; 4];
+                                next = next.with(v.encode_utf8(&mut buf).as_bytes()[0]);
+                            }
+                        }
+                        None => next = next.with(b'(').with(b':'),
+                    }
+                }
+                next_after[lead as usize] = next;
+            }
+        }
+        Index {
+            mnemonics: prepared,
+            by_first,
+            next_after,
+            anywhere,
+        }
+    }
+}
+
+/// Characters that fold to the same character as `c`: its case variants
+/// plus the two non-ASCII letters that fold onto ASCII.
+fn case_variants(c: char) -> Vec<char> {
+    let mut variants = vec![c];
+    let extra = match fold(c) {
+        'k' => Some('\u{212A}'),
+        's' => Some('\u{017F}'),
+        _ => None,
+    };
+    for v in c.to_lowercase().chain(c.to_uppercase()).chain(extra) {
+        if !variants.contains(&v) {
+            variants.push(v);
+        }
+    }
+    variants
+}
+
 /// A finder that extracts codetags (TODO, FIXME, etc.) from text.
 ///
 /// Codetags are special comments in source code that mark areas needing attention.
@@ -140,8 +275,8 @@ fn default_mnemonics() -> &'static HashSet<String> {
 /// # Usage
 ///
 /// 1. Create a default instance or configure with specific mnemonics
-/// 2. Optionally call [`Codetag::build_mnemonics_regex`] to surface regex
-///    errors early ([`Finder::find`] compiles it lazily otherwise)
+/// 2. Optionally call [`Codetag::build_mnemonics_regex`] to build the
+///    matching tables eagerly ([`Finder::find`] builds them lazily otherwise)
 /// 3. Use the [`Finder::find`] method to extract codetags
 ///
 /// # Example
@@ -161,7 +296,7 @@ pub struct Codetag {
     /// When `true`, the mnemonic (e.g., "TODO:") is excluded from the result.
     pub hide_mnemonic: bool,
     mnemonics: HashSet<String>,
-    mnemonics_regex: OnceLock<Regex>,
+    index: OnceLock<Index>,
 }
 
 impl Default for Codetag {
@@ -169,8 +304,79 @@ impl Default for Codetag {
         Codetag {
             hide_mnemonic: false,
             mnemonics: HashSet::new(),
-            mnemonics_regex: OnceLock::new(),
+            index: OnceLock::new(),
         }
+    }
+}
+
+impl Codetag {
+    fn index(&self) -> &Index {
+        self.index.get_or_init(|| self.build_index())
+    }
+
+    fn build_index(&self) -> Index {
+        let mnemonics = if self.mnemonics.is_empty() {
+            default_mnemonics().iter()
+        } else {
+            self.mnemonics.iter()
+        };
+        Index::build(mnemonics.cloned())
+    }
+
+    /// End of the whole codetag head (mnemonic, optional parenthesised
+    /// note, colon) when one starts at `pos`, with the end of the mnemonic.
+    fn match_at(&self, input: &[u8], pos: usize) -> Option<(usize, usize)> {
+        let index = self.index();
+        let ids = &index.by_first[input[pos] as usize];
+        if ids.is_empty() {
+            return None;
+        }
+        // Length of the ASCII word at `pos`, when it is delimited by ASCII:
+        // a word mnemonic must then be exactly that long (`\b` on both
+        // sides), which rejects most words without comparing characters.
+        let mut word_end = pos;
+        let mut ascii = true;
+        while let Some(&b) = input.get(word_end) {
+            if b >= 0x80 {
+                ascii = false;
+                break;
+            }
+            if !(b.is_ascii_alphanumeric() || b == b'_') {
+                break;
+            }
+            word_end += 1;
+        }
+        let word_len = word_end - pos;
+        for &id in ids {
+            let m = &index.mnemonics[id as usize];
+            if m.word && ascii && m.ascii_len.is_some_and(|len| len != word_len) {
+                continue;
+            }
+            let Some(end) = m.match_at(input, pos) else {
+                continue;
+            };
+            if m.word && !(boundary_before(input, pos) && boundary_after(input, end)) {
+                continue;
+            }
+            let mut p = end;
+            if input.get(p) == Some(&b'(') {
+                match input[p + 1..].iter().position(|&b| b == b')') {
+                    Some(close) => p = p + 1 + close + 1,
+                    None => continue,
+                }
+            }
+            if input.get(p) == Some(&b':') {
+                return Some((end, p + 1));
+            }
+        }
+        None
+    }
+
+    fn range_from(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        let (_, head_end) = self.match_at(input, pos)?;
+        let from = if self.hide_mnemonic { head_end } else { pos };
+        let to = input.len();
+        if from >= to { None } else { Some(from..to) }
     }
 }
 
@@ -179,19 +385,86 @@ impl Finder for Codetag {
         "codetag"
     }
 
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        !self.index().by_first[byte as usize].is_empty()
+    }
+
+    fn could_start_after(&self, prev: u8, cur: u8) -> bool {
+        // Word mnemonics need `\b`; a non-ASCII previous byte is decoded
+        // by `try_at`.
+        self.index().anywhere.contains(cur)
+            || prev >= 0x80
+            || !(prev.is_ascii_alphanumeric() || prev == b'_')
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        self.index().next_after[cur as usize].contains(next)
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // A mnemonic starting with an ASCII word byte begins with an ASCII
+        // word run: as long as the mnemonic when it is an ASCII word (then
+        // `:` or `(` follows), or as long as its leading word segment (then
+        // its first non-word byte follows). A non-ASCII byte may cut the
+        // run short anywhere (a folded Kelvin sign for `k`), so a run
+        // followed by one is always allowed.
+        let mut lengths = 0u64;
+        let mut after = ByteSet::from_bytes(b":(");
+        let mut max = 0u8;
+        for m in &self.index().mnemonics {
+            let Some(first) = m.folded.first() else {
+                continue;
+            };
+            if !first.is_ascii() || !RunClass::Word.contains(*first as u8) {
+                continue;
+            }
+            let prefix = m
+                .folded
+                .iter()
+                .take_while(|c| c.is_ascii() && RunClass::Word.contains(**c as u8))
+                .count();
+            if let Some(next) = m.folded.get(prefix) {
+                if next.is_ascii() {
+                    after = after.with(*next as u8);
+                } else {
+                    // The high-byte rule below covers it.
+                    continue;
+                }
+            }
+            if prefix < 64 {
+                lengths |= 1u64 << prefix;
+            }
+            max = max.max(prefix as u8);
+        }
+        vec![
+            RunRule::new(RunClass::Word, 1, max.max(1))
+                .lengths(lengths)
+                .followed_by_set(after),
+            // A high byte inside the first `max` positions.
+            RunRule::new(RunClass::Word, 0, max.saturating_sub(1))
+                .followed_by_set(ByteSet::from_fn(|b| b >= 0x80)),
+        ]
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        self.range_from(input, pos)
+    }
+
+    // The first head decides, as the former regex did: when hiding the
+    // mnemonic leaves nothing after it (`TBD(TODO:():`), the line has no
+    // match, even if a later head would.
     fn find(&self, s: &str) -> Option<Range<usize>> {
-        let regex = self.mnemonics_regex.get_or_init(|| {
-            self.compile_mnemonics_regex()
-                .expect("escaped codetag mnemonics must compile")
-        });
-        let m = regex.find(s)?;
-        let from = if self.hide_mnemonic {
-            m.end()
-        } else {
-            m.start()
-        };
-        let to = s.len();
-        if from >= to { None } else { Some(from..to) }
+        let input = s.as_bytes();
+        for pos in 0..input.len() {
+            if self.could_start_at(input[pos]) && self.match_at(input, pos).is_some() {
+                return self.range_from(input, pos);
+            }
+        }
+        None
     }
 }
 
@@ -203,78 +476,26 @@ impl Codetag {
     ///
     /// Mnemonic matching is case-insensitive. Surrounding whitespace is
     /// trimmed; empty and whitespace-only mnemonics are ignored, as they
-    /// would otherwise produce an empty regex alternation branch matching
-    /// every `word:`.
+    /// would otherwise match every `word:`.
     pub fn add_mnemonic(&mut self, mnemonic: &str) {
         let mnemonic = mnemonic.trim();
         if mnemonic.is_empty() {
             return;
         }
         self.mnemonics.insert(mnemonic.to_uppercase());
-        self.mnemonics_regex = OnceLock::new();
+        self.index = OnceLock::new();
     }
 
-    /// Builds the internal regex for matching mnemonics.
+    /// Builds the matching tables for the configured mnemonics.
     ///
-    /// Calling this is optional: [`Finder::find`] lazily compiles the regex on
-    /// first use. Building it eagerly surfaces compilation errors early.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the regex compilation fails (should not happen with
-    /// valid mnemonics).
-    pub fn build_mnemonics_regex(&mut self) -> Result<(), regex::Error> {
-        let regex = self.compile_mnemonics_regex()?;
-        self.mnemonics_regex = OnceLock::new();
-        let _ = self.mnemonics_regex.set(regex);
+    /// Calling this is optional: [`Finder::find`] builds them lazily on
+    /// first use. The name is kept from the regex-based implementation; it
+    /// cannot fail.
+    pub fn build_mnemonics_regex(&mut self) -> Result<(), Infallible> {
+        let index = self.build_index();
+        self.index = OnceLock::new();
+        let _ = self.index.set(index);
         Ok(())
-    }
-
-    fn compile_mnemonics_regex(&self) -> Result<Regex, regex::Error> {
-        let mnemonics = if self.mnemonics.is_empty() {
-            default_mnemonics().iter()
-        } else {
-            self.mnemonics.iter()
-        };
-        let mut r = String::with_capacity(mnemonics.len() * 16);
-        // Use \b word boundary for alphanumeric mnemonics to prevent MYTODO matching TODO
-        // Special mnemonics like ??? and !!! are handled separately
-        r.push_str("(?i)(?:");
-
-        let mut alpha_mnemonics = Vec::new();
-        let mut special_mnemonics = Vec::new();
-
-        for m in mnemonics {
-            if m.chars().all(|c| c.is_alphanumeric()) {
-                alpha_mnemonics.push(m.clone());
-            } else {
-                special_mnemonics.push(m.clone());
-            }
-        }
-
-        let mut first = true;
-        if !alpha_mnemonics.is_empty() {
-            r.push_str("\\b(?:");
-            for (i, m) in alpha_mnemonics.iter().enumerate() {
-                if i > 0 {
-                    r.push('|');
-                }
-                regex_syntax::escape_into(m, &mut r);
-            }
-            r.push_str(")\\b");
-            first = false;
-        }
-
-        for m in special_mnemonics.iter() {
-            if !first {
-                r.push('|');
-            }
-            regex_syntax::escape_into(m, &mut r);
-            first = false;
-        }
-
-        r.push_str(")(?:\\([^)]*\\))?:");
-        Regex::new(&r)
     }
 }
 

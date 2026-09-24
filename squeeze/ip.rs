@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Anchor, ByteSet, Finder, Memo, RunClass, RunRule};
 use std::ops::Range;
 
 pub struct Ip {
@@ -15,8 +15,48 @@ impl Default for Ip {
     }
 }
 
+/// Longest textual IPv6 address (with an embedded IPv4 tail) plus brackets.
+const MAX_BRACKETED_IPV6: usize = 47;
+
 impl Ip {
-    fn try_ipv4(input: &[u8], idx: usize) -> Option<Range<usize>> {
+    /// Maximal run of `[0-9a-fA-F:.]` bytes containing `idx`, remembered in
+    /// `memo` so every candidate inside the same run costs O(1): both the
+    /// bare IPv6 forward scan and the IPv4 boundary walk need it.
+    pub(crate) fn run_bounds(input: &[u8], idx: usize, memo: &mut Memo) -> (usize, usize) {
+        if memo.covers(idx) {
+            return (memo.start, memo.end);
+        }
+        let is_run = |b: u8| b.is_ascii_hexdigit() || b == b':' || b == b'.';
+        let mut start = idx;
+        while start > 0 && is_run(input[start - 1]) {
+            start -= 1;
+        }
+        let mut end = idx;
+        while end < input.len() && is_run(input[end]) {
+            end += 1;
+        }
+        // Where a candidate ending at the run's end lands after the lone
+        // trailing colon and sentence-dot strips of `try_bare_ipv6`; shared
+        // so those strips do not rescan a long tail for every candidate.
+        let mut stripped = end;
+        if stripped > start
+            && input[stripped - 1] == b':'
+            && !(stripped - start >= 2 && input[stripped - 2] == b':')
+        {
+            stripped -= 1;
+        }
+        while stripped > start && input[stripped - 1] == b'.' {
+            stripped -= 1;
+        }
+        *memo = Memo {
+            start,
+            end,
+            aux: stripped,
+        };
+        (start, end)
+    }
+
+    fn try_ipv4(input: &[u8], idx: usize, memo: &mut Memo) -> Option<Range<usize>> {
         if !input[idx].is_ascii_digit() {
             return None;
         }
@@ -31,14 +71,7 @@ impl Ip {
         // glued to a non-hex alphanumeric (`port:10.0.0.1`) was never an IPv6
         // candidate, so its quad may still match.
         if idx > 0 && input[idx - 1] == b':' {
-            let mut run_start = idx - 1;
-            while run_start > 0
-                && (input[run_start - 1].is_ascii_hexdigit()
-                    || input[run_start - 1] == b':'
-                    || input[run_start - 1] == b'.')
-            {
-                run_start -= 1;
-            }
+            let (run_start, _) = Self::run_bounds(input, idx, memo);
             if run_start == 0 || !input[run_start - 1].is_ascii_alphanumeric() {
                 return None;
             }
@@ -91,7 +124,10 @@ impl Ip {
             return None;
         }
 
-        let close = input[idx..].iter().position(|&b| b == b']')?;
+        // A closing bracket further away than the longest address cannot
+        // enclose a valid one, so the search is bounded.
+        let window = &input[idx..input.len().min(idx + MAX_BRACKETED_IPV6)];
+        let close = window.iter().position(|&b| b == b']')?;
         let close_pos = idx + close;
         let inner = &input[idx + 1..close_pos];
 
@@ -102,7 +138,7 @@ impl Ip {
         }
     }
 
-    fn try_bare_ipv6(input: &[u8], idx: usize) -> Option<Range<usize>> {
+    fn try_bare_ipv6(input: &[u8], idx: usize, memo: &mut Memo) -> Option<Range<usize>> {
         // Must start with hex digit or ':'
         if !input[idx].is_ascii_hexdigit() && input[idx] != b':' {
             return None;
@@ -114,13 +150,7 @@ impl Ip {
         }
 
         let start = idx;
-        let mut end = idx;
-
-        while end < input.len()
-            && (input[end].is_ascii_hexdigit() || input[end] == b':' || input[end] == b'.')
-        {
-            end += 1;
-        }
+        let (_, mut end) = Self::run_bounds(input, idx, memo);
 
         // Boundary after: a letter glued to the run means the run is part of a
         // larger token (`2001:db8::1x`). The maximal run never stops on ':'
@@ -137,28 +167,31 @@ impl Ip {
             end -= 1;
         }
 
-        let candidate = &input[start..end];
+        // Sentence-dot recovery target: trailing '.'s cannot belong to an
+        // embedded IPv4 tail (the run is maximal, so the next byte is not a
+        // digit), so `see 2001:db8::1. next` still yields the address. The
+        // run's stripped end was computed once by `run_bounds`.
+        let dot_end = memo.aux.clamp(start, end);
 
-        // Must contain at least one colon
-        if !candidate.contains(&b':') {
+        // Neither the candidate nor its dot-stripped form can be an address
+        // when even the shorter one is longer than any address; checking
+        // this first keeps a candidate spanning a huge run O(1).
+        if dot_end - start > crate::ipv6::MAX_IPV6_LEN {
             return None;
         }
 
-        if crate::ipv6::is_valid_ipv6(candidate) {
+        // Must contain at least one colon (dots carry none, so the shorter
+        // form decides for both).
+        if !input[start..dot_end].contains(&b':') {
+            return None;
+        }
+
+        if crate::ipv6::is_valid_ipv6(&input[start..end]) {
             return Some(start..end);
         }
 
-        // Sentence-dot recovery: trailing '.'s cannot belong to an embedded
-        // IPv4 tail (the run is maximal, so the next byte is not a digit).
-        // Strip them and revalidate (`see 2001:db8::1. next`).
-        if input[end - 1] == b'.' {
-            let mut dot_end = end;
-            while dot_end > start && input[dot_end - 1] == b'.' {
-                dot_end -= 1;
-            }
-            if crate::ipv6::is_valid_ipv6(&input[start..dot_end]) {
-                return Some(start..dot_end);
-            }
+        if dot_end < end && crate::ipv6::is_valid_ipv6(&input[start..dot_end]) {
+            return Some(start..dot_end);
         }
 
         None
@@ -166,6 +199,12 @@ impl Ip {
 }
 
 impl Finder for Ip {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "ip"
     }
@@ -179,7 +218,84 @@ impl Finder for Ip {
             || (self.ipv6 && (byte.is_ascii_hexdigit() || byte == b':' || byte == b'['))
     }
 
+    fn could_start_after(&self, prev: u8, cur: u8) -> bool {
+        if cur == b'[' {
+            return true;
+        }
+        let v6 = self.ipv6
+            && (cur.is_ascii_hexdigit() || cur == b':')
+            && !(prev.is_ascii_alphanumeric() || prev == b':');
+        let v4 = self.ipv4 && cur.is_ascii_digit() && !(prev.is_ascii_digit() || prev == b'.');
+        v6 || v4
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        cur == b'[' || next.is_ascii_hexdigit() || next == b':' || next == b'.'
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        let mut bytes = ByteSet::EMPTY;
+        if self.ipv4 {
+            bytes = bytes.with(b'.');
+        }
+        if self.ipv6 {
+            bytes = bytes.with(b':');
+        }
+        // The first `.` of a dotted quad has the next one two to four bytes
+        // on (`1.2.`, `10.20.`, `192.168.`); the first `:` of an IPv6
+        // address has the next one one to five bytes on (`::1`, `a:b:`,
+        // `2001:db8:`).
+        let mut anchor = Anchor::new(
+            bytes,
+            ByteSet::from_fn(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[')),
+        );
+        if self.ipv4 {
+            anchor = anchor.confirm(b".", &[2, 3, 4], b".");
+        }
+        if self.ipv6 {
+            anchor = anchor.confirm(b":", &[1, 2, 3, 4, 5], b":");
+        }
+        Some(anchor)
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        let mut rules = Vec::new();
+        if self.ipv4 {
+            // `d.d.`: the first two quads.
+            rules.push(
+                RunRule::new(RunClass::Digit, 1, 3)
+                    .followed_by(b".")
+                    .then(RunClass::Digit, 1, 3)
+                    .followed_by(b"."),
+            );
+        }
+        if self.ipv6 {
+            // Either the first two groups are full (`h:h:h:`, `a:b::`) or
+            // the address is compressed right after the first (`a::b`).
+            rules.push(
+                RunRule::new(RunClass::Hex, 1, 4)
+                    .followed_by(b":")
+                    .then(RunClass::Hex, 1, 4)
+                    .followed_by(b":")
+                    .then(RunClass::Hex, 0, 4)
+                    .followed_by(b":")
+                    .or_end(),
+            );
+            rules.push(
+                RunRule::new(RunClass::Hex, 1, 4)
+                    .followed_by(b":")
+                    .then(RunClass::Hex, 0, 0)
+                    .followed_by(b":"),
+            );
+        }
+        rules
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        self.try_at_memo(input, pos, &mut Memo::default())
+    }
+
+    fn try_at_memo(&self, input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
         if self.ipv6 {
             if input[pos] == b'['
                 && let Some(range) = Self::try_bracketed_ipv6(input, pos)
@@ -187,14 +303,14 @@ impl Finder for Ip {
                 return Some(range);
             }
             if (input[pos].is_ascii_hexdigit() || input[pos] == b':')
-                && let Some(range) = Self::try_bare_ipv6(input, pos)
+                && let Some(range) = Self::try_bare_ipv6(input, pos, memo)
             {
                 return Some(range);
             }
         }
         if self.ipv4
             && input[pos].is_ascii_digit()
-            && let Some(range) = Self::try_ipv4(input, pos)
+            && let Some(range) = Self::try_ipv4(input, pos, memo)
         {
             return Some(range);
         }
@@ -214,7 +330,7 @@ impl Finder for Ip {
                 }
 
                 if (input[idx].is_ascii_hexdigit() || input[idx] == b':')
-                    && let Some(range) = Self::try_bare_ipv6(input, idx)
+                    && let Some(range) = Self::try_bare_ipv6(input, idx, &mut Memo::default())
                 {
                     return Some(range);
                 }
@@ -222,7 +338,7 @@ impl Finder for Ip {
 
             if self.ipv4
                 && input[idx].is_ascii_digit()
-                && let Some(range) = Self::try_ipv4(input, idx)
+                && let Some(range) = Self::try_ipv4(input, idx, &mut Memo::default())
             {
                 return Some(range);
             }

@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -60,6 +60,12 @@ impl Semver {
 }
 
 impl Finder for Semver {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "semver"
     }
@@ -70,6 +76,35 @@ impl Finder for Semver {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte.is_ascii_digit() || byte == b'v' || byte == b'V'
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !prev.is_ascii_alphanumeric() && prev != b'.'
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        if cur.is_ascii_digit() {
+            next.is_ascii_digit() || next == b'.'
+        } else {
+            next.is_ascii_digit()
+        }
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor::new(
+            ByteSet::from_bytes(b"."),
+            ByteSet::from_fn(|b| b.is_ascii_digit() || b == b'v' || b == b'V'),
+        ))
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `major.minor.`: two dotted numbers before the patch number.
+        vec![
+            RunRule::new(RunClass::Digit, 1, crate::RUN_CAP)
+                .followed_by(b".")
+                .then(RunClass::Digit, 1, crate::RUN_CAP)
+                .followed_by(b"."),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

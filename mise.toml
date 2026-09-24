@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.96.0", profile = "minimal", components = [
+rust = { version = "1.98.1", profile = "minimal", components = [
   "clippy",
   "rustfmt",
 ] }
@@ -23,8 +23,12 @@ run = [
 run = "cargo test --workspace --locked -- --nocapture"
 
 [tasks.bench]
-description = "Benchmark scanner throughput"
-run = "cargo bench --locked -p squeeze --bench scanner"
+description = "Benchmark scanner throughput and operation counts (pass options after --)"
+run = "cargo bench --locked -p squeeze --bench scanner --"
+
+[tasks.bench-cli]
+description = "Benchmark the CLI against ripgrep, grep and ugrep (needs hyperfine)"
+run = "scripts/bench-cli.sh"
 
 [tasks.lint]
 description = "Lint all targets"
@@ -83,6 +87,10 @@ run = "mise watch check"
 
 [tasks.update]
 run = "cargo update"
+
+[tasks.update-iana]
+description = "Refresh the embedded IANA TLD and URI scheme registries"
+run = "python3 scripts/update_iana.py"
 
 [tasks.outdated]
 run = "cargo outdated"

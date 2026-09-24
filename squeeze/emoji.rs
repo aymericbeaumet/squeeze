@@ -1,5 +1,6 @@
-use super::Finder;
+use super::{ByteSet, Finder};
 use std::ops::Range;
+use std::sync::OnceLock;
 
 /// UTF-8 encoding of U+FE0E VARIATION SELECTOR-15 (text presentation).
 const VS15_BYTES: [u8; 3] = [0xEF, 0xB8, 0x8E];
@@ -291,6 +292,36 @@ impl Emoji {
     /// which keeps the two dispatch paths in exact parity. It only ever looks
     /// forward from `pos` and decodes incrementally, so the cost is O(1) for
     /// a non-match and O(sequence length) for a match.
+    /// Whether some emoji sequence starts with the bytes `lead`, `second`:
+    /// a table of the first two bytes of every code point in the emoji
+    /// ranges, so CJK text and accented letters are rejected without
+    /// decoding.
+    fn prefix_ok(lead: u8, second: u8) -> bool {
+        static TABLE: OnceLock<[ByteSet; 256]> = OnceLock::new();
+        let table = TABLE.get_or_init(|| {
+            let mut table = [ByteSet::EMPTY; 256];
+            for &(lo, hi) in EMOJI_PRESENTATION.iter().chain(TEXT_DEFAULT_EMOJI) {
+                // Every (lead, second) pair of the range: walk it in steps
+                // of 64 code points, the span of one second byte.
+                let mut cp = lo;
+                while cp <= hi {
+                    if let Some(c) = char::from_u32(cp) {
+                        let mut buf = [0u8; 4];
+                        let bytes = c.encode_utf8(&mut buf).as_bytes();
+                        if bytes.len() >= 2 {
+                            table[bytes[0] as usize] = table[bytes[0] as usize].with(bytes[1]);
+                        }
+                    }
+                    // Two-byte sequences change their second byte at every
+                    // code point.
+                    cp = if cp < 0x800 { cp + 1 } else { (cp | 63) + 1 };
+                }
+            }
+            table
+        });
+        table[lead as usize].contains(second)
+    }
+
     fn match_len_at(input: &[u8], pos: usize) -> Option<usize> {
         let lead = *input.get(pos)?;
 
@@ -299,6 +330,12 @@ impl Emoji {
                 return None;
             }
             return Self::keycap_len(input, pos);
+        }
+        if !input
+            .get(pos + 1)
+            .is_some_and(|&second| Self::prefix_ok(lead, second))
+        {
+            return None;
         }
 
         let (first, first_len) = Self::decode_char(input, pos)?;
@@ -386,6 +423,12 @@ impl Emoji {
 }
 
 impl Finder for Emoji {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "emoji"
     }
@@ -399,6 +442,15 @@ impl Finder for Emoji {
         // 0xE3: U+3030/303D/3297/3299; 0xF0: all SMP pictographs;
         // ASCII digits/#/*: keycap sequence bases.
         matches!(byte, 0xC2 | 0xE2 | 0xE3 | 0xF0) || Self::is_keycap_base(byte)
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        if Self::is_keycap_base(cur) {
+            next == VS16_BYTES[0] || next == KEYCAP_BYTES[0]
+        } else {
+            // A multi-byte lead byte is always followed by a continuation byte.
+            next & 0xC0 == 0x80
+        }
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

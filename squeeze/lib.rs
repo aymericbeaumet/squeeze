@@ -25,6 +25,15 @@
 //! - [`uuid::Uuid`] - Extract UUIDs
 //! - [`mirror::Mirror`] - A passthrough finder that returns the entire input
 //!
+//! The [`scanner::Scanner`] runs any set of finders over a line, or over a
+//! whole buffer of lines with [`scanner::Scanner::scan_buffer`], in one
+//! pass: a prescan disables finders whose bytes are absent, SIMD
+//! classification and per-finder context gates keep finder calls to the
+//! positions where a match can start, and declarative run rules gate
+//! several finders at once from a single measurement of the digit and hex
+//! runs. See `docs/performance.md` in the repository for the architecture,
+//! the contracts finders follow, and how to measure.
+//!
 //! ## Example
 //!
 //! ```
@@ -39,6 +48,7 @@
 //! ```
 
 pub mod cidr;
+pub(crate) mod classify;
 pub mod codetag;
 pub mod color;
 pub mod datetime;
@@ -48,6 +58,7 @@ pub mod emoji;
 pub mod env;
 pub mod handle;
 pub mod hash;
+pub(crate) mod iana;
 pub mod ip;
 pub(crate) mod ipv6;
 pub mod json;
@@ -61,8 +72,581 @@ pub mod scanner;
 pub mod semver;
 pub mod uri;
 pub mod uuid;
+pub(crate) mod word;
 
 use std::ops::Range;
+
+/// A set of bytes, used by [`RunRule`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ByteSet([u64; 4]);
+
+impl ByteSet {
+    pub const EMPTY: ByteSet = ByteSet([0; 4]);
+    pub const ALL: ByteSet = ByteSet([u64::MAX; 4]);
+
+    pub const fn from_bytes(bytes: &[u8]) -> ByteSet {
+        let mut set = ByteSet::EMPTY;
+        let mut i = 0;
+        while i < bytes.len() {
+            set = set.with(bytes[i]);
+            i += 1;
+        }
+        set
+    }
+
+    /// Every byte for which `f` holds.
+    pub fn from_fn(f: impl Fn(u8) -> bool) -> ByteSet {
+        let mut set = ByteSet::EMPTY;
+        for b in 0..=255u8 {
+            if f(b) {
+                set = set.with(b);
+            }
+        }
+        set
+    }
+
+    pub const fn with(mut self, byte: u8) -> ByteSet {
+        self.0[(byte >> 6) as usize] |= 1u64 << (byte & 63);
+        self
+    }
+
+    #[inline]
+    pub const fn contains(&self, byte: u8) -> bool {
+        self.0[(byte >> 6) as usize] & (1u64 << (byte & 63)) != 0
+    }
+}
+
+/// The byte class a [`RunRule`] measures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RunClass {
+    /// ASCII digits.
+    Digit,
+    /// ASCII hexadecimal digits.
+    Hex,
+    /// ASCII letters, digits and `_`: the bytes of a `\b`-delimited word.
+    Word,
+}
+
+impl RunClass {
+    /// Whether `b` belongs to the class.
+    #[inline(always)]
+    pub fn contains(self, b: u8) -> bool {
+        match self {
+            RunClass::Digit => b.is_ascii_digit(),
+            RunClass::Hex => b.is_ascii_hexdigit(),
+            RunClass::Word => b.is_ascii_alphanumeric() || b == b'_',
+        }
+    }
+}
+
+/// Longest run length the scanner distinguishes; longer runs are reported
+/// as this value with [`Run::capped`] set.
+pub const RUN_CAP: u8 = 129;
+
+/// A maximal run of one [`RunClass`] starting at a candidate position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run {
+    /// Length of the run, at most [`RUN_CAP`].
+    pub len: u8,
+    /// Whether the run reached [`RUN_CAP`] and may continue.
+    pub capped: bool,
+    /// The byte after the run, `None` at the end of the input.
+    pub after: Option<u8>,
+}
+
+/// The digit, hex and word runs at a candidate position, measured once by
+/// the scanner and shared by every finder's [`RunRule`]s. The word run is
+/// only measured when a candidate finder has a [`RunClass::Word`] rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Runs {
+    pub digit: Run,
+    pub hex: Run,
+    pub word: Run,
+}
+
+/// The last hex run measured on a line, so candidates inside the same run
+/// (digit-run starts inside a hash, say) do not measure it again.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RunCache {
+    start: usize,
+    end: usize,
+    /// The run may continue past `end` (the measurement hit the cap).
+    open: bool,
+}
+
+/// Hex and digit lane masks the vector stage already computed for the
+/// bytes around a candidate: `hex[0]`/`digit[0]` cover the block holding
+/// the candidate at `lane`, following entries the following blocks.
+pub(crate) struct RunHint<'a> {
+    pub(crate) hex: &'a [u64],
+    pub(crate) digit: &'a [u64],
+    pub(crate) lane: usize,
+    pub(crate) stride: u32,
+}
+
+impl RunHint<'_> {
+    /// Consecutive set lanes from `lane` across `masks`, or `None` when the
+    /// run reaches the end of the last mask (it may continue).
+    #[inline(always)]
+    pub(crate) fn run(&self, masks: &[u64]) -> Option<usize> {
+        let lane_bits = |m: u64, lane: usize| {
+            let shifted = m >> (lane as u32 * self.stride);
+            (((!shifted).trailing_zeros() / self.stride) as usize).min(BLOCK_LANES - lane)
+        };
+        let mut lane = self.lane;
+        let mut total = 0;
+        for &m in masks {
+            let run = lane_bits(m, lane);
+            total += run;
+            if run < BLOCK_LANES - lane {
+                return Some(total);
+            }
+            lane = 0;
+        }
+        None
+    }
+}
+
+/// Lanes per vector block (see `classify::BLOCK`).
+const BLOCK_LANES: usize = 16;
+
+impl Runs {
+    /// Measures the runs starting at `pos`.
+    pub fn at(input: &[u8], pos: usize) -> Runs {
+        let mut runs = Self::at_cached(input, pos, &mut RunCache::default(), RUN_CAP as usize);
+        runs.measure_word(input, pos, RUN_CAP as usize);
+        runs
+    }
+
+    /// Measures the word run starting at `pos`, reporting runs of `cap`
+    /// bytes or more as capped.
+    #[inline(always)]
+    pub(crate) fn measure_word(&mut self, input: &[u8], pos: usize, cap: usize) {
+        self.word = Self::word_at(input, pos, cap);
+    }
+
+    /// The word run starting at `pos`, capped at `cap` bytes.
+    #[inline(always)]
+    pub(crate) fn word_at(input: &[u8], pos: usize, cap: usize) -> Run {
+        let limit = input.len().min(pos + cap);
+        let mut end = pos;
+        while end < limit && RunClass::Word.contains(input[end]) {
+            end += 1;
+        }
+        Run {
+            len: (end - pos) as u8,
+            capped: end - pos >= cap,
+            after: input.get(end).copied(),
+        }
+    }
+
+    /// Runs holding only a word run; the digit and hex runs count as
+    /// unmeasured.
+    #[inline(always)]
+    pub(crate) fn only_word(word: Run) -> Runs {
+        Runs {
+            digit: UNMEASURED,
+            hex: UNMEASURED,
+            word,
+        }
+    }
+
+    /// Like [`at_cached`](Self::at_cached), taking the run lengths from the
+    /// vector stage's lane masks when they cover the whole run.
+    #[inline(always)]
+    pub(crate) fn at_hinted(
+        input: &[u8],
+        pos: usize,
+        hint: &RunHint<'_>,
+        cache: &mut RunCache,
+        cap: usize,
+    ) -> Runs {
+        if cache.start <= pos && pos < cache.end && (!cache.open || cache.end - pos > cap) {
+            return Self::at_cached(input, pos, cache, cap);
+        }
+        let hex_len = match hint.run(hint.hex) {
+            Some(len) => len.min(cap),
+            None => {
+                // The run leaves the masks: continue byte by byte.
+                let limit = input.len().min(pos + cap);
+                let mut hex = pos + hint.hex.len() * BLOCK_LANES - hint.lane;
+                while hex < limit && input[hex].is_ascii_hexdigit() {
+                    hex += 1;
+                }
+                hex.min(limit) - pos
+            }
+        };
+        let hex_end = pos + hex_len;
+        *cache = RunCache {
+            start: pos,
+            end: hex_end,
+            open: hex_len >= cap && hex_end < input.len(),
+        };
+        let digit_len = match hint.run(hint.digit) {
+            Some(len) => len.min(hex_len),
+            None => {
+                let mut digit = pos + hint.digit.len() * BLOCK_LANES - hint.lane;
+                while digit < hex_end && input[digit].is_ascii_digit() {
+                    digit += 1;
+                }
+                digit.min(hex_end) - pos
+            }
+        };
+        let run = |len: usize| Run {
+            len: len as u8,
+            capped: len >= cap,
+            after: input.get(pos + len).copied(),
+        };
+        Runs {
+            digit: run(digit_len),
+            hex: run(hex_len),
+            word: UNMEASURED,
+        }
+    }
+
+    /// Measures the runs starting at `pos`, reporting runs of `cap` bytes or
+    /// more as capped, and reusing `cache` when `pos` lies inside the hex
+    /// run it remembers.
+    #[inline(always)]
+    pub(crate) fn at_cached(input: &[u8], pos: usize, cache: &mut RunCache, cap: usize) -> Runs {
+        let hex_end =
+            if cache.start <= pos && pos < cache.end && (!cache.open || cache.end - pos > cap) {
+                cache.end.min(pos + cap)
+            } else {
+                let limit = input.len().min(pos + cap);
+                let mut hex = pos;
+                while hex < limit && input[hex].is_ascii_hexdigit() {
+                    hex += 1;
+                }
+                *cache = RunCache {
+                    start: pos,
+                    end: hex,
+                    open: hex == limit && hex < input.len(),
+                };
+                hex
+            };
+        let mut digit = pos;
+        while digit < hex_end && input[digit].is_ascii_digit() {
+            digit += 1;
+        }
+        let run = |stop: usize| Run {
+            len: (stop - pos) as u8,
+            capped: stop - pos >= cap,
+            after: input.get(stop).copied(),
+        };
+        Runs {
+            digit: run(digit),
+            hex: run(hex_end),
+            word: UNMEASURED,
+        }
+    }
+
+    #[inline(always)]
+    fn get(&self, class: RunClass) -> &Run {
+        // Indexed rather than matched: this sits in the rule loop.
+        [&self.digit, &self.hex, &self.word][class as usize]
+    }
+}
+
+/// A run the scanner did not measure: it counts as capped, which accepts
+/// every rule on it, so an unmeasured word run can never lose a match.
+const UNMEASURED: Run = Run {
+    len: RUN_CAP,
+    capped: true,
+    after: None,
+};
+
+/// A run required right after the byte that ends the previous run of a
+/// [`RunRule`]: `class` bytes numbering `min..=max`, followed by a byte in
+/// `after` (or the end of the input when `after_end` is set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Then {
+    pub class: RunClass,
+    pub min: u8,
+    pub max: u8,
+    pub after: ByteSet,
+    pub after_end: bool,
+}
+
+/// Most follow-up runs a rule can chain, see [`RunRule::then`].
+pub const MAX_THEN: usize = 2;
+
+/// A declarative rule on the run starting at a candidate position, see
+/// [`Finder::run_rules`].
+///
+/// A rule applies when the start byte is in `cur`; it accepts when the
+/// `class` run has a length in `min..=max` (and in `lengths` when set),
+/// the byte after it is in `after` (or the input ends there and
+/// `after_end` is set), and every [`Then`] step is met in turn right after
+/// that byte (an IPv4 address starts with `1.2.` whatever follows, a MAC
+/// address with `aa:bb:cc:`). A capped run always satisfies the rest of the
+/// rule, since its true end is unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RunRule {
+    pub cur: ByteSet,
+    pub class: RunClass,
+    pub min: u8,
+    pub max: u8,
+    /// Bit `n` set: a run of `n` bytes is accepted; zero means every
+    /// length in `min..=max`. Lengths of 64 and more are governed by
+    /// `min..=max` alone.
+    pub lengths: u64,
+    pub after: ByteSet,
+    pub after_end: bool,
+    pub then: [Option<Then>; MAX_THEN],
+}
+
+impl RunRule {
+    /// A rule for `class` runs of `min..=max` bytes starting at any byte of
+    /// the class and followed by any byte, including the end of the input.
+    pub fn new(class: RunClass, min: u8, max: u8) -> RunRule {
+        let cur = ByteSet::from_fn(|b| class.contains(b));
+        RunRule {
+            cur,
+            class,
+            min,
+            max,
+            lengths: 0,
+            after: ByteSet::ALL,
+            after_end: true,
+            then: [None; MAX_THEN],
+        }
+    }
+
+    /// Restricts the rule's own run to the lengths whose bit is set in
+    /// `lengths` (bit `n` for `n` bytes), within `min..=max`.
+    pub fn lengths(mut self, lengths: u64) -> RunRule {
+        self.lengths = lengths;
+        self
+    }
+
+    /// Requires the byte after the last run described so far (the rule's
+    /// own run, or its latest [`then`](Self::then) step) to be one of
+    /// `bytes`; the end of the input no longer qualifies unless
+    /// [`or_end`](Self::or_end) follows.
+    pub fn followed_by(self, bytes: &[u8]) -> RunRule {
+        self.followed_by_set(ByteSet::from_bytes(bytes))
+    }
+
+    /// Like [`followed_by`](Self::followed_by) with a byte set.
+    pub fn followed_by_set(mut self, set: ByteSet) -> RunRule {
+        match self.then.iter_mut().rev().find_map(Option::as_mut) {
+            Some(step) => {
+                step.after = set;
+                step.after_end = false;
+            }
+            None => {
+                self.after = set;
+                self.after_end = false;
+            }
+        }
+        self
+    }
+
+    /// Also accepts the end of the input after the last run described so
+    /// far.
+    pub fn or_end(mut self) -> RunRule {
+        match self.then.iter_mut().rev().find_map(Option::as_mut) {
+            Some(step) => step.after_end = true,
+            None => self.after_end = true,
+        }
+        self
+    }
+
+    /// Chains a run of `class` bytes numbering `min..=max` that must start
+    /// right after the byte ending the previous run; it may be followed by
+    /// anything until [`followed_by`](Self::followed_by) restricts it. Up
+    /// to [`MAX_THEN`] steps can be chained.
+    pub fn then(mut self, class: RunClass, min: u8, max: u8) -> RunRule {
+        let slot = self
+            .then
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("a rule chains at most MAX_THEN steps");
+        *slot = Some(Then {
+            class,
+            min,
+            max,
+            after: ByteSet::ALL,
+            after_end: true,
+        });
+        self
+    }
+
+    #[inline]
+    fn applies(&self, cur: u8) -> bool {
+        self.cur.contains(cur)
+    }
+
+    #[inline]
+    fn accepts(&self, runs: &Runs, input: &[u8], pos: usize) -> bool {
+        let run = runs.get(self.class);
+        if run.len < self.min || run.len > self.max {
+            return false;
+        }
+        if run.capped {
+            return true;
+        }
+        if self.lengths != 0 && run.len < 64 && self.lengths & (1u64 << run.len) == 0 {
+            return false;
+        }
+        match run.after {
+            Some(b) if self.after.contains(b) => {}
+            Some(_) => return false,
+            None => return self.after_end,
+        }
+        let mut at = pos + run.len as usize + 1;
+        for step in self.then.iter().flatten() {
+            let limit = input.len().min(at + step.max as usize + 1);
+            let mut end = at;
+            while end < limit && step.class.contains(input[end]) {
+                end += 1;
+            }
+            let len = end - at;
+            if len < step.min as usize || len > step.max as usize {
+                return false;
+            }
+            match input.get(end) {
+                Some(&b) if step.after.contains(b) => {}
+                Some(_) => return false,
+                None => return step.after_end,
+            }
+            at = end + 1;
+        }
+        true
+    }
+
+    /// Evaluates a finder's rules for the candidate at `pos` of `input`,
+    /// whose runs are `runs`: a match may start when no rule applies to
+    /// `cur`, or when at least one applicable rule accepts.
+    #[inline(always)]
+    pub fn allow(rules: &[RunRule], cur: u8, runs: &Runs, input: &[u8], pos: usize) -> bool {
+        let mut applicable = false;
+        for rule in rules {
+            if rule.applies(cur) {
+                if rule.accepts(runs, input, pos) {
+                    return true;
+                }
+                applicable = true;
+            }
+        }
+        !applicable
+    }
+}
+
+/// Per-line, per-finder scratch handed to
+/// [`Finder::try_at_memo`]/[`Finder::try_trigger_at_memo`].
+///
+/// A finder may record what it learned about the current line (typically
+/// the extent of a run that cannot match) so that later attempts on the same
+/// line stay cheap. It is a cache only: results must not depend on it. The
+/// scanner resets it to `Memo::default()` (an empty range) for every line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Memo {
+    pub start: usize,
+    pub end: usize,
+    /// Free slot for one more position the finder wants to remember.
+    pub aux: usize,
+}
+
+impl Memo {
+    /// Whether `pos` lies in the remembered range.
+    #[inline]
+    pub fn covers(&self, pos: usize) -> bool {
+        self.start <= pos && pos < self.end
+    }
+}
+
+/// Bytes that every match of a dispatch finder contains, and the bytes that
+/// may lie between a match's start and its first anchor byte, see
+/// [`Finder::anchor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub bytes: ByteSet,
+    pub walk: ByteSet,
+    /// Bytes at fixed offsets that confirm the first anchor byte of a
+    /// match, one check per group of anchor bytes, see
+    /// [`confirm`](Self::confirm).
+    pub checks: [Option<AnchorCheck>; MAX_CHECKS],
+    /// Exact number of walk bytes between a match's start and its first
+    /// anchor byte, see [`back`](Self::back).
+    pub back: Option<u8>,
+}
+
+/// Most offsets an [`AnchorCheck`] can list.
+pub const MAX_CHECK_OFFSETS: usize = 5;
+
+/// Most checks an [`Anchor`] can carry (one per group of anchor bytes).
+pub const MAX_CHECKS: usize = 2;
+
+/// When the anchor byte at `pos` is one of `anchors`, the byte at one of
+/// the `offsets` after `pos` must be one of `bytes` (and exist) for `pos`
+/// to be the first anchor byte of a match: a UUID's first `-` has another
+/// five bytes on, a MAC address's first `:` another three bytes on, an
+/// IPv4 address's first `.` another two to four bytes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnchorCheck {
+    pub anchors: ByteSet,
+    pub offsets: [u8; MAX_CHECK_OFFSETS],
+    pub offset_count: u8,
+    pub bytes: ByteSet,
+}
+
+impl AnchorCheck {
+    /// The offsets to test.
+    pub fn offsets(&self) -> &[u8] {
+        &self.offsets[..self.offset_count as usize]
+    }
+}
+
+impl Anchor {
+    /// An anchor on `bytes` reached by walking back over `walk` bytes.
+    pub fn new(bytes: ByteSet, walk: ByteSet) -> Anchor {
+        Anchor {
+            bytes,
+            walk,
+            checks: [None; MAX_CHECKS],
+            back: None,
+        }
+    }
+
+    /// States that a match starts exactly `back` bytes before its first
+    /// anchor byte (a UUID's first `-` is eight bytes in), so the scanner
+    /// tries that one position instead of every walk position. Combined
+    /// with [`confirm`](Self::confirm), a confirmed anchor goes straight to
+    /// the finder, skipping the gates and run rules it would pass anyway.
+    pub fn back(mut self, back: u8) -> Anchor {
+        self.back = Some(back);
+        self
+    }
+
+    /// Requires, when the anchor byte is one of `anchors`, the byte at one
+    /// of the `offsets` (at most [`MAX_CHECK_OFFSETS`]) after it to be one
+    /// of `bytes`; anchor bytes outside every check's `anchors` are not
+    /// checked, and at most [`MAX_CHECKS`] checks can be added. Only the
+    /// first anchor byte of a match has to pass.
+    pub fn confirm(mut self, anchors: &[u8], offsets: &[u8], bytes: &[u8]) -> Anchor {
+        assert!(
+            !offsets.is_empty() && offsets.len() <= MAX_CHECK_OFFSETS,
+            "an anchor check lists one to {MAX_CHECK_OFFSETS} offsets"
+        );
+        let mut list = [0u8; MAX_CHECK_OFFSETS];
+        list[..offsets.len()].copy_from_slice(offsets);
+        let slot = self
+            .checks
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("an anchor carries at most MAX_CHECKS checks");
+        *slot = Some(AnchorCheck {
+            anchors: ByteSet::from_bytes(anchors),
+            offsets: list,
+            offset_count: offsets.len() as u8,
+            bytes: ByteSet::from_bytes(bytes),
+        });
+        self
+    }
+}
 
 /// A trait for finding patterns in text.
 ///
@@ -134,6 +718,87 @@ pub trait Finder: Send + Sync {
         None
     }
 
+    /// Whether a match could be attempted at byte `cur` when the byte
+    /// immediately before it is `prev`: a dispatch-mode start, or a
+    /// trigger-mode trigger byte.
+    ///
+    /// Only meaningful when [`dispatchable`](Finder::dispatchable) or
+    /// [`triggerable`](Finder::triggerable) returns true. Must agree with
+    /// [`try_at`](Finder::try_at) (or [`try_trigger_at`](Finder::try_trigger_at)):
+    /// whenever this returns `false`, the attempt must return `None` in that
+    /// context. The [`scanner::Scanner`] folds the answers into lookup tables
+    /// so positions that cannot start a match never reach the finder.
+    fn could_start_after(&self, _prev: u8, _cur: u8) -> bool {
+        true
+    }
+
+    /// Whether an attempt at byte `cur` could succeed when the byte
+    /// immediately after it is `next`. Same contract as
+    /// [`could_start_after`](Finder::could_start_after).
+    fn could_continue_with(&self, _cur: u8, _next: u8) -> bool {
+        true
+    }
+
+    /// [`try_at`](Finder::try_at) with a per-line [`Memo`]; the scanner
+    /// calls this variant. Finders whose attempts can rescan the same bytes
+    /// override it to remember what already failed. Must return exactly what
+    /// `try_at` returns.
+    fn try_at_memo(&self, input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
+        let _ = memo;
+        self.try_at(input, pos)
+    }
+
+    /// [`try_trigger_at`](Finder::try_trigger_at) with a per-line
+    /// [`Memo`], same contract as [`try_at_memo`](Finder::try_at_memo).
+    fn try_trigger_at_memo(
+        &self,
+        input: &[u8],
+        pos: usize,
+        memo: &mut Memo,
+    ) -> Option<Range<usize>> {
+        let _ = memo;
+        self.try_trigger_at(input, pos)
+    }
+
+    /// Whether `try_at`/`try_trigger_at` give the same answer on a whole
+    /// buffer as on the line alone: `\n` and `\r` never belong to a match,
+    /// and every walk treats them exactly like the end of the input (as a
+    /// boundary), so a match never depends on what surrounds its line. A
+    /// finder that matches "up to the end of the line" (codetag), accepts
+    /// line terminators as whitespace (JSON, phone) or otherwise looks at
+    /// the line as a whole must keep the default. Line-agnostic finders are
+    /// run over whole buffers with absolute positions, which lets the
+    /// scanner skip resolving the line of every candidate; property tests
+    /// compare both modes. Defaults to `false`.
+    fn line_agnostic(&self) -> bool {
+        false
+    }
+
+    /// Bytes every match of this dispatch finder contains (`bytes`), and the
+    /// bytes that can separate a match start from the first of them
+    /// (`walk`). When every finder of a scanner declares an anchor (or is a
+    /// trigger finder) and the anchor bytes number three or fewer, the
+    /// scanner searches for those bytes with `memchr`, walks back over
+    /// `walk` and tries the dispatch positions in order, so lines without
+    /// an anchor byte cost nothing.
+    ///
+    /// Contract: for every range `try_at` returns, some byte of the range is
+    /// in `bytes`, and every byte from the range start up to the first such
+    /// byte is in `walk`.
+    fn anchor(&self) -> Option<Anchor> {
+        None
+    }
+
+    /// Rules on the digit or hex run starting at a candidate position,
+    /// evaluated with [`RunRule::allow`] before [`try_at`](Finder::try_at)
+    /// is called. Same contract as
+    /// [`could_start_after`](Finder::could_start_after): when the rules
+    /// reject a position, `try_at` must return `None` there. The scanner
+    /// measures the runs once per position for all finders.
+    fn run_rules(&self) -> Vec<RunRule> {
+        Vec::new()
+    }
+
     /// Whether this finder supports trigger-mode scanning.
     ///
     /// Trigger-mode is for finders whose cheapest reliable signal is inside the
@@ -146,6 +811,35 @@ pub trait Finder: Send + Sync {
     /// Whether the given byte could trigger a match for this finder.
     /// Only meaningful when [`triggerable`](Finder::triggerable) returns true.
     fn could_trigger_at(&self, _byte: u8) -> bool {
+        false
+    }
+
+    /// Whether the trigger context gate constrains anything: the scanner
+    /// then tabulates [`trigger_context`](Finder::trigger_context) over the
+    /// 65536 pairs of previous bytes and
+    /// [`trigger_context_exempt`](Finder::trigger_context_exempt) over the
+    /// next bytes, once, and consults them before calling the finder.
+    /// Defaults to `false`.
+    fn has_trigger_context(&self) -> bool {
+        false
+    }
+
+    /// Whether a match may be triggered at a byte preceded by `prev2` and
+    /// `prev1`, unless the byte after the trigger is exempt
+    /// ([`trigger_context_exempt`](Finder::trigger_context_exempt)): a
+    /// necessary condition for [`try_trigger_at`](Finder::try_trigger_at)
+    /// to match at that position. The scanner passes a space for a missing
+    /// previous byte (the trigger sits in the first two bytes of the
+    /// input). Defaults to `true`.
+    fn trigger_context(&self, _prev2: u8, _prev1: u8) -> bool {
+        true
+    }
+
+    /// Whether a trigger followed by `next` (`None` at the end of the
+    /// input) escapes the previous-bytes condition: the URI finder needs a
+    /// registered scheme before a colon unless `//` follows. Defaults to
+    /// `false`.
+    fn trigger_context_exempt(&self, _next: Option<u8>) -> bool {
         false
     }
 

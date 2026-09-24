@@ -69,6 +69,12 @@ impl Jwt {
 }
 
 impl Finder for Jwt {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "jwt"
     }
@@ -79,6 +85,14 @@ impl Finder for Jwt {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte == b'e'
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !Self::is_base64url(prev)
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next == b'y'
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

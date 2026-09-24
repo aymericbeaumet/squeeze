@@ -28,7 +28,7 @@ fn help_flag_should_display_usage() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Extract rich information from any text",
+            "Extract URLs, emails, IPs, hashes, TODOs, and more from any text",
         ));
 }
 
@@ -911,12 +911,24 @@ fn mirror_flag_should_output_full_input() {
 // ============================================================================
 
 #[test]
-fn no_finder_flag_should_produce_no_output() {
+fn no_finder_flag_should_fail_with_a_hint() {
     squeeze()
         .write_stdin("https://example.com\n")
         .assert()
-        .success()
-        .stdout(predicate::str::is_empty());
+        .code(2)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no finder selected"))
+        .stderr(predicate::str::contains("--all"));
+}
+
+#[test]
+fn modifier_without_its_finder_should_fail_with_a_hint() {
+    squeeze()
+        .arg("--strict")
+        .write_stdin("https://example.com\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("no finder selected"));
 }
 
 #[test]
@@ -1318,6 +1330,73 @@ fn with_kind_csv_should_emit_header_and_metadata() {
 }
 
 #[test]
+fn with_location_should_prefix_file_results_with_path_line_and_column() {
+    let path = temp_path("location.txt");
+    fs::write(&path, "intro\nsee $HOME and é $PATH\n").unwrap();
+    let source = path.to_str().unwrap();
+
+    // Columns count characters, like the structured formats.
+    squeeze()
+        .args(["--env", "--with-location", source])
+        .assert()
+        .success()
+        .stdout(predicate::eq(format!(
+            "{source}:2:5:$HOME\n{source}:2:17:$PATH\n"
+        )));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn with_location_should_omit_the_path_for_stdin() {
+    squeeze()
+        .args(["--env", "--with-location"])
+        .write_stdin("x $HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("1:3:$HOME\n"));
+}
+
+#[test]
+fn with_location_should_combine_with_kind() {
+    squeeze()
+        .args(["--env", "--with-location", "--with-kind"])
+        .write_stdin("x $HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("1:3:env\t$HOME\n"));
+}
+
+#[test]
+fn with_location_should_apply_to_buffered_and_parallel_output() {
+    for extra in [
+        ["--sort", "-j1"],
+        ["--uniq", "-j1"],
+        ["-j", "2"],
+        ["--last", "-j1"],
+    ] {
+        squeeze()
+            .args(["--env", "--with-location"])
+            .args(extra)
+            .write_stdin("x $HOME\n")
+            .assert()
+            .success()
+            .stdout(predicate::eq("1:3:$HOME\n"));
+    }
+}
+
+#[test]
+fn with_location_json_should_emit_match_metadata() {
+    squeeze()
+        .args(["--env", "--with-location", "--output", "json"])
+        .write_stdin("x $HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""line":1"#))
+        .stdout(predicate::str::contains(r#""column":3"#));
+}
+
+#[test]
 fn no_overlap_should_drop_inner_matches() {
     squeeze()
         .arg("--json")
@@ -1348,6 +1427,31 @@ fn file_input_should_scan_named_file_and_report_source_in_metadata() {
         .success()
         .stdout(predicate::str::contains(r#""kind":"env""#))
         .stdout(predicate::str::contains(json_source_field));
+
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn optional_value_flags_should_not_swallow_a_following_input() {
+    let path = temp_path("optional-values.txt");
+    fs::write(
+        &path,
+        "https://example.com\n// TODO: ship\n5d41402abc4b2a76b9719d911017c592\n",
+    )
+    .unwrap();
+    let source = path.to_str().unwrap();
+
+    for (flag, expected) in [
+        ("--uri", "https://example.com\n"),
+        ("--codetag", "TODO: ship\n"),
+        ("--hash", "5d41402abc4b2a76b9719d911017c592\n"),
+    ] {
+        squeeze()
+            .args([flag, source])
+            .assert()
+            .success()
+            .stdout(predicate::eq(expected));
+    }
 
     let _ = fs::remove_file(path);
 }
