@@ -808,8 +808,16 @@ fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
                 if !finder.could_trigger_at(cur) {
                     continue;
                 }
+                let rules = finder.run_rules();
                 let gated = (pos > 0 && !finder.could_start_after(input[pos - 1], cur))
-                    || (pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]));
+                    || (pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]))
+                    || !squeeze::RunRule::allow(
+                        &rules,
+                        cur,
+                        &squeeze::Runs::at(input, pos),
+                        input,
+                        pos,
+                    );
                 if gated {
                     assert_eq!(
                         finder.try_trigger_at(input, pos),

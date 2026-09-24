@@ -980,7 +980,7 @@ impl Scanner {
         let run_rules: Vec<Vec<RunRule>> = finders
             .iter()
             .map(|f| {
-                if f.dispatchable() {
+                if f.dispatchable() || f.triggerable() {
                     f.run_rules()
                 } else {
                     Vec::new()
