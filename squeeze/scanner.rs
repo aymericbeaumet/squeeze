@@ -284,6 +284,9 @@ pub struct ScanStats {
     pub candidate_positions: u64,
     /// Finder invocations avoided by run rules.
     pub run_gated: u64,
+    /// Coarse positions the exact gates rejected, by the byte at the
+    /// position (diagnostics for the vector stage's precision).
+    pub coarse_rejected: Vec<u64>,
     /// Matches returned to the caller.
     pub matches: u64,
     /// Lines whose matches had to be sorted.
@@ -312,6 +315,12 @@ impl ScanStats {
         self.coarse_positions += other.coarse_positions;
         self.candidate_positions += other.candidate_positions;
         self.run_gated += other.run_gated;
+        if self.coarse_rejected.len() < other.coarse_rejected.len() {
+            self.coarse_rejected.resize(other.coarse_rejected.len(), 0);
+        }
+        for (i, n) in other.coarse_rejected.iter().enumerate() {
+            self.coarse_rejected[i] += n;
+        }
         self.matches += other.matches;
         self.sorts += other.sorts;
         if self.finders.len() < other.finders.len() {
@@ -356,6 +365,8 @@ trait Probe {
     #[inline(always)]
     fn run_gated_n(&mut self, _n: u32) {}
     #[inline(always)]
+    fn coarse_rejected(&mut self, _cur: u8) {}
+    #[inline(always)]
     fn find_call(&mut self, _finder: usize, _hit: bool) {}
     #[inline(always)]
     fn try_at_call(&mut self, _finder: usize, _hit: bool) {}
@@ -397,6 +408,12 @@ impl Probe for ScanStats {
     }
     fn run_gated_n(&mut self, n: u32) {
         self.run_gated += u64::from(n);
+    }
+    fn coarse_rejected(&mut self, cur: u8) {
+        if self.coarse_rejected.len() < 256 {
+            self.coarse_rejected.resize(256, 0);
+        }
+        self.coarse_rejected[cur as usize] += 1;
     }
     fn find_call(&mut self, finder: usize, hit: bool) {
         let f = &mut self.finders[finder];
@@ -921,6 +938,10 @@ pub struct Scanner {
     /// so the rules are only evaluated for the others.
     after_digit: Box<[u32; 257]>,
     after_hex: Box<[u32; 257]>,
+    /// Finders with a digit-class (resp. hex-class) rule accepting a run
+    /// of the indexed length (up to `RUN_CAP`).
+    len_digit: Box<[u32; 130]>,
+    len_hex: Box<[u32; 130]>,
     /// Finders with digit-class (resp. hex-class) rules: a capped run may
     /// satisfy any of them.
     digit_ruled: u32,
@@ -988,17 +1009,24 @@ impl Scanner {
         let mut rule_cur = Box::new([0u32; 256]);
         let mut after_digit = Box::new([0u32; 257]);
         let mut after_hex = Box::new([0u32; 257]);
+        let mut len_digit = Box::new([0u32; 130]);
+        let mut len_hex = Box::new([0u32; 130]);
         let mut digit_ruled = 0u32;
         let mut hex_ruled = 0u32;
         for (i, rules) in run_rules.iter().enumerate() {
             let bit = 1u32 << i;
             for rule in rules {
-                let (after, ruled) = match rule.class {
-                    crate::RunClass::Digit => (&mut after_digit, &mut digit_ruled),
-                    crate::RunClass::Hex => (&mut after_hex, &mut hex_ruled),
+                let (after, lens, ruled) = match rule.class {
+                    crate::RunClass::Digit => (&mut after_digit, &mut len_digit, &mut digit_ruled),
+                    crate::RunClass::Hex => (&mut after_hex, &mut len_hex, &mut hex_ruled),
                     crate::RunClass::Word => continue,
                 };
                 *ruled |= bit;
+                for len in rule.min..=rule.max.min(crate::RUN_CAP) {
+                    if rule.lengths == 0 || len >= 64 || rule.lengths & (1u64 << len) != 0 {
+                        lens[len as usize] |= bit;
+                    }
+                }
                 for b in 0..=255u8 {
                     if rule.cur.contains(b) {
                         rule_cur[b as usize] |= bit;
@@ -1305,6 +1333,8 @@ impl Scanner {
             rule_cur,
             after_digit,
             after_hex,
+            len_digit,
+            len_hex,
             digit_ruled,
             hex_ruled,
             run_cap,
@@ -1643,6 +1673,7 @@ impl Scanner {
         };
         let mut candidates = self.gate_prev[prev_class][cur as usize] & plain;
         if candidates == 0 {
+            probe.coarse_rejected(cur);
             return;
         }
         let next_class = if pos + 1 < input.len() {
@@ -1652,6 +1683,7 @@ impl Scanner {
         };
         candidates &= self.gate_next[cur as usize][next_class];
         if candidates == 0 {
+            probe.coarse_rejected(cur);
             return;
         }
         probe.candidate_position();
@@ -1771,12 +1803,14 @@ impl Scanner {
     #[inline(always)]
     fn may_accept(&self, runs: &Runs) -> u32 {
         let index = |run: &crate::Run| run.after.map_or(256, |b| b as usize);
-        let mut may = self.after_digit[index(&runs.digit)] | self.after_hex[index(&runs.hex)];
+        let mut may = (self.after_digit[index(&runs.digit)]
+            & self.len_digit[runs.digit.len as usize])
+            | (self.after_hex[index(&runs.hex)] & self.len_hex[runs.hex.len as usize]);
         if runs.digit.capped {
-            may |= self.digit_ruled;
+            may |= self.digit_ruled & self.len_digit[runs.digit.len as usize];
         }
         if runs.hex.capped {
-            may |= self.hex_ruled;
+            may |= self.hex_ruled & self.len_hex[runs.hex.len as usize];
         }
         may
     }

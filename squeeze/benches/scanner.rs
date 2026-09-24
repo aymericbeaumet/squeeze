@@ -653,6 +653,26 @@ impl Measurement {
             self.matches
         );
         if let Some(st) = &self.stats {
+            let mut rejected: Vec<(usize, u64)> = st
+                .coarse_rejected
+                .iter()
+                .copied()
+                .enumerate()
+                .filter(|(_, n)| *n > 0)
+                .collect();
+            rejected.sort_by(|a, b| b.1.cmp(&a.1));
+            let total: u64 = rejected.iter().map(|(_, n)| n).sum();
+            if total > 0 {
+                let _ = write!(s, " coarse_rejected={total} by byte:");
+                for (b, n) in rejected.iter().take(12) {
+                    let shown = if (*b as u8).is_ascii_graphic() {
+                        format!("{}", *b as u8 as char)
+                    } else {
+                        format!("\\x{b:02x}")
+                    };
+                    let _ = write!(s, " {shown}={:.1}%", 100.0 * *n as f64 / total as f64);
+                }
+            }
             let _ = write!(
                 s,
                 " calls={} hits={} coarse_pos={} cand_pos={} positions={} finder_lines_skipped={} lines_skipped={} sorts={}",
@@ -830,6 +850,29 @@ fn print_finder_breakdown(m: &Measurement, scanner: &Scanner) {
             f.matches,
             run
         );
+    }
+    // Where the vector stage is imprecise: coarse positions the exact
+    // gates rejected, by the byte at the position.
+    let mut rejected: Vec<(usize, u64)> = st
+        .coarse_rejected
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, n)| *n > 0)
+        .collect();
+    rejected.sort_by(|a, b| b.1.cmp(&a.1));
+    let total: u64 = rejected.iter().map(|(_, n)| n).sum();
+    if total > 0 {
+        let mut line = format!("  coarse rejected: {:.1}/KB, by byte:", total as f64 / kib);
+        for (b, n) in rejected.iter().take(14) {
+            let shown = if (*b as u8).is_ascii_graphic() {
+                format!("{}", *b as u8 as char)
+            } else {
+                format!("\\x{b:02x}")
+            };
+            line.push_str(&format!(" {shown} {:.1}", *n as f64 / kib));
+        }
+        println!("{line}");
     }
 }
 
