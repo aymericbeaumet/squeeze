@@ -24,7 +24,9 @@
   or the block walk in `squeeze/scanner.rs`, run the library tests for the other
   architecture as well: on Apple silicon
   `cargo test -p squeeze --target x86_64-apple-darwin` runs the SSSE3 path under
-  Rosetta (`rustup target add x86_64-apple-darwin` once); CI covers both.
+  Rosetta and `cargo clippy -p squeeze --target x86_64-apple-darwin --all-targets
+  -- -D warnings` lints the code that only compiles there (`rustup target add
+  x86_64-apple-darwin` once); CI covers both.
 - Finder changes must keep `cargo test -p squeeze` green: the fuzz suites check
   gate/rule contracts and strategy parity, `regex_parity` pins the hand-written
   codetag/modeline/phone matchers to the former regexes, and `linear_scans`
