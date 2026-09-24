@@ -223,7 +223,8 @@ impl Finder for Datetime {
                 ByteSet::from_bytes(b"-"),
                 ByteSet::from_fn(|b| b.is_ascii_digit()),
             )
-            .confirm(b"-", 3, b"-"),
+            .confirm(b"-", &[3], b"-")
+            .back(4),
         )
     }
 

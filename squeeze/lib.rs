@@ -565,20 +565,39 @@ impl Memo {
 pub struct Anchor {
     pub bytes: ByteSet,
     pub walk: ByteSet,
-    /// A byte at a fixed offset that confirms the first anchor byte of a
-    /// match, see [`confirm`](Self::confirm).
-    pub check: Option<AnchorCheck>,
+    /// Bytes at fixed offsets that confirm the first anchor byte of a
+    /// match, one check per group of anchor bytes, see
+    /// [`confirm`](Self::confirm).
+    pub checks: [Option<AnchorCheck>; MAX_CHECKS],
+    /// Exact number of walk bytes between a match's start and its first
+    /// anchor byte, see [`back`](Self::back).
+    pub back: Option<u8>,
 }
 
-/// When the anchor byte at `pos` is one of `anchors`, the byte at
-/// `pos + offset` must be one of `bytes` (and exist) for `pos` to be the
-/// first anchor byte of a match: a UUID's first `-` has another five bytes
-/// on, a MAC address's first `:` another three bytes on.
+/// Most offsets an [`AnchorCheck`] can list.
+pub const MAX_CHECK_OFFSETS: usize = 5;
+
+/// Most checks an [`Anchor`] can carry (one per group of anchor bytes).
+pub const MAX_CHECKS: usize = 2;
+
+/// When the anchor byte at `pos` is one of `anchors`, the byte at one of
+/// the `offsets` after `pos` must be one of `bytes` (and exist) for `pos`
+/// to be the first anchor byte of a match: a UUID's first `-` has another
+/// five bytes on, a MAC address's first `:` another three bytes on, an
+/// IPv4 address's first `.` another two to four bytes on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnchorCheck {
     pub anchors: ByteSet,
-    pub offset: u8,
+    pub offsets: [u8; MAX_CHECK_OFFSETS],
+    pub offset_count: u8,
     pub bytes: ByteSet,
+}
+
+impl AnchorCheck {
+    /// The offsets to test.
+    pub fn offsets(&self) -> &[u8] {
+        &self.offsets[..self.offset_count as usize]
+    }
 }
 
 impl Anchor {
@@ -587,17 +606,42 @@ impl Anchor {
         Anchor {
             bytes,
             walk,
-            check: None,
+            checks: [None; MAX_CHECKS],
+            back: None,
         }
     }
 
-    /// Requires, when the anchor byte is one of `anchors`, the byte
-    /// `offset` bytes after it to be one of `bytes`; other anchor bytes
-    /// are not checked. Only the first anchor byte of a match has to pass.
-    pub fn confirm(mut self, anchors: &[u8], offset: u8, bytes: &[u8]) -> Anchor {
-        self.check = Some(AnchorCheck {
+    /// States that a match starts exactly `back` bytes before its first
+    /// anchor byte (a UUID's first `-` is eight bytes in), so the scanner
+    /// tries that one position instead of every walk position. Combined
+    /// with [`confirm`](Self::confirm), a confirmed anchor goes straight to
+    /// the finder, skipping the gates and run rules it would pass anyway.
+    pub fn back(mut self, back: u8) -> Anchor {
+        self.back = Some(back);
+        self
+    }
+
+    /// Requires, when the anchor byte is one of `anchors`, the byte at one
+    /// of the `offsets` (at most [`MAX_CHECK_OFFSETS`]) after it to be one
+    /// of `bytes`; anchor bytes outside every check's `anchors` are not
+    /// checked, and at most [`MAX_CHECKS`] checks can be added. Only the
+    /// first anchor byte of a match has to pass.
+    pub fn confirm(mut self, anchors: &[u8], offsets: &[u8], bytes: &[u8]) -> Anchor {
+        assert!(
+            !offsets.is_empty() && offsets.len() <= MAX_CHECK_OFFSETS,
+            "an anchor check lists one to {MAX_CHECK_OFFSETS} offsets"
+        );
+        let mut list = [0u8; MAX_CHECK_OFFSETS];
+        list[..offsets.len()].copy_from_slice(offsets);
+        let slot = self
+            .checks
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("an anchor carries at most MAX_CHECKS checks");
+        *slot = Some(AnchorCheck {
             anchors: ByteSet::from_bytes(anchors),
-            offset,
+            offsets: list,
+            offset_count: offsets.len() as u8,
             bytes: ByteSet::from_bytes(bytes),
         });
         self

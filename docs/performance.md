@@ -19,7 +19,12 @@ finder, happens only where a match can actually start.
    match contains, with the set of bytes that may lie between the match
    start and the anchor (`-` for UUIDs, `.` and `:` for IP addresses, `/`
    for CIDR ranges): the scanner walks back from each anchor and tries the
-   start positions in order, never twice. When a block pass runs anyway,
+   start positions in order, never twice. An anchor may name bytes that
+   confirm a match's first anchor byte at fixed offsets (a UUID's first
+   `-` has another five bytes on, an IPv4 address's first `.` another two
+   to four bytes on), checked before any walk, and the exact distance from
+   the match start to that first anchor byte, in which case a confirmed
+   anchor goes straight to the finder. When a block pass runs anyway,
    it classifies extra start bytes for free, so finders join it unless they
    would disable its hex-run filter (below). Passes have disjoint finder
    sets; their matches are merged and grouped per line.
@@ -30,7 +35,9 @@ finder, happens only where a match can actually start.
    positions and lines are resolved only around matches; the other passes
    resolve the line around each candidate lazily. The CLI validates UTF-8
    once per block and hands the block to `scan_buffer`, so a line without
-   candidates is never visited.
+   candidates is never visited; plain text output without locations goes
+   through `scan_buffer_matches`, which reports ranges into the buffer and
+   never resolves or counts lines at all.
 3. **Block classifier.** Sixteen bytes at a time, NEON or SSSE3 nibble
    lookups classify each byte into one of eight categories; a per-byte
    lookup (a 128-entry table for ASCII, one entry per high nibble for
@@ -176,8 +183,11 @@ mixed corpus (Apple M4 Pro, machine under external load), single-threaded:
 
 | command | before this round | after |
 |---|---|---|
-| `squeeze --all` | 389 ms | 339 ms |
+| `squeeze --all` | 389 ms | 318 ms |
 | `squeeze --url --email --ipv4 --sha256 --uuid` | 192 ms | 104 ms |
+| `squeeze --url` | 34 ms | 24 ms |
+| `squeeze --uuid` | 29 ms | 18 ms |
+| `squeeze --datetime` | 30 ms | 18 ms |
 | `squeeze --sha256` | 51 ms | 30 ms |
 | `squeeze --uuid --sha256` | 58 ms | 40 ms |
 | `squeeze --ipv4` | 44 ms | 35 ms |

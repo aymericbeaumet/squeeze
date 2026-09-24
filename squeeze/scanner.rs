@@ -1120,6 +1120,20 @@ impl Scanner {
             .iter()
             .map(|f| if f.dispatchable() { f.anchor() } else { None })
             .collect();
+        for (i, anchor) in anchors.iter().enumerate() {
+            // An exact offset relies on the walk stopping at anchor bytes:
+            // a position before a probed anchor can then never start a
+            // match whose first anchor lies beyond it.
+            if let Some(anchor) = anchor
+                && anchor.back.is_some()
+            {
+                assert!(
+                    (0..=255u8).all(|b| !(anchor.bytes.contains(b) && anchor.walk.contains(b))),
+                    "finder {} anchors on a walk byte with an exact offset",
+                    finders[i].id()
+                );
+            }
+        }
         let starts: Vec<ByteSet> = finders
             .iter()
             .map(|f| ByteSet::from_fn(|b| f.dispatchable() && f.could_start_at(b)))
@@ -1720,15 +1734,46 @@ impl Scanner {
             }
             // A cheap confirmation before any walk: the first anchor byte
             // of a match has a known byte at a fixed offset.
-            if let Some(check) = &anchor.check
-                && check.anchors.contains(cur)
-                && !input
-                    .get(pos + check.offset as usize)
-                    .is_some_and(|&b| check.bytes.contains(b))
+            let mut confirmed = false;
+            if let Some(check) = anchor
+                .checks
+                .iter()
+                .flatten()
+                .find(|check| check.anchors.contains(cur))
             {
-                continue;
+                let seen = check.offsets().iter().any(|&offset| {
+                    input
+                        .get(pos + offset as usize)
+                        .is_some_and(|&b| check.bytes.contains(b))
+                });
+                if !seen {
+                    continue;
+                }
+                confirmed = true;
             }
             let tried = state.tried(i);
+            if let Some(back) = anchor.back {
+                // The match can only start `back` bytes before the anchor.
+                let mut next_tried = pos + 1;
+                if let Some(p) = pos.checked_sub(back as usize)
+                    && p >= tried
+                    && self.starts[i].contains(input[p])
+                {
+                    // A confirmed anchor at its exact offset is almost always
+                    // a match: the finder validates it in one go, without the
+                    // gates and rules it would pass anyway.
+                    let matched = if confirmed {
+                        self.call_finder_at(i, input, p, state, matches, probe)
+                    } else {
+                        self.try_finder_at(i, input, p, state, matches, probe)
+                    };
+                    if matched {
+                        next_tried = next_tried.max(state.pos(i));
+                    }
+                }
+                state.set_tried(i, next_tried);
+                continue;
+            }
             let mut start = pos;
             while start > tried && anchor.walk.contains(input[start - 1]) {
                 start -= 1;
@@ -1745,6 +1790,36 @@ impl Scanner {
                 p += 1;
             }
             state.set_tried(i, next_tried);
+        }
+    }
+
+    /// Calls finder `i` at `pos` without any gate or rule (they are only
+    /// necessary conditions, so skipping them changes nothing but the
+    /// cost). Returns whether a match was recorded.
+    #[inline]
+    fn call_finder_at<P: Probe>(
+        &self,
+        i: usize,
+        input: &[u8],
+        pos: usize,
+        state: &mut LineState,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) -> bool {
+        probe.candidate_position();
+        let found = self.finders[i].try_at_memo(input, pos, state.memo(i));
+        probe.try_at_call(i, found.is_some());
+        match found {
+            Some(range) if range.start >= state.pos(i) => {
+                state.set_pos(i, range.end);
+                probe.matched(i);
+                matches.push(Match {
+                    finder_index: i,
+                    range,
+                });
+                true
+            }
+            _ => false,
         }
     }
 

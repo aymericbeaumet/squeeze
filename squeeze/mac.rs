@@ -115,7 +115,7 @@ impl Finder for Mac {
                 ByteSet::from_bytes(b":-."),
                 ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
             )
-            .confirm(b":-", 3, b":-"),
+            .confirm(b":-", &[3], b":-"),
         )
     }
 

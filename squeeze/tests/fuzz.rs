@@ -1160,16 +1160,32 @@ fn assert_anchors_hold(finders: &[Box<dyn Finder>], line: &str) {
                         range
                     );
                 }
-                if let Some(check) = &anchor.check
-                    && check.anchors.contains(input[first])
+                if let Some(back) = anchor.back {
+                    assert_eq!(
+                        first - range.start,
+                        back as usize,
+                        "{} match {:?} in {line:?}: first anchor is not {back} bytes in",
+                        finder.id(),
+                        range
+                    );
+                }
+                if let Some(check) = anchor
+                    .checks
+                    .iter()
+                    .flatten()
+                    .find(|check| check.anchors.contains(input[first]))
                 {
-                    let at = first + check.offset as usize;
+                    let seen = check.offsets().iter().any(|&offset| {
+                        input
+                            .get(first + offset as usize)
+                            .is_some_and(|&b| check.bytes.contains(b))
+                    });
                     assert!(
-                        input.get(at).is_some_and(|&b| check.bytes.contains(b)),
-                        "{} match {:?} in {line:?}: no confirming byte {} after the first anchor",
+                        seen,
+                        "{} match {:?} in {line:?}: no confirming byte at {:?} after the first anchor",
                         finder.id(),
                         range,
-                        check.offset
+                        check.offsets()
                     );
                 }
             }

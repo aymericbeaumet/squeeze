@@ -241,10 +241,21 @@ impl Finder for Ip {
         if self.ipv6 {
             bytes = bytes.with(b':');
         }
-        Some(Anchor::new(
+        // The first `.` of a dotted quad has the next one two to four bytes
+        // on (`1.2.`, `10.20.`, `192.168.`); the first `:` of an IPv6
+        // address has the next one one to five bytes on (`::1`, `a:b:`,
+        // `2001:db8:`).
+        let mut anchor = Anchor::new(
             bytes,
             ByteSet::from_fn(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[')),
-        ))
+        );
+        if self.ipv4 {
+            anchor = anchor.confirm(b".", &[2, 3, 4], b".");
+        }
+        if self.ipv6 {
+            anchor = anchor.confirm(b":", &[1, 2, 3, 4, 5], b":");
+        }
+        Some(anchor)
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
