@@ -324,12 +324,12 @@ fn mapped_files_match_the_streaming_path() {
         .unwrap();
     assert!(stream.status.success());
     assert!(stream.stdout.len() > 1000);
-    // Sources differ between stdin and a file, so compare without them.
+    // Sources differ between stdin and a file, so compare without them. The
+    // JSON output escapes the path (backslashes on Windows).
+    let escaped_path = path.display().to_string().replace('\\', "\\\\");
     let strip = |out: &[u8]| {
-        String::from_utf8_lossy(out).replace(
-            &format!("\"source\":\"{}\"", path.display()),
-            "\"source\":null",
-        )
+        String::from_utf8_lossy(out)
+            .replace(&format!("\"source\":\"{escaped_path}\""), "\"source\":null")
     };
     let expected = strip(&stream.stdout);
 
