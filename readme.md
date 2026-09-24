@@ -204,25 +204,43 @@ because the regexes are approximations of squeeze's grammars.
 Mixed corpus of 56 MiB (logs, prose, source, JSON lines, markdown,
 hex-dense and unicode text, scale 8), Apple M4 Pro (10 performance + 4
 efficiency cores) while the machine was under heavy unrelated load, mean of
-7 runs; ripgrep 15.2, GNU grep 3.x. Wall time moves with load; CPU time is
-the stable figure. Rerun `mise run bench-cli` to reproduce.
+7 runs; ripgrep 15.2.0, ugrep 7.8.5, GNU grep 3.12. Output is piped away
+rather than sent to `/dev/null`, which grep and ugrep detect to stop at the
+first match. Wall time moves with load; CPU time is the stable figure.
+Rerun `mise run bench-cli` to reproduce.
 
-| task | squeeze -j 1 | squeeze | ripgrep | gnu grep |
-|---|---|---|---|---|
-| url | 38 ms wall, 37 ms cpu (1479 MiB/s, 76840 matches) | 12 ms wall, 42 ms cpu (4775 MiB/s, 76840 matches) | 105 ms wall, 47 ms cpu (533 MiB/s, 94584 matches) | 749 ms wall, 341 ms cpu (75 MiB/s, 94584 matches) |
-| email | 24 ms wall, 23 ms cpu (2366 MiB/s, 144920 matches) | 11 ms wall, 29 ms cpu (5057 MiB/s, 144920 matches) | 32 ms wall, 29 ms cpu (1763 MiB/s, 144920 matches) | 2013 ms wall, 1438 ms cpu (28 MiB/s, 144920 matches) |
-| ipv4 | 141 ms wall, 60 ms cpu (398 MiB/s, 139840 matches) | 39 ms wall, 66 ms cpu (1444 MiB/s, 139840 matches) | 187 ms wall, 116 ms cpu (300 MiB/s, 139840 matches) | 5350 ms wall, 4070 ms cpu (10 MiB/s, 139840 matches) |
-| sha256 | 57 ms wall, 55 ms cpu (990 MiB/s, 29016 matches) | 18 ms wall, 73 ms cpu (3169 MiB/s, 29016 matches) | 96 ms wall, 94 ms cpu (582 MiB/s, 63880 matches) | 11294 ms wall, 7432 ms cpu (5 MiB/s, 63880 matches) |
-| uuid | 68 ms wall, 46 ms cpu (827 MiB/s, 82856 matches) | 33 ms wall, 47 ms cpu (1716 MiB/s, 82856 matches) | 111 ms wall, 64 ms cpu (505 MiB/s, 82856 matches) | 5303 ms wall, 3901 ms cpu (11 MiB/s, 82856 matches) |
-| five kinds | 200 ms wall, 186 ms cpu (279 MiB/s, 473472 matches) | 56 ms wall, 206 ms cpu (993 MiB/s, 473472 matches) | 206 ms wall, 169 ms cpu (272 MiB/s, 526080 matches) | 31016 ms wall, 21797 ms cpu (2 MiB/s, 526080 matches) |
-| everything | 920 ms wall, 516 ms cpu (61 MiB/s, 1162904 matches) | 131 ms wall, 536 ms cpu (429 MiB/s, 1162904 matches) | n/a | n/a |
+| task | squeeze -j 1 | squeeze | ripgrep | ugrep | gnu grep |
+|---|---|---|---|---|---|
+| url | 31 ms wall, 30 ms cpu (1785 MiB/s, 76840 matches) | 11 ms wall, 35 ms cpu (5165 MiB/s, 76840 matches) | 37 ms wall, 35 ms cpu (1530 MiB/s, 94584 matches) | 32 ms wall, 29 ms cpu (1728 MiB/s, 94584 matches) | 169 ms wall, 74 ms cpu (330 MiB/s, 94584 matches) |
+| email | 41 ms wall, 27 ms cpu (1364 MiB/s, 144920 matches) | 32 ms wall, 31 ms cpu (1777 MiB/s, 144920 matches) | 87 ms wall, 38 ms cpu (645 MiB/s, 144920 matches) | 235 ms wall, 104 ms cpu (238 MiB/s, 144920 matches) | 423 ms wall, 246 ms cpu (132 MiB/s, 144920 matches) |
+| ipv4 | 42 ms wall, 41 ms cpu (1335 MiB/s, 139840 matches) | 12 ms wall, 49 ms cpu (4570 MiB/s, 139840 matches) | 97 ms wall, 94 ms cpu (580 MiB/s, 139840 matches) | 67 ms wall, 62 ms cpu (838 MiB/s, 139840 matches) | 234 ms wall, 221 ms cpu (239 MiB/s, 139840 matches) |
+| sha256 | 34 ms wall, 33 ms cpu (1635 MiB/s, 29016 matches) | 10 ms wall, 39 ms cpu (5774 MiB/s, 29016 matches) | 96 ms wall, 93 ms cpu (586 MiB/s, 63880 matches) | 363 ms wall, 204 ms cpu (154 MiB/s, 63880 matches) | 464 ms wall, 191 ms cpu (121 MiB/s, 63880 matches) |
+| uuid | 46 ms wall, 35 ms cpu (1206 MiB/s, 82856 matches) | 48 ms wall, 46 ms cpu (1158 MiB/s, 82856 matches) | 55 ms wall, 52 ms cpu (1020 MiB/s, 82856 matches) | 29 ms wall, 24 ms cpu (1958 MiB/s, 82856 matches) | 103 ms wall, 99 ms cpu (542 MiB/s, 82856 matches) |
+| five kinds | 111 ms wall, 110 ms cpu (504 MiB/s, 473472 matches) | 18 ms wall, 125 ms cpu (3143 MiB/s, 473472 matches) | 265 ms wall, 172 ms cpu (212 MiB/s, 526080 matches) | 1342 ms wall, 915 ms cpu (42 MiB/s, 526080 matches) | 1905 ms wall, 1255 ms cpu (29 MiB/s, 526080 matches) |
+| everything | 540 ms wall, 394 ms cpu (104 MiB/s, 1162904 matches) | 246 ms wall, 473 ms cpu (228 MiB/s, 1162904 matches) | n/a | n/a | n/a |
 
-Single-threaded, squeeze uses less CPU than ripgrep on every task but url,
-where it is within 10% while parsing URIs per RFC 3986 with the IANA scheme
-registry rather than matching `[^\s]+`; the five finders together are at
-parity with the five-pattern regex. With the default `--jobs auto` squeeze
-finishes each task 3 to 9x faster than ripgrep, which does not parallelise
-a single stream. GNU grep is 10 to 150x slower.
+The same tasks on the log corpus alone (8 MiB):
+
+| task | squeeze -j 1 | squeeze | ripgrep | ugrep | gnu grep |
+|---|---|---|---|---|---|
+| url | 28 ms wall, 13 ms cpu (289 MiB/s, 11232 matches) | 12 ms wall, 14 ms cpu (644 MiB/s, 11232 matches) | 19 ms wall, 10 ms cpu (411 MiB/s, 11232 matches) | 14 ms wall, 8 ms cpu (562 MiB/s, 11232 matches) | 28 ms wall, 12 ms cpu (284 MiB/s, 11232 matches) |
+| email | 8 ms wall, 6 ms cpu (966 MiB/s, 11248 matches) | 9 ms wall, 8 ms cpu (929 MiB/s, 11248 matches) | 24 ms wall, 8 ms cpu (332 MiB/s, 11248 matches) | 75 ms wall, 39 ms cpu (107 MiB/s, 11248 matches) | 52 ms wall, 34 ms cpu (154 MiB/s, 11248 matches) |
+| ipv4 | 46 ms wall, 14 ms cpu (175 MiB/s, 22440 matches) | 31 ms wall, 14 ms cpu (262 MiB/s, 22440 matches) | 21 ms wall, 18 ms cpu (383 MiB/s, 22440 matches) | 16 ms wall, 13 ms cpu (492 MiB/s, 22440 matches) | 47 ms wall, 43 ms cpu (171 MiB/s, 22440 matches) |
+| sha256 | 10 ms wall, 9 ms cpu (794 MiB/s, 11232 matches) | 5 ms wall, 10 ms cpu (1721 MiB/s, 11232 matches) | 19 ms wall, 17 ms cpu (418 MiB/s, 11232 matches) | 18 ms wall, 15 ms cpu (446 MiB/s, 11232 matches) | 30 ms wall, 27 ms cpu (269 MiB/s, 11232 matches) |
+| uuid | 11 ms wall, 10 ms cpu (739 MiB/s, 11248 matches) | 5 ms wall, 12 ms cpu (1623 MiB/s, 11248 matches) | 19 ms wall, 16 ms cpu (423 MiB/s, 11248 matches) | 8 ms wall, 5 ms cpu (998 MiB/s, 11248 matches) | 26 ms wall, 22 ms cpu (311 MiB/s, 11248 matches) |
+| five kinds | 21 ms wall, 20 ms cpu (379 MiB/s, 67400 matches) | 6 ms wall, 24 ms cpu (1303 MiB/s, 67400 matches) | 37 ms wall, 34 ms cpu (214 MiB/s, 67400 matches) | 197 ms wall, 182 ms cpu (41 MiB/s, 67400 matches) | 290 ms wall, 208 ms cpu (28 MiB/s, 67400 matches) |
+| everything | 217 ms wall, 91 ms cpu (37 MiB/s, 302736 matches) | 53 ms wall, 102 ms cpu (152 MiB/s, 302736 matches) | n/a | n/a | n/a |
+
+On the mixed corpus, single-threaded squeeze uses less CPU than ripgrep
+and GNU grep on every task, and less than ugrep on every task but uuid,
+where ugrep's fixed-length matcher is ahead, and url, where the two are
+level while squeeze parses URIs per RFC 3986 with the IANA scheme registry
+rather than matching `https?://[^\s]+`. On the log corpus the tools are
+within a few milliseconds of each other on url, ipv4 and uuid. The five
+finders together beat the five-pattern regex by a third in ripgrep and by
+8x in ugrep and GNU grep, which no longer have a literal to search for.
+With the default `--jobs auto` squeeze finishes each task several times
+faster than ripgrep, which does not parallelise a single stream.
 <!-- bench-cli:end -->
 
 `squeeze -j 1` is the like-for-like single-threaded comparison; plain
