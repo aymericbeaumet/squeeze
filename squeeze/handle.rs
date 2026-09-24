@@ -32,6 +32,12 @@ fn is_valid_host(host: &[u8]) -> bool {
 }
 
 impl Finder for Handle {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "handle"
     }

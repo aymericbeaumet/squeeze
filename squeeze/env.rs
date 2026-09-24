@@ -42,6 +42,8 @@ impl Env {
                     depth -= 1;
                     i += 1;
                 }
+                // An expression never spans lines.
+                b'\n' | b'\r' => return None,
                 _ => i += 1,
             }
         }
@@ -87,6 +89,12 @@ impl Env {
 }
 
 impl Finder for Env {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "env"
     }

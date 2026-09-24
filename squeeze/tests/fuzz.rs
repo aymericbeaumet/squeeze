@@ -1125,7 +1125,12 @@ fn anchored_pairs() -> &'static [(Scanner, Scanner)] {
         let mut pairs = Vec::new();
         for make in &singles {
             let anchored = Scanner::new(vec![make()]);
-            assert_eq!(anchored.plan(), "anchors", "{}", anchored.finders()[0].id());
+            assert!(
+                anchored.plan().starts_with("anchors("),
+                "{}: {}",
+                anchored.finders()[0].id(),
+                anchored.plan()
+            );
             let _ = &anchored;
             let mut legacy = Scanner::new(vec![make()]);
             legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
@@ -1182,10 +1187,11 @@ fn anchored_pairs() -> &'static [(Scanner, Scanner)] {
     })
 }
 
-/// Sparse and anchored scanners must also agree with per-line scanning on
-/// whole buffers (they resolve lines lazily or only around matches).
+/// Scanners that walk whole buffers (memchr passes, line-agnostic finders
+/// probed with absolute positions, block passes resolving lines lazily)
+/// must agree with per-line scanning.
 fn assert_sparse_buffers_agree(text: &str) {
-    let scanners = sparse_scanners();
+    let scanners = buffer_scanners();
     for (fast, legacy) in scanners {
         let mut expected = Vec::new();
         let bytes = text.as_bytes();
@@ -1220,11 +1226,55 @@ fn assert_sparse_buffers_agree(text: &str) {
     }
 }
 
-fn sparse_scanners() -> &'static [(Scanner, Scanner)] {
+fn buffer_scanners() -> &'static [(Scanner, Scanner)] {
     static PAIRS: std::sync::OnceLock<Vec<(Scanner, Scanner)>> = std::sync::OnceLock::new();
     PAIRS.get_or_init(|| {
         type Make = Box<dyn Fn() -> Vec<Box<dyn Finder>>>;
-        let sets: Vec<Make> = vec![
+        let mut sets: Vec<Make> = vec![
+            Box::new(|| vec![Box::new(squeeze::ip::Ip::default())]),
+            Box::new(|| vec![Box::new(squeeze::cidr::Cidr::default())]),
+            Box::new(|| vec![Box::new(squeeze::datetime::Datetime::default())]),
+            Box::new(|| vec![Box::new(squeeze::semver::Semver::default())]),
+            Box::new(|| vec![Box::new(squeeze::mac::Mac::default())]),
+            Box::new(|| vec![Box::new(squeeze::color::Color::default())]),
+            Box::new(|| vec![Box::new(squeeze::handle::Handle::default())]),
+            Box::new(|| vec![Box::new(squeeze::jwt::Jwt::default())]),
+            Box::new(|| vec![Box::new(squeeze::emoji::Emoji::default())]),
+            Box::new(|| {
+                let mut hash = squeeze::hash::Hash::default();
+                for algorithm in ["md5", "sha1", "sha256", "sha512"] {
+                    assert!(hash.add_algorithm(algorithm));
+                }
+                vec![Box::new(hash)]
+            }),
+            Box::new(|| {
+                let mut hash = squeeze::hash::Hash::default();
+                assert!(hash.add_algorithm("sha256"));
+                vec![
+                    Box::new(hash),
+                    Box::new(squeeze::uuid::Uuid::default()),
+                    Box::new(squeeze::uri::URI::default()),
+                    Box::new(squeeze::email::Email::default()),
+                    Box::new(squeeze::ip::Ip::default()),
+                ]
+            }),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::json::Json::default()),
+                    Box::new(squeeze::uuid::Uuid::default()),
+                    Box::new(squeeze::phone::Phone::default()),
+                ]
+            }),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::path::Path::default()),
+                    Box::new(squeeze::env::Env::default()),
+                    Box::new(squeeze::handle::Handle::default()),
+                    Box::new(squeeze::mac::Mac::default()),
+                ]
+            }),
+        ];
+        sets.extend::<Vec<Make>>(vec![
             Box::new(|| vec![Box::new(squeeze::uri::URI::default())]),
             Box::new(|| vec![Box::new(squeeze::email::Email::default())]),
             Box::new(|| {
@@ -1242,11 +1292,10 @@ fn sparse_scanners() -> &'static [(Scanner, Scanner)] {
                     Box::new(squeeze::email::Email::default()),
                 ]
             }),
-        ];
+        ]);
         sets.iter()
             .map(|make| {
                 let fast = Scanner::new(make());
-                assert_ne!(fast.plan(), "blocks");
                 let mut legacy = Scanner::new(make());
                 legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
                 (fast, legacy)

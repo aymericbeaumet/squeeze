@@ -519,13 +519,16 @@ pub trait Finder: Send + Sync {
         self.try_trigger_at(input, pos)
     }
 
-    /// Whether the finder's attempts never read past a line terminator on
-    /// their own: every walk it performs stops at `\n` (and `\r`) because
-    /// those bytes belong to no class it accepts, and it never reports a
-    /// range extending to the end of its input. Such a finder can be run
-    /// over a whole buffer with absolute positions instead of a line at a
-    /// time, which lets the scanner skip resolving the line of every
-    /// candidate. Defaults to `false`.
+    /// Whether `try_at`/`try_trigger_at` give the same answer on a whole
+    /// buffer as on the line alone: `\n` and `\r` never belong to a match,
+    /// and every walk treats them exactly like the end of the input (as a
+    /// boundary), so a match never depends on what surrounds its line. A
+    /// finder that matches "up to the end of the line" (codetag), accepts
+    /// line terminators as whitespace (JSON, phone) or otherwise looks at
+    /// the line as a whole must keep the default. Line-agnostic finders are
+    /// run over whole buffers with absolute positions, which lets the
+    /// scanner skip resolving the line of every candidate; property tests
+    /// compare both modes. Defaults to `false`.
     fn line_agnostic(&self) -> bool {
         false
     }

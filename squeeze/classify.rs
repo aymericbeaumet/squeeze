@@ -251,6 +251,15 @@ pub(crate) trait Backend: Copy {
         next_cat: u8,
     ) -> Lanes<Self::Vec>;
     fn or(a: Self::Vec, b: Self::Vec) -> Self::Vec;
+    fn and(a: Self::Vec, b: Self::Vec) -> Self::Vec;
+    /// `a & !b`.
+    fn and_not(a: Self::Vec, b: Self::Vec) -> Self::Vec;
+    /// Every lane selected.
+    fn ones() -> Self::Vec;
+    /// `a` shifted down by `N` lanes (1, 2, 4 or 8) with the low `N` lanes
+    /// of `b` shifted in at the top: lane `i` of the result is lane `i + N`
+    /// of the pair `a ++ b`.
+    fn shift_in<const N: i32>(a: Self::Vec, b: Self::Vec) -> Self::Vec;
     fn is_zero(v: Self::Vec) -> bool;
     fn mask(v: Self::Vec) -> u64;
 
@@ -276,6 +285,55 @@ pub(crate) trait Backend: Copy {
         } else {
             (1u64 << bits) - 1
         }
+    }
+}
+
+/// Extends run flags: `run[i]` holds the lanes starting a run of at least
+/// `N` lanes; afterwards they hold runs of at least `2 * N`. Lanes past the
+/// last block count as part of a run.
+#[inline(always)]
+fn extend_runs<B: Backend, const N: i32>(run: &mut [B::Vec; 4], count: usize) {
+    for i in 0..count {
+        let ahead = if i + 1 < count { run[i + 1] } else { B::ones() };
+        let shifted = B::shift_in::<N>(run[i], ahead);
+        run[i] = B::and(run[i], shifted);
+    }
+}
+
+/// Drops the candidate lanes of `lanes` (contiguous blocks) that start a
+/// hex run shorter than `min` lanes: a hex candidate survives only when the
+/// `min` lanes from it are all hex digits, where lanes past the last block
+/// count as hex. Only powers of two up to 32 are enforced; a larger `min`
+/// is rounded down, which keeps more candidates but never loses one.
+#[inline(always)]
+pub(crate) fn drop_short_hex_runs<B: Backend>(lanes: &mut [Lanes<B::Vec>], min: usize) {
+    let count = lanes.len().min(4);
+    let mut run = [B::ones(); 4];
+    for i in 0..count {
+        run[i] = lanes[i].hex;
+    }
+    if min >= 2 {
+        extend_runs::<B, 1>(&mut run, count);
+    }
+    if min >= 4 {
+        extend_runs::<B, 2>(&mut run, count);
+    }
+    if min >= 8 {
+        extend_runs::<B, 4>(&mut run, count);
+    }
+    if min >= 16 {
+        extend_runs::<B, 8>(&mut run, count);
+    }
+    if min >= 32 {
+        // A shift by a whole block is the next block itself.
+        for i in 0..count {
+            let ahead = if i + 1 < count { run[i + 1] } else { B::ones() };
+            run[i] = B::and(run[i], ahead);
+        }
+    }
+    for i in 0..count {
+        let short = B::and_not(lanes[i].hex, run[i]);
+        lanes[i].cand = B::and_not(lanes[i].cand, short);
     }
 }
 
@@ -319,6 +377,26 @@ impl Backend for Scalar {
     #[inline(always)]
     fn or(a: u64, b: u64) -> u64 {
         a | b
+    }
+
+    #[inline(always)]
+    fn and(a: u64, b: u64) -> u64 {
+        a & b
+    }
+
+    #[inline(always)]
+    fn and_not(a: u64, b: u64) -> u64 {
+        a & !b
+    }
+
+    #[inline(always)]
+    fn ones() -> u64 {
+        (1u64 << BLOCK) - 1
+    }
+
+    #[inline(always)]
+    fn shift_in<const N: i32>(a: u64, b: u64) -> u64 {
+        ((a >> N) | (b << (BLOCK as i32 - N))) & Self::ones()
     }
 
     #[inline(always)]
@@ -467,6 +545,30 @@ pub(crate) mod neon {
         }
 
         #[inline(always)]
+        fn and(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+            // SAFETY: baseline NEON.
+            unsafe { vandq_u8(a, b) }
+        }
+
+        #[inline(always)]
+        fn and_not(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+            // SAFETY: baseline NEON.
+            unsafe { vbicq_u8(a, b) }
+        }
+
+        #[inline(always)]
+        fn ones() -> uint8x16_t {
+            // SAFETY: baseline NEON.
+            unsafe { vdupq_n_u8(0xFF) }
+        }
+
+        #[inline(always)]
+        fn shift_in<const N: i32>(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+            // SAFETY: baseline NEON; `N` is 1, 2, 4 or 8.
+            unsafe { vextq_u8::<N>(a, b) }
+        }
+
+        #[inline(always)]
         fn is_zero(v: uint8x16_t) -> bool {
             // SAFETY: baseline NEON.
             unsafe { vmaxvq_u8(v) == 0 }
@@ -549,6 +651,31 @@ pub(crate) mod ssse3 {
         }
 
         #[inline(always)]
+        fn and(a: __m128i, b: __m128i) -> __m128i {
+            // SAFETY: baseline SSE2.
+            unsafe { _mm_and_si128(a, b) }
+        }
+
+        #[inline(always)]
+        fn and_not(a: __m128i, b: __m128i) -> __m128i {
+            // SAFETY: baseline SSE2.
+            unsafe { _mm_andnot_si128(b, a) }
+        }
+
+        #[inline(always)]
+        fn ones() -> __m128i {
+            // SAFETY: baseline SSE2.
+            unsafe { _mm_set1_epi8(-1) }
+        }
+
+        #[inline(always)]
+        fn shift_in<const N: i32>(a: __m128i, b: __m128i) -> __m128i {
+            // SAFETY: only reached from a `#[target_feature(enable =
+            // "ssse3")]` walk that `detect` selected after checking the CPU.
+            unsafe { alignr::<N>(a, b) }
+        }
+
+        #[inline(always)]
         fn is_zero(v: __m128i) -> bool {
             // SAFETY: baseline SSE2.
             unsafe { _mm_movemask_epi8(v) == 0 }
@@ -559,6 +686,14 @@ pub(crate) mod ssse3 {
             // SAFETY: baseline SSE2.
             unsafe { _mm_movemask_epi8(v) as u32 as u64 }
         }
+    }
+
+    /// Lanes `N..16` of `a` followed by lanes `0..N` of `b`.
+    #[target_feature(enable = "ssse3")]
+    #[inline]
+    unsafe fn alignr<const N: i32>(a: __m128i, b: __m128i) -> __m128i {
+        // SAFETY: SSSE3 is enabled for this function.
+        unsafe { _mm_alignr_epi8::<N>(b, a) }
     }
 
     #[target_feature(enable = "ssse3")]
@@ -717,8 +852,75 @@ mod tests {
         lanes
     }
 
+    /// The run filter keeps exactly the candidates whose hex run, counted
+    /// over the known blocks with unknown bytes as hex, reaches `min`.
+    fn check_run_filter<B: Backend>(rules: &Rules, blocks: &[[u8; BLOCK]], min: usize) {
+        let tables = B::tables(rules);
+        let mut lanes: Vec<Lanes<B::Vec>> = blocks
+            .iter()
+            .map(|block| B::block(&tables, rules, block, CAT_NONE, CAT_NONE))
+            .collect();
+        let before: Vec<Vec<usize>> = lanes
+            .iter()
+            .map(|l| lanes_of::<B>(B::mask(l.cand)))
+            .collect();
+        drop_short_hex_runs::<B>(&mut lanes, min);
+        let bytes: Vec<u8> = blocks.iter().flatten().copied().collect();
+        let enforced = if min >= 32 {
+            32
+        } else {
+            min.next_power_of_two() / if min.is_power_of_two() { 1 } else { 2 }
+        };
+        for (i, l) in lanes.iter().enumerate() {
+            let got = lanes_of::<B>(B::mask(l.cand));
+            let expected: Vec<usize> = before[i]
+                .iter()
+                .copied()
+                .filter(|&lane| {
+                    let at = i * BLOCK + lane;
+                    if !bytes[at].is_ascii_hexdigit() {
+                        return true;
+                    }
+                    let run = bytes[at..]
+                        .iter()
+                        .take_while(|b| b.is_ascii_hexdigit())
+                        .count();
+                    run >= enforced || at + run >= bytes.len()
+                })
+                .collect();
+            assert_eq!(
+                got,
+                expected,
+                "{} run filter min {min} block {i} of {blocks:?}",
+                B::NAME
+            );
+        }
+    }
+
     fn check_backend<B: Backend>(rules: &Rules) {
         let tables = B::tables(rules);
+        {
+            let mut seed = 0x2545_F491_4F6C_DD1Du64;
+            let mut next = || {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                seed
+            };
+            let alphabet = b"0123456789abcdefabcdef0123456789xyz. ";
+            for round in 0..2000 {
+                let count = 1 + (round % 4);
+                let mut blocks = vec![[0u8; BLOCK]; count];
+                for block in blocks.iter_mut() {
+                    for b in block.iter_mut() {
+                        *b = alphabet[(next() >> 8) as usize % alphabet.len()];
+                    }
+                }
+                for min in [2, 3, 4, 8, 12, 16, 32, 40, 64] {
+                    check_run_filter::<B>(rules, &blocks, min);
+                }
+            }
+        }
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = || {
             seed ^= seed << 13;

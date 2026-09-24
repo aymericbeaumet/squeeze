@@ -386,6 +386,12 @@ impl Emoji {
 }
 
 impl Finder for Emoji {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "emoji"
     }
