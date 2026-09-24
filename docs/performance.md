@@ -32,10 +32,17 @@ finder, happens only where a match can actually start.
    once per block and hands the block to `scan_buffer`, so a line without
    candidates is never visited.
 3. **Block classifier.** Sixteen bytes at a time, NEON or SSSE3 nibble
-   lookups classify each byte into a category and test the pass's start
-   set; per-category rules on the previous and next byte (two alternatives,
-   so an unconstrained finder does not cancel the others) yield a bitmap
-   that is a superset of the exact gates. When every hex-starting finder of
+   lookups classify each byte into one of eight categories; a per-byte
+   lookup (a 128-entry table for ASCII, one entry per high nibble for
+   high bytes) gives each start byte a *rule row*, and per-row rules on
+   the categories of the previous and next byte yield a bitmap that is a
+   superset of the exact gates. Each row holds two alternatives chosen to
+   admit the fewest text contexts (measured neighbour-category
+   frequencies), so the hex-run finders and the word finders starting at
+   `e` keep their own constraints and the unconstrained keycap emoji does
+   not let every digit inside a number through. The SSSE3 path, whose
+   shuffles index 16 entries, keeps rules per category, a coarser
+   superset. When every hex-starting finder of
    the pass needs a hex run of at least *k* bytes (a SHA-256 needs 64, a
    UUID 8), lane shifts drop every hex lane whose run is shorter, before the
    group of four blocks is even tested for candidates; a `--sha256` scan
@@ -169,7 +176,7 @@ mixed corpus (Apple M4 Pro, machine under external load), single-threaded:
 
 | command | before this round | after |
 |---|---|---|
-| `squeeze --all` | 389 ms | 348 ms |
+| `squeeze --all` | 389 ms | 339 ms |
 | `squeeze --url --email --ipv4 --sha256 --uuid` | 192 ms | 104 ms |
 | `squeeze --sha256` | 51 ms | 30 ms |
 | `squeeze --uuid --sha256` | 58 ms | 40 ms |
@@ -182,11 +189,11 @@ See the readme for the comparison with other matchers produced by
 
 ## Known limits and next steps
 
-- The block classifier distinguishes eight byte categories and keeps rules
-  per category rather than per start byte, so on prose about a third of
-  its candidates (words starting with `e`, `a`, `c`, `s`, `r`...) are
-  rejected by the exact gates; `--stats` lists those bytes. A 16-row
-  classifier indexed by a full byte lookup would remove most of them.
+- The block classifier's rules see eight neighbour categories, so a
+  candidate whose exact gate depends on a finer class (`-` versus other
+  punctuation, `y` versus other letters) still reaches the exact gates:
+  about 130 per KB on prose and 50 per KB on logs, listed by `--stats`.
+  Wider category vectors (two bytes per lane) would remove most of them.
 - The URI parser costs about 130 ns per matched URL: it walks the
   hier-part, query and fragment character by character and trims the
   result afterwards. A table-driven single pass would roughly halve it.

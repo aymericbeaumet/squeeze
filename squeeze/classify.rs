@@ -108,29 +108,109 @@ const fn build_category_sets() -> NibbleSets {
 pub(crate) static CATEGORY_SETS: NibbleSets = build_category_sets();
 
 /// The coarse rules of a scanner: which bytes can start a match and, per
-/// byte category, two alternative rules on the surrounding bytes.
+/// *row* of start bytes, two alternative rules on the surrounding bytes.
 ///
-/// Start-byte membership is exact for ASCII: every high-nibble row owns a
-/// bit, so the nibble product never crosses rows. Rows `8-B` and `C-F`
-/// share a bit each, so high start bytes are widened within those rows.
+/// Start bytes sharing the same constraints share a row: up to
+/// [`MAX_ROWS`] rows in all, assigned first to the high-nibble rows
+/// `8..=F` holding a high start byte (the start bytes of a nibble row
+/// share its rules) and then to the ASCII constraint groups by how often
+/// their bytes occur in text, so that the letters and digits keep their
+/// own rules. The NEON and scalar paths look
+/// the row up per byte; the SSSE3 path, whose shuffles index 16 entries,
+/// falls back to the row per byte *category* (`cat_*` tables), a coarser
+/// superset.
 ///
-/// Rules are attached to categories because the category is what the
-/// vector path can index with. Each category keeps two alternatives so a
-/// finder with no previous-byte constraint (keycap emoji on digits) does not
-/// erase the constraints of the others: `a` unions the finders that
-/// constrain the previous byte, `b` unions those that do not. A lane is a
-/// candidate when either alternative accepts its neighbours.
+/// Each row keeps two alternatives so a finder with no previous-byte
+/// constraint (keycap emoji on digits) does not erase the constraints of
+/// the others: `a` unions the finders that constrain the previous byte,
+/// `b` unions those that do not. A lane is a candidate when either
+/// alternative accepts its neighbours.
 #[derive(Clone, Debug)]
 pub(crate) struct Rules {
-    pub(crate) start: NibbleSets,
-    /// Forbidden previous/next categories per alternative, indexed by
-    /// category index (0..8); entries `8..16` are unused.
+    /// Row of each byte, 0 for bytes that start no match.
+    pub(crate) rows: [u8; 256],
+    /// Forbidden previous/next categories per alternative, indexed by row.
     pub(crate) prev_forbidden_a: [u8; 16],
     pub(crate) next_forbidden_a: [u8; 16],
     pub(crate) prev_forbidden_b: [u8; 16],
     pub(crate) next_forbidden_b: [u8; 16],
+    /// Start-byte nibble sets for the SSSE3 path: exact for ASCII, widened
+    /// within nibble rows `8-B` and `C-F` for high bytes.
+    pub(crate) start: NibbleSets,
+    /// The same rules per byte category (index `0..8`), for the SSSE3 path.
+    pub(crate) cat_prev_forbidden_a: [u8; 16],
+    pub(crate) cat_next_forbidden_a: [u8; 16],
+    pub(crate) cat_prev_forbidden_b: [u8; 16],
+    pub(crate) cat_next_forbidden_b: [u8; 16],
     /// Exact start membership, for the scalar path and for tests.
     pub(crate) is_start: [bool; 256],
+}
+
+/// Rows available to start bytes (row 0 means "no match starts here").
+const MAX_ROWS: usize = 15;
+
+/// How often a byte of text sits between a byte of the row's category and
+/// one of the column's (categories in bit order, per ten thousand),
+/// measured on the bench's mixed corpus: digits mostly sit between digits,
+/// letters between letters, and high bytes between high bytes.
+const CONTEXT_WEIGHT: [[u64; 8]; 8] = [
+    [938, 330, 11, 66, 86, 69, 12, 253],
+    [340, 515, 329, 403, 19, 33, 2, 312],
+    [16, 272, 364, 346, 53, 19, 11, 349],
+    [50, 393, 380, 475, 21, 57, 5, 309],
+    [93, 14, 53, 34, 13, 1, 1, 6],
+    [71, 25, 3, 11, 1, 1, 1, 68],
+    [11, 6, 5, 8, 1, 1, 699, 82],
+    [250, 401, 291, 352, 25, 1, 82, 556],
+];
+
+/// Share of text contexts an alternative accepts: the previous byte in one
+/// of the `prev` categories and the next byte in one of `next`.
+fn context_weight(prev: u8, next: u8) -> u64 {
+    let mut total = 0;
+    for (p, row) in CONTEXT_WEIGHT.iter().enumerate() {
+        if prev & (1 << p) == 0 {
+            continue;
+        }
+        for (n, weight) in row.iter().enumerate() {
+            if next & (1 << n) != 0 {
+                total += weight;
+            }
+        }
+    }
+    total
+}
+
+/// Approximate frequency of each byte in text, in tenths of a percent, so
+/// the most common start bytes get their own rules when rows run out.
+const fn text_weight(b: u8) -> u32 {
+    match b {
+        b'e' => 127,
+        b't' => 91,
+        b'a' => 82,
+        b'o' => 75,
+        b'i' => 70,
+        b'n' => 67,
+        b's' => 63,
+        b'h' => 61,
+        b'r' => 60,
+        b'd' => 43,
+        b'l' => 40,
+        b'c' | b'u' => 28,
+        b'm' | b'w' => 24,
+        b'f' => 22,
+        b'g' | b'y' => 20,
+        b'p' => 19,
+        b'b' => 15,
+        b'v' => 10,
+        b'k' => 8,
+        b'j' | b'x' | b'q' | b'z' => 2,
+        b'A'..=b'Z' => 4,
+        b'0'..=b'9' => 6,
+        b' ' => 150,
+        0x80..=0xFF => 5,
+        _ => 3,
+    }
 }
 
 /// Index of a one-hot category byte.
@@ -147,6 +227,93 @@ const fn row_bit(byte: u8) -> u8 {
     }
 }
 
+/// Allowed previous/next categories of a byte's two alternatives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct Allowed {
+    prev_a: u8,
+    next_a: u8,
+    prev_b: u8,
+    next_b: u8,
+}
+
+impl Allowed {
+    fn union(self, other: Allowed) -> Allowed {
+        Allowed {
+            prev_a: self.prev_a | other.prev_a,
+            next_a: self.next_a | other.next_a,
+            prev_b: self.prev_b | other.prev_b,
+            next_b: self.next_b | other.next_b,
+        }
+    }
+
+    /// Splits the `(prev, next)` constraints of the finders starting at a
+    /// byte into the two alternatives that accept the fewest contexts in
+    /// text (the sum over alternatives of [`CONTEXT_WEIGHT`] over the
+    /// allowed previous and next categories), so
+    /// the hex-run finders (previous byte not hex, next byte hex) and the
+    /// word finders (previous byte not a word byte, next byte a letter)
+    /// starting at `e` do not merge into "anything goes", and a finder
+    /// without a previous-byte constraint (keycap emoji on digits) stays
+    /// alone rather than letting every digit inside a number through.
+    /// Exhaustive up to twelve distinct constraints, greedy beyond.
+    fn cluster(constraints: &[(u8, u8)]) -> Allowed {
+        let mut sorted = constraints.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let cost = |(p, n): (u8, u8)| context_weight(p, n);
+        let union = |set: &[(u8, u8)]| {
+            set.iter()
+                .fold((0u8, 0u8), |(p, n), &(q, m)| (p | q, n | m))
+        };
+        let (a, b) = if sorted.len() <= 12 {
+            type Split = (u64, Vec<(u8, u8)>, Vec<(u8, u8)>);
+            let mut best: Option<Split> = None;
+            // The first constraint stays in `a`: halves the symmetric space.
+            for mask in 0..(1u32 << sorted.len().saturating_sub(1)) {
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                for (i, &c) in sorted.iter().enumerate() {
+                    if i > 0 && mask & (1 << (i - 1)) != 0 {
+                        b.push(c);
+                    } else {
+                        a.push(c);
+                    }
+                }
+                let total = cost(union(&a)) + if b.is_empty() { 0 } else { cost(union(&b)) };
+                if best.as_ref().is_none_or(|(c, _, _)| total < *c) {
+                    best = Some((total, a, b));
+                }
+            }
+            let (_, a, b) = best.unwrap_or_default();
+            (union(&a), union(&b))
+        } else {
+            let mut a: Vec<(u8, u8)> = Vec::new();
+            let mut b: Vec<(u8, u8)> = Vec::new();
+            for &c in &sorted {
+                let with = |set: &[(u8, u8)], c| {
+                    let mut set = set.to_vec();
+                    set.push(c);
+                    cost(union(&set))
+                };
+                let (ca, cb) = (with(&a, c) - cost(union(&a)), with(&b, c) - cost(union(&b)));
+                if b.is_empty() && !a.is_empty() && ca > 0 {
+                    b.push(c);
+                } else if ca <= cb {
+                    a.push(c);
+                } else {
+                    b.push(c);
+                }
+            }
+            (union(&a), union(&b))
+        };
+        Allowed {
+            prev_a: a.0,
+            next_a: a.1,
+            prev_b: b.0,
+            next_b: b.1,
+        }
+    }
+}
+
 impl Rules {
     /// Builds the rules from `(byte, prev_allowed, next_allowed)` items, one
     /// per finder and start byte: the categories allowed immediately before
@@ -154,46 +321,117 @@ impl Rules {
     /// all).
     pub(crate) fn build(items: impl IntoIterator<Item = (u8, u8, u8)>) -> Rules {
         let widen = |cats: u8| if cats == 0 { CAT_ALL } else { cats };
-        let mut prev_a = [0u8; 16];
-        let mut next_a = [0u8; 16];
-        let mut prev_b = [0u8; 16];
-        let mut next_b = [0u8; 16];
+        let mut constraints: Vec<Vec<(u8, u8)>> = vec![Vec::new(); 256];
         let mut rules = Rules {
-            start: NibbleSets::EMPTY,
+            rows: [0; 256],
             prev_forbidden_a: [0xFF; 16],
             next_forbidden_a: [0xFF; 16],
             prev_forbidden_b: [0xFF; 16],
             next_forbidden_b: [0xFF; 16],
+            start: NibbleSets::EMPTY,
+            cat_prev_forbidden_a: [0xFF; 16],
+            cat_next_forbidden_a: [0xFF; 16],
+            cat_prev_forbidden_b: [0xFF; 16],
+            cat_next_forbidden_b: [0xFF; 16],
             is_start: [false; 256],
         };
         for (byte, prev, next) in items {
             let (prev, next) = (widen(prev), widen(next));
             rules.is_start[byte as usize] = true;
             rules.start.insert(row_bit(byte), byte);
-            let c = category_index(CATEGORY[byte as usize]);
-            if prev == CAT_ALL {
-                prev_b[c] |= prev;
-                next_b[c] |= next;
-            } else {
-                prev_a[c] |= prev;
-                next_a[c] |= next;
+            constraints[byte as usize].push((prev, next));
+        }
+        let per_byte: Vec<Allowed> = constraints.iter().map(|c| Allowed::cluster(c)).collect();
+        // The SSSE3 path clusters per category.
+        for c in 0..8 {
+            let of_category: Vec<(u8, u8)> = (0..=255u8)
+                .filter(|&b| category_index(CATEGORY[b as usize]) == c)
+                .flat_map(|b| constraints[b as usize].iter().copied())
+                .collect();
+            let allowed = Allowed::cluster(&of_category);
+            rules.cat_prev_forbidden_a[c] = !allowed.prev_a;
+            rules.cat_next_forbidden_a[c] = !allowed.next_a;
+            rules.cat_prev_forbidden_b[c] = !allowed.prev_b;
+            rules.cat_next_forbidden_b[c] = !allowed.next_b;
+        }
+
+        // Group the start bytes by constraints: ASCII bytes by their own,
+        // high bytes per high-nibble row, widened to every byte of the
+        // nibble row. High rows come first; the heaviest ASCII groups get
+        // their own row and the rest share the last one.
+        let mut row_allowed: Vec<Allowed> = Vec::new();
+        for nibble in 8..16u8 {
+            let bytes = (nibble << 4)..=(nibble << 4 | 0x0F);
+            let allowed = bytes.clone().filter(|&b| rules.is_start[b as usize]).fold(
+                None,
+                |acc: Option<Allowed>, b| {
+                    Some(acc.map_or(per_byte[b as usize], |a| a.union(per_byte[b as usize])))
+                },
+            );
+            if let Some(allowed) = allowed {
+                row_allowed.push(allowed);
+                for b in bytes.filter(|&b| rules.is_start[b as usize]) {
+                    rules.rows[b as usize] = row_allowed.len() as u8;
+                }
             }
         }
-        for c in 0..8 {
-            rules.prev_forbidden_a[c] = !prev_a[c];
-            rules.next_forbidden_a[c] = !next_a[c];
-            rules.prev_forbidden_b[c] = !prev_b[c];
-            rules.next_forbidden_b[c] = !next_b[c];
+        let mut groups: Vec<(Allowed, Vec<u8>, u32)> = Vec::new();
+        for b in 0..0x80u8 {
+            if !rules.is_start[b as usize] {
+                continue;
+            }
+            match groups.iter_mut().find(|g| g.0 == per_byte[b as usize]) {
+                Some(g) => {
+                    g.1.push(b);
+                    g.2 += text_weight(b);
+                }
+                None => groups.push((per_byte[b as usize], vec![b], text_weight(b))),
+            }
+        }
+        groups.sort_by_key(|g| std::cmp::Reverse(g.2));
+        let ascii_rows = MAX_ROWS - row_allowed.len();
+        for (i, (allowed, bytes, _)) in groups.iter().enumerate() {
+            let row = if i < ascii_rows {
+                row_allowed.push(*allowed);
+                row_allowed.len()
+            } else {
+                // Shared last row: the union of every leftover group.
+                let last = row_allowed.len() - 1;
+                row_allowed[last] = row_allowed[last].union(*allowed);
+                last + 1
+            };
+            for &b in bytes {
+                rules.rows[b as usize] = row as u8;
+            }
+        }
+        debug_assert!(row_allowed.len() <= MAX_ROWS);
+        for (i, allowed) in row_allowed.iter().enumerate() {
+            rules.prev_forbidden_a[i + 1] = !allowed.prev_a;
+            rules.next_forbidden_a[i + 1] = !allowed.next_a;
+            rules.prev_forbidden_b[i + 1] = !allowed.prev_b;
+            rules.next_forbidden_b[i + 1] = !allowed.next_b;
         }
         rules
     }
 
-    /// Whether a lane with category `cat` between `prev` and `next` passes.
+    /// Whether a lane holding `byte` between `prev` and `next` passes.
     #[inline]
-    pub(crate) fn accepts(&self, cat: u8, prev: u8, next: u8) -> bool {
+    pub(crate) fn accepts(&self, byte: u8, prev: u8, next: u8) -> bool {
+        let r = self.rows[byte as usize] as usize;
+        r != 0
+            && ((prev & self.prev_forbidden_a[r] == 0 && next & self.next_forbidden_a[r] == 0)
+                || (prev & self.prev_forbidden_b[r] == 0 && next & self.next_forbidden_b[r] == 0))
+    }
+
+    /// Whether a lane with category `cat` between `prev` and `next` passes
+    /// the category rules (the SSSE3 path).
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn accepts_category(&self, cat: u8, prev: u8, next: u8) -> bool {
         let c = category_index(cat);
-        (prev & self.prev_forbidden_a[c] == 0 && next & self.next_forbidden_a[c] == 0)
-            || (prev & self.prev_forbidden_b[c] == 0 && next & self.next_forbidden_b[c] == 0)
+        (prev & self.cat_prev_forbidden_a[c] == 0 && next & self.cat_next_forbidden_a[c] == 0)
+            || (prev & self.cat_prev_forbidden_b[c] == 0
+                && next & self.cat_next_forbidden_b[c] == 0)
     }
 
     /// Reference implementation of one block with exact start membership.
@@ -214,7 +452,7 @@ impl Rules {
             } else {
                 CATEGORY[block[lane + 1] as usize]
             };
-            if self.accepts(CATEGORY[b as usize], prev, next) {
+            if self.accepts(b, prev, next) {
                 mask |= 1 << lane;
             }
         }
@@ -461,8 +699,16 @@ pub(crate) mod neon {
     pub(crate) struct Tables {
         cat_lo: uint8x16_t,
         cat_hi: uint8x16_t,
-        start_lo: uint8x16_t,
-        start_hi: uint8x16_t,
+        /// Rows of bytes `0..64` and `64..128`.
+        rows_lo: uint8x16x4_t,
+        rows_hi: uint8x16x4_t,
+        /// Row of each high-nibble row `8..=F` (entries `0..8` are 0).
+        rows_high: uint8x16_t,
+        /// Exact start membership of high bytes: bit `hi - 8` of
+        /// `high_lo[lo]` is set when byte `hi:lo` starts a match, and
+        /// `high_hi[hi]` holds that bit alone.
+        high_lo: uint8x16_t,
+        high_hi: uint8x16_t,
         prev_a: uint8x16_t,
         next_a: uint8x16_t,
         prev_b: uint8x16_t,
@@ -478,13 +724,39 @@ pub(crate) mod neon {
         #[inline(always)]
         fn tables(rules: &Rules) -> Tables {
             // SAFETY: NEON is part of the aarch64 baseline; every load reads
-            // exactly 16 bytes from a `[u8; 16]`.
+            // exactly 16 bytes from a `[u8; 256]` at an offset below 240.
             unsafe {
+                let rows = rules.rows.as_ptr();
+                let quad = |at: usize| {
+                    uint8x16x4_t(
+                        vld1q_u8(rows.add(at)),
+                        vld1q_u8(rows.add(at + 16)),
+                        vld1q_u8(rows.add(at + 32)),
+                        vld1q_u8(rows.add(at + 48)),
+                    )
+                };
+                let mut high = [0u8; 16];
+                let mut high_lo = [0u8; 16];
+                let mut high_hi = [0u8; 16];
+                for (nibble, slot) in high.iter_mut().enumerate().skip(8) {
+                    let bit = 1u8 << (nibble - 8);
+                    high_hi[nibble] = bit;
+                    for (lo, mask) in high_lo.iter_mut().enumerate() {
+                        let row = rules.rows[nibble << 4 | lo];
+                        if row != 0 {
+                            *slot = row;
+                            *mask |= bit;
+                        }
+                    }
+                }
                 Tables {
                     cat_lo: vld1q_u8(CATEGORY_SETS.lo.as_ptr()),
                     cat_hi: vld1q_u8(CATEGORY_SETS.hi.as_ptr()),
-                    start_lo: vld1q_u8(rules.start.lo.as_ptr()),
-                    start_hi: vld1q_u8(rules.start.hi.as_ptr()),
+                    rows_lo: quad(0),
+                    rows_hi: quad(64),
+                    rows_high: vld1q_u8(high.as_ptr()),
+                    high_lo: vld1q_u8(high_lo.as_ptr()),
+                    high_hi: vld1q_u8(high_hi.as_ptr()),
                     prev_a: vld1q_u8(rules.prev_forbidden_a.as_ptr()),
                     next_a: vld1q_u8(rules.next_forbidden_a.as_ptr()),
                     prev_b: vld1q_u8(rules.prev_forbidden_b.as_ptr()),
@@ -515,20 +787,30 @@ pub(crate) mod neon {
                 );
                 let other = vbicq_u8(vandq_u8(vceqzq_u8(cat), vdupq_n_u8(CAT_OTHER)), newline);
                 let cat = vorrq_u8(cat, other);
-                // Category index: popcount(cat - 1) for a one-hot byte.
-                let index = vcntq_u8(vsubq_u8(cat, vdupq_n_u8(1)));
 
-                let is_start = vtstq_u8(vqtbl1q_u8(t.start_lo, lo), vqtbl1q_u8(t.start_hi, hi));
+                // Rule row per byte: a 128-entry lookup for ASCII (indices
+                // out of range read as 0, so high bytes contribute nothing)
+                // plus, for the high bytes that start a match exactly, the
+                // row of their high-nibble row (nibbles `0..8` read as 0).
+                let high_start = vtstq_u8(vqtbl1q_u8(t.high_lo, lo), vqtbl1q_u8(t.high_hi, hi));
+                let row = vorrq_u8(
+                    vorrq_u8(
+                        vqtbl4q_u8(t.rows_lo, v),
+                        vqtbl4q_u8(t.rows_hi, vsubq_u8(v, vdupq_n_u8(64))),
+                    ),
+                    vandq_u8(vqtbl1q_u8(t.rows_high, hi), high_start),
+                );
+                let is_start = vmvnq_u8(vceqzq_u8(row));
 
                 let prev = vextq_u8::<15>(vdupq_n_u8(prev_cat), cat);
                 let next = vextq_u8::<1>(cat, vdupq_n_u8(next_cat));
                 let bad_a = vorrq_u8(
-                    vtstq_u8(prev, vqtbl1q_u8(t.prev_a, index)),
-                    vtstq_u8(next, vqtbl1q_u8(t.next_a, index)),
+                    vtstq_u8(prev, vqtbl1q_u8(t.prev_a, row)),
+                    vtstq_u8(next, vqtbl1q_u8(t.next_a, row)),
                 );
                 let bad_b = vorrq_u8(
-                    vtstq_u8(prev, vqtbl1q_u8(t.prev_b, index)),
-                    vtstq_u8(next, vqtbl1q_u8(t.next_b, index)),
+                    vtstq_u8(prev, vqtbl1q_u8(t.prev_b, row)),
+                    vtstq_u8(next, vqtbl1q_u8(t.next_b, row)),
                 );
                 Lanes {
                     cand: vbicq_u8(is_start, vandq_u8(bad_a, bad_b)),
@@ -623,10 +905,10 @@ pub(crate) mod ssse3 {
                     cat_hi: load(CATEGORY_SETS.hi.as_ptr()),
                     start_lo: load(rules.start.lo.as_ptr()),
                     start_hi: load(rules.start.hi.as_ptr()),
-                    prev_a: load(rules.prev_forbidden_a.as_ptr()),
-                    next_a: load(rules.next_forbidden_a.as_ptr()),
-                    prev_b: load(rules.prev_forbidden_b.as_ptr()),
-                    next_b: load(rules.next_forbidden_b.as_ptr()),
+                    prev_a: load(rules.cat_prev_forbidden_a.as_ptr()),
+                    next_a: load(rules.cat_next_forbidden_a.as_ptr()),
+                    prev_b: load(rules.cat_prev_forbidden_b.as_ptr()),
+                    next_b: load(rules.cat_next_forbidden_b.as_ptr()),
                 }
             }
         }
@@ -830,16 +1112,68 @@ mod tests {
     fn alternatives_keep_constrained_finders_precise() {
         let rules = sample_rules();
         // A digit inside a digit run is only a candidate before a high byte.
-        assert!(!rules.accepts(CAT_DIGIT, CAT_DIGIT, CAT_DIGIT));
-        assert!(rules.accepts(CAT_DIGIT, CAT_DIGIT, CAT_HIGH));
-        assert!(rules.accepts(CAT_DIGIT, CAT_OTHER, CAT_DIGIT));
+        assert!(!rules.accepts(b'5', CAT_DIGIT, CAT_DIGIT));
+        assert!(rules.accepts(b'5', CAT_DIGIT, CAT_HIGH));
+        assert!(rules.accepts(b'5', CAT_OTHER, CAT_DIGIT));
         // Hex letters have no unconstrained finder.
-        assert!(!rules.accepts(CAT_HEX_ALPHA, CAT_HEX_ALPHA, CAT_HIGH));
-        assert!(rules.accepts(CAT_HEX_ALPHA, CAT_OTHER_ALPHA, CAT_DIGIT));
+        assert!(!rules.accepts(b'a', CAT_HEX_ALPHA, CAT_HIGH));
+        assert!(rules.accepts(b'a', CAT_OTHER_ALPHA, CAT_DIGIT));
         // Line edges (CAT_NONE) never forbid.
-        assert!(rules.accepts(CAT_HEX_ALPHA, CAT_NONE, CAT_NONE));
-        // A category without any start byte accepts nothing.
-        assert!(!rules.accepts(CAT_COLON, CAT_OTHER, CAT_OTHER));
+        assert!(rules.accepts(b'a', CAT_NONE, CAT_NONE));
+        // A byte that starts nothing accepts nothing.
+        assert!(!rules.accepts(b':', CAT_OTHER, CAT_OTHER));
+        // The category rules are a superset of the row rules.
+        for b in 0..=255u8 {
+            for prev in [CAT_DIGIT, CAT_HEX_ALPHA, CAT_OTHER, CAT_HIGH, CAT_NONE] {
+                for next in [CAT_DIGIT, CAT_HEX_ALPHA, CAT_OTHER, CAT_HIGH, CAT_NONE] {
+                    if rules.accepts(b, prev, next) {
+                        assert!(rules.accepts_category(CATEGORY[b as usize], prev, next));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rows_keep_distinct_bytes_apart_and_share_when_they_run_out() {
+        // Two bytes with different constraints get different rows; the
+        // shared last row unions the leftovers, so it only widens.
+        let rules = Rules::build([
+            (b'a', CAT_OTHER, CAT_DIGIT),
+            (b'b', CAT_DIGIT, CAT_OTHER),
+            (b'.', CAT_ALL, CAT_ALL),
+        ]);
+        assert_ne!(rules.rows[b'a' as usize], rules.rows[b'b' as usize]);
+        assert!(rules.accepts(b'a', CAT_OTHER, CAT_DIGIT));
+        assert!(!rules.accepts(b'a', CAT_DIGIT, CAT_OTHER));
+        assert!(rules.accepts(b'b', CAT_DIGIT, CAT_OTHER));
+        assert!(!rules.accepts(b'b', CAT_OTHER, CAT_DIGIT));
+        assert_eq!(rules.rows[b'c' as usize], 0);
+        // More distinct constraints than rows: every byte still accepts at
+        // least what it did alone.
+        let items: Vec<(u8, u8, u8)> = (b'a'..=b'z')
+            .enumerate()
+            .map(|(i, b)| (b, 1u8 << (i % 8), 1u8 << ((i / 8) % 8)))
+            .collect();
+        let rules = Rules::build(items.clone());
+        for (b, prev, next) in items {
+            assert!(rules.accepts(b, prev, next), "{}", b as char);
+        }
+        // High bytes: exact membership, one rule row per high nibble.
+        let rules = Rules::build([
+            (0xE2, CAT_ALL, CAT_HIGH),
+            (0xE3, CAT_OTHER, CAT_HIGH),
+            (0xF0, CAT_ALL, CAT_HIGH),
+        ]);
+        assert_eq!(rules.rows[0xE2], rules.rows[0xE3]);
+        assert_ne!(rules.rows[0xE2], 0);
+        assert_ne!(rules.rows[0xF0], 0);
+        assert_ne!(rules.rows[0xE2], rules.rows[0xF0]);
+        for b in [0xE0u8, 0xEF, 0xD0, 0xC2, 0x80, 0xF1] {
+            assert_eq!(rules.rows[b as usize], 0, "{b:#x}");
+        }
+        assert!(rules.accepts(0xE3, CAT_OTHER, CAT_HIGH));
+        assert!(rules.accepts(0xE3, CAT_DIGIT, CAT_HIGH));
     }
 
     fn lanes_of<B: Backend>(mut mask: u64) -> Vec<usize> {
