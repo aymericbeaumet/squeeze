@@ -147,3 +147,16 @@ fn long_hex_and_digit_runs_stay_linear() {
     let (_, stats) = scan_bounded(&line);
     assert!(stats.calls() < 100);
 }
+
+#[test]
+fn many_domain_candidates_stay_linear() {
+    // Every dot of a failing token used to walk the token again.
+    let line = "a.b".repeat(30_000);
+    let (texts, stats) = scan_bounded(&line);
+    assert!(texts.iter().all(|(kind, _)| *kind != "domain"), "{texts:?}");
+    assert!(stats.calls() <= 4 * line.len() as u64);
+    let line = "x.y ".repeat(25_000);
+    scan_bounded(&line);
+    let line = "a.com.".repeat(15_000);
+    scan_bounded(&line);
+}

@@ -115,9 +115,19 @@ impl Finder for Mac {
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
+        // Three groups: `aa:bb:cc:` (or dashes) and `aaaa.bbbb.cccc`.
         vec![
-            RunRule::new(RunClass::Hex, 2, 2).followed_by(b":-"),
-            RunRule::new(RunClass::Hex, 4, 4).followed_by(b"."),
+            RunRule::new(RunClass::Hex, 2, 2)
+                .followed_by(b":-")
+                .then(RunClass::Hex, 2, 2)
+                .followed_by(b":-")
+                .then(RunClass::Hex, 2, 2)
+                .followed_by(b":-"),
+            RunRule::new(RunClass::Hex, 4, 4)
+                .followed_by(b".")
+                .then(RunClass::Hex, 4, 4)
+                .followed_by(b".")
+                .then(RunClass::Hex, 4, 4),
         ]
     }
 

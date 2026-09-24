@@ -233,8 +233,21 @@ impl Finder for Cidr {
 
     fn run_rules(&self) -> Vec<RunRule> {
         vec![
-            RunRule::new(RunClass::Digit, 1, 3).followed_by(b"."),
-            RunRule::new(RunClass::Hex, 1, 4).followed_by(b":"),
+            RunRule::new(RunClass::Digit, 1, 3)
+                .followed_by(b".")
+                .then(RunClass::Digit, 1, 3)
+                .followed_by(b"."),
+            RunRule::new(RunClass::Hex, 1, 4)
+                .followed_by(b":")
+                .then(RunClass::Hex, 1, 4)
+                .followed_by(b":")
+                .then(RunClass::Hex, 0, 4)
+                .followed_by(b":")
+                .or_end(),
+            RunRule::new(RunClass::Hex, 1, 4)
+                .followed_by(b":")
+                .then(RunClass::Hex, 0, 0)
+                .followed_by(b":"),
         ]
     }
 

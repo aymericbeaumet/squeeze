@@ -296,13 +296,31 @@ impl Runs {
     }
 }
 
+/// A run required right after the byte that ends the previous run of a
+/// [`RunRule`]: `class` bytes numbering `min..=max`, followed by a byte in
+/// `after` (or the end of the input when `after_end` is set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Then {
+    pub class: RunClass,
+    pub min: u8,
+    pub max: u8,
+    pub after: ByteSet,
+    pub after_end: bool,
+}
+
+/// Most follow-up runs a rule can chain, see [`RunRule::then`].
+pub const MAX_THEN: usize = 2;
+
 /// A declarative rule on the run starting at a candidate position, see
 /// [`Finder::run_rules`].
 ///
 /// A rule applies when the start byte is in `cur`; it accepts when the
 /// `class` run has a length in `min..=max` and the byte after it is in
-/// `after` (or the input ends there and `after_end` is set). A capped run
-/// always satisfies the `after` part, since its true end is unknown.
+/// `after` (or the input ends there and `after_end` is set), and when every
+/// [`Then`] step is met in turn right after that byte (an IPv4 address
+/// starts with `1.2.` whatever follows, a MAC address with `aa:bb:cc:`). A
+/// capped run always satisfies the rest of the rule, since its true end is
+/// unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunRule {
     pub cur: ByteSet,
@@ -311,6 +329,7 @@ pub struct RunRule {
     pub max: u8,
     pub after: ByteSet,
     pub after_end: bool,
+    pub then: [Option<Then>; MAX_THEN],
 }
 
 impl RunRule {
@@ -328,13 +347,56 @@ impl RunRule {
             max,
             after: ByteSet::ALL,
             after_end: true,
+            then: [None; MAX_THEN],
         }
     }
 
-    /// Requires the byte after the run to be one of `bytes`.
+    /// Requires the byte after the last run described so far (the rule's
+    /// own run, or its latest [`then`](Self::then) step) to be one of
+    /// `bytes`; the end of the input no longer qualifies unless
+    /// [`or_end`](Self::or_end) follows.
     pub fn followed_by(mut self, bytes: &[u8]) -> RunRule {
-        self.after = ByteSet::from_bytes(bytes);
-        self.after_end = false;
+        let set = ByteSet::from_bytes(bytes);
+        match self.then.iter_mut().rev().find_map(Option::as_mut) {
+            Some(step) => {
+                step.after = set;
+                step.after_end = false;
+            }
+            None => {
+                self.after = set;
+                self.after_end = false;
+            }
+        }
+        self
+    }
+
+    /// Also accepts the end of the input after the last run described so
+    /// far.
+    pub fn or_end(mut self) -> RunRule {
+        match self.then.iter_mut().rev().find_map(Option::as_mut) {
+            Some(step) => step.after_end = true,
+            None => self.after_end = true,
+        }
+        self
+    }
+
+    /// Chains a run of `class` bytes numbering `min..=max` that must start
+    /// right after the byte ending the previous run; it may be followed by
+    /// anything until [`followed_by`](Self::followed_by) restricts it. Up
+    /// to [`MAX_THEN`] steps can be chained.
+    pub fn then(mut self, class: RunClass, min: u8, max: u8) -> RunRule {
+        let slot = self
+            .then
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("a rule chains at most MAX_THEN steps");
+        *slot = Some(Then {
+            class,
+            min,
+            max,
+            after: ByteSet::ALL,
+            after_end: true,
+        });
         self
     }
 
@@ -344,7 +406,7 @@ impl RunRule {
     }
 
     #[inline]
-    fn accepts(&self, runs: &Runs) -> bool {
+    fn accepts(&self, runs: &Runs, input: &[u8], pos: usize) -> bool {
         let run = runs.get(self.class);
         if run.len < self.min || run.len > self.max {
             return false;
@@ -353,19 +415,44 @@ impl RunRule {
             return true;
         }
         match run.after {
-            Some(b) => self.after.contains(b),
-            None => self.after_end,
+            Some(b) if self.after.contains(b) => {}
+            Some(_) => return false,
+            None => return self.after_end,
         }
+        let mut at = pos + run.len as usize + 1;
+        for step in self.then.iter().flatten() {
+            let is_class = |b: u8| match step.class {
+                RunClass::Digit => b.is_ascii_digit(),
+                RunClass::Hex => b.is_ascii_hexdigit(),
+            };
+            let limit = input.len().min(at + step.max as usize + 1);
+            let mut end = at;
+            while end < limit && is_class(input[end]) {
+                end += 1;
+            }
+            let len = end - at;
+            if len < step.min as usize || len > step.max as usize {
+                return false;
+            }
+            match input.get(end) {
+                Some(&b) if step.after.contains(b) => {}
+                Some(_) => return false,
+                None => return step.after_end,
+            }
+            at = end + 1;
+        }
+        true
     }
 
-    /// Evaluates a finder's rules: a match may start when no rule applies
-    /// to `cur`, or when at least one applicable rule accepts `runs`.
+    /// Evaluates a finder's rules for the candidate at `pos` of `input`,
+    /// whose runs are `runs`: a match may start when no rule applies to
+    /// `cur`, or when at least one applicable rule accepts.
     #[inline(always)]
-    pub fn allow(rules: &[RunRule], cur: u8, runs: &Runs) -> bool {
+    pub fn allow(rules: &[RunRule], cur: u8, runs: &Runs, input: &[u8], pos: usize) -> bool {
         let mut applicable = false;
         for rule in rules {
             if rule.applies(cur) {
-                if rule.accepts(runs) {
+                if rule.accepts(runs, input, pos) {
                     return true;
                 }
                 applicable = true;

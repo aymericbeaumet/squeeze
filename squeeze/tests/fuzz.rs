@@ -160,6 +160,18 @@ proptest! {
     }
 
     #[test]
+    fn domain_trigger_consistent(
+        s in "( |\\.|\\.\\.|@|/|:|-|_|\\(|\\)|,|[a-z]{1,4}|[0-9]{1,3}|com|org|uk|co\\.uk|museum|x|example\\.com|user@|https?://|bücher|ü|ß|日本|😀|\\+tag|first\\.last|192\\.168\\.1\\.1|v2){0,14}"
+    ) {
+        check_dispatch_consistency(Box::new(squeeze::domain::Domain::default()), &s);
+    }
+
+    #[test]
+    fn domain_trigger_consistent_on_arbitrary_input(s in "\\PC{0,80}") {
+        check_dispatch_consistency(Box::new(squeeze::domain::Domain::default()), &s);
+    }
+
+    #[test]
     fn color_dispatch_consistent(s in "[#a-fA-F0-9rgbhslRGBHSL() ,%.]{0,100}") {
         check_dispatch_consistency(Box::new(squeeze::color::Color::default()), &s);
     }
@@ -815,7 +827,8 @@ fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
             let gated_next =
                 pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]);
             let rules = finder.run_rules();
-            let gated_run = !squeeze::RunRule::allow(&rules, cur, &squeeze::Runs::at(input, pos));
+            let gated_run =
+                !squeeze::RunRule::allow(&rules, cur, &squeeze::Runs::at(input, pos), input, pos);
             if gated_prev || gated_next || gated_run {
                 assert_eq!(
                     finder.try_at(input, pos),
@@ -828,12 +841,53 @@ fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
     }
 }
 
+#[test]
+fn dispatch_gates_hold_on_shaped_tokens() {
+    for line in [
+        "fe80::1%eth0",
+        "a::b ",
+        "a::b)",
+        "a:b:: x",
+        "a:b::c/64",
+        "1:2:3:4:5:6:7:8",
+        "1::",
+        "12:34:56 ",
+        "12:34",
+        "3.14 ",
+        "1.2.3.4",
+        "10.0.0.0/8",
+        "2001:db8::/32",
+        "2024-01-15T10:00:00Z",
+        "1.2.3-rc.1",
+        "aa:bb:cc:dd:ee:ff",
+        "aaaa.bbbb.cccc",
+        "123-456-7890",
+        "123.456.7890",
+        "١٢٣-456-7890",
+        "12٣-456-7890",
+        "123-٤٥٦-7890",
+        "123-45٦-7890",
+        "123-456-٧٨٩٠",
+        "123-456-78٩0",
+        "550e8400-e29b-41d4-a716-446655440000",
+    ] {
+        assert_gates_agree(&dispatch_finders(), line);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
 
     #[test]
     fn dispatch_gates_never_reject_a_match_on_dense_input(
         s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ %?!,;*&-]{0,48}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_shaped_tokens(
+        s in "( |-|\\.|:|/|x|[0-9]{1,4}|[0-9]{3}-[0-9]{3}-[0-9]{4}|[0-9]{3}\\.[0-9]{3}\\.[0-9]{4}|[0-9]{3}-[0-9]{3}-[٠-٩]{4}|[0-9]{3}-[٠-٩][0-9]{2}-[0-9]{4}|١٢٣-456-7890|12٣-456-7890|123-٤٥٦-7890|123-45٦-7890|123-456-٧٨٩٠|123-456-78٩0|\\+1 415 555 1234|\\(415\\) 555-1234|[0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){1,7}|a::b|a:b::|::1|1::|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}([:-][0-9A-F]{2}){5}|[0-9A-F]{4}(\\.[0-9A-F]{4}){2}|20[0-9]{2}-[01][0-9]-[0-3][0-9]|v?[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}|3\\.14|12:34:56|12:34|10\\.0\\.0\\.0/8|2001:db8::/32){0,10}"
     ) {
         assert_gates_agree(&dispatch_finders(), &s);
     }

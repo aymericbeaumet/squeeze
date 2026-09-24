@@ -98,7 +98,13 @@ impl Finder for Semver {
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
-        vec![RunRule::new(RunClass::Digit, 1, crate::RUN_CAP).followed_by(b".")]
+        // `major.minor.`: two dotted numbers before the patch number.
+        vec![
+            RunRule::new(RunClass::Digit, 1, crate::RUN_CAP)
+                .followed_by(b".")
+                .then(RunClass::Digit, 1, crate::RUN_CAP)
+                .followed_by(b"."),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

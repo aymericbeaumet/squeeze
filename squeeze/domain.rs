@@ -3,8 +3,13 @@
 //! Extracts standalone DNS-style domain names (e.g. `example.com`,
 //! `sub.example.co.uk`) whose TLD exists. Anything preceded by `@` or `://`
 //! is skipped to avoid eating the host part of emails and URLs.
+//!
+//! The scanner triggers the finder at every `.` between an alphanumeric
+//! byte and a letter; the finder walks back to the start of the token and
+//! evaluates it exactly as [`Finder::find`] does, remembering a failed
+//! token so its other dots cost nothing.
 
-use super::Finder;
+use super::{Finder, Memo};
 use std::ops::Range;
 
 #[inline]
@@ -57,12 +62,192 @@ fn is_email_local_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'%' | b'+' | b'-')
 }
 
+/// Whether `prev`, the byte before a token, makes the token part of a
+/// larger one (an email local part, a URL path, a scheme).
+#[inline]
+fn continues_token(prev: u8) -> bool {
+    prev == b'@'
+        || prev == b'/'
+        || prev == b':'
+        || prev.is_ascii_alphanumeric()
+        || prev == b'.'
+        || prev == b'-'
+        || prev == b'_'
+}
+
+/// Outcome of evaluating the token that starts at a candidate position.
+enum Eval {
+    /// A domain ends at this position.
+    Match(usize),
+    /// No domain; `find` resumes its search at this position.
+    Skip(usize),
+}
+
 #[derive(Default)]
 pub struct Domain {}
+
+impl Domain {
+    /// Evaluates the token starting at `start`, an alphanumeric byte that
+    /// does not continue a previous token.
+    fn evaluate(input: &[u8], start: usize) -> Eval {
+        // Walk through labels separated by '.'.
+        let mut end = start;
+        let mut label_start = start;
+        let mut dot_count = 0u32;
+        let mut last_dot = 0usize;
+        let mut valid = true;
+
+        while end < input.len() {
+            let b = input[end];
+            if is_label_byte(b) {
+                end += 1;
+            } else if b == b'.' {
+                // A dot not followed by a label byte (ellipsis, end of
+                // sentence or token) ends the domain here instead of
+                // invalidating the candidate.
+                if end + 1 >= input.len() || !is_label_byte(input[end + 1]) {
+                    break;
+                }
+                let label_len = end - label_start;
+                if label_len == 0
+                    || label_len > 63
+                    || input[label_start] == b'-'
+                    || input[end - 1] == b'-'
+                {
+                    valid = false;
+                    break;
+                }
+                dot_count += 1;
+                last_dot = end;
+                label_start = end + 1;
+                end += 1;
+            } else {
+                break;
+            }
+        }
+
+        if !valid || dot_count == 0 || end <= last_dot + 1 {
+            return Eval::Skip(if end > start { end + 1 } else { start + 1 });
+        }
+
+        // Disallow trailing characters that would make this part of a
+        // path/URL or of code (`e.to_string()`, `source.map(f)`).
+        if end < input.len() {
+            let next = input[end];
+            if matches!(next, b'/' | b':' | b'_' | b'(') {
+                return Eval::Skip(end + 1);
+            }
+            // If the token continues as an email local part that ends at
+            // '@', this candidate sits inside an email address (e.g. the
+            // `first.last` of `first.last+tag@company.co.uk`): suppress
+            // it and skip past the token.
+            let mut probe = end;
+            while probe < input.len() && is_email_local_byte(input[probe]) {
+                probe += 1;
+            }
+            if probe < input.len() && input[probe] == b'@' {
+                return Eval::Skip(probe + 1);
+            }
+        }
+
+        // Validate final label as TLD.
+        let tld = &input[last_dot + 1..end];
+        if !is_known_tld(tld) {
+            return Eval::Skip(end);
+        }
+
+        // Reject all-numeric labels (avoid eating IPs).
+        if input[start..end]
+            .iter()
+            .all(|b| b.is_ascii_digit() || *b == b'.')
+        {
+            return Eval::Skip(end);
+        }
+
+        Eval::Match(end)
+    }
+
+    /// The domain, if any, whose last dot (the one before the TLD) or an
+    /// inner dot is at `pos`: walks back over the token the dot belongs to
+    /// and evaluates it from its start, exactly as [`Finder::find`] would
+    /// have when reaching that start.
+    fn from_dot(input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
+        if input[pos] != b'.' {
+            return None;
+        }
+        // The label before the dot ends with an alphanumeric byte and the
+        // TLD (or the next label) starts with one; a dot elsewhere cannot be
+        // the last dot of a domain.
+        if pos == 0
+            || !input[pos - 1].is_ascii_alphanumeric()
+            || pos + 1 >= input.len()
+            || !input[pos + 1].is_ascii_alphabetic()
+        {
+            return None;
+        }
+        if memo.covers(pos) {
+            return None;
+        }
+        // Every dot of a token walks back to the same start, so a token
+        // that fails once fails for all its dots.
+        let mut start = pos;
+        while start > 0 && (is_label_byte(input[start - 1]) || input[start - 1] == b'.') {
+            start -= 1;
+        }
+        let mut run_end = pos + 1;
+        while run_end < input.len() && (is_label_byte(input[run_end]) || input[run_end] == b'.') {
+            run_end += 1;
+        }
+        let ok = input[start].is_ascii_alphanumeric()
+            && (start == 0
+                || (!continues_token(input[start - 1]) && !glued_to_two_byte_char(input, start)));
+        if ok && let Eval::Match(end) = Self::evaluate(input, start) {
+            return Some(start..end);
+        }
+        memo.start = start;
+        memo.end = run_end;
+        None
+    }
+}
 
 impl Finder for Domain {
     fn id(&self) -> &'static str {
         "domain"
+    }
+
+    fn triggerable(&self) -> bool {
+        true
+    }
+
+    fn line_agnostic(&self) -> bool {
+        // Tokens consist of label bytes and dots; every walk stops at a
+        // line terminator like at the end of the input.
+        true
+    }
+
+    fn could_trigger_at(&self, byte: u8) -> bool {
+        byte == b'.'
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        prev.is_ascii_alphanumeric()
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next.is_ascii_alphabetic()
+    }
+
+    fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        Self::from_dot(input, pos, &mut Memo::default())
+    }
+
+    fn try_trigger_at_memo(
+        &self,
+        input: &[u8],
+        pos: usize,
+        memo: &mut Memo,
+    ) -> Option<Range<usize>> {
+        Self::from_dot(input, pos, memo)
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {
@@ -78,103 +263,15 @@ impl Finder for Domain {
 
             // Skip if the previous byte makes this part of a larger token
             // (e.g. email local part, url path, scheme).
-            if i > 0 {
-                let prev = input[i - 1];
-                if prev == b'@'
-                    || prev == b'/'
-                    || prev == b':'
-                    || prev.is_ascii_alphanumeric()
-                    || prev == b'.'
-                    || prev == b'-'
-                    || prev == b'_'
-                    || glued_to_two_byte_char(input, i)
-                {
-                    i += 1;
-                    continue;
-                }
-            }
-
-            // Walk through labels separated by '.'.
-            let start = i;
-            let mut end = i;
-            let mut label_start = i;
-            let mut dot_count = 0u32;
-            let mut last_dot = 0usize;
-            let mut valid = true;
-
-            while end < input.len() {
-                let b = input[end];
-                if is_label_byte(b) {
-                    end += 1;
-                } else if b == b'.' {
-                    // A dot not followed by a label byte (ellipsis, end of
-                    // sentence or token) ends the domain here instead of
-                    // invalidating the candidate.
-                    if end + 1 >= input.len() || !is_label_byte(input[end + 1]) {
-                        break;
-                    }
-                    let label_len = end - label_start;
-                    if label_len == 0
-                        || label_len > 63
-                        || input[label_start] == b'-'
-                        || input[end - 1] == b'-'
-                    {
-                        valid = false;
-                        break;
-                    }
-                    dot_count += 1;
-                    last_dot = end;
-                    label_start = end + 1;
-                    end += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if !valid || dot_count == 0 || end <= last_dot + 1 {
-                i = if end > i { end + 1 } else { i + 1 };
+            if i > 0 && (continues_token(input[i - 1]) || glued_to_two_byte_char(input, i)) {
+                i += 1;
                 continue;
             }
 
-            // Disallow trailing characters that would make this part of a
-            // path/URL or of code (`e.to_string()`, `source.map(f)`).
-            if end < input.len() {
-                let next = input[end];
-                if matches!(next, b'/' | b':' | b'_' | b'(') {
-                    i = end + 1;
-                    continue;
-                }
-                // If the token continues as an email local part that ends at
-                // '@', this candidate sits inside an email address (e.g. the
-                // `first.last` of `first.last+tag@company.co.uk`): suppress
-                // it and skip past the token.
-                let mut probe = end;
-                while probe < input.len() && is_email_local_byte(input[probe]) {
-                    probe += 1;
-                }
-                if probe < input.len() && input[probe] == b'@' {
-                    i = probe + 1;
-                    continue;
-                }
+            match Self::evaluate(input, i) {
+                Eval::Match(end) => return Some(i..end),
+                Eval::Skip(next) => i = next,
             }
-
-            // Validate final label as TLD.
-            let tld = &input[last_dot + 1..end];
-            if !is_known_tld(tld) {
-                i = end;
-                continue;
-            }
-
-            // Reject all-numeric labels (avoid eating IPs).
-            if input[start..end]
-                .iter()
-                .all(|b| b.is_ascii_digit() || *b == b'.')
-            {
-                i = end;
-                continue;
-            }
-
-            return Some(start..end);
         }
 
         None

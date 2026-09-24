@@ -250,10 +250,32 @@ impl Finder for Ip {
     fn run_rules(&self) -> Vec<RunRule> {
         let mut rules = Vec::new();
         if self.ipv4 {
-            rules.push(RunRule::new(RunClass::Digit, 1, 3).followed_by(b"."));
+            // `d.d.`: the first two quads.
+            rules.push(
+                RunRule::new(RunClass::Digit, 1, 3)
+                    .followed_by(b".")
+                    .then(RunClass::Digit, 1, 3)
+                    .followed_by(b"."),
+            );
         }
         if self.ipv6 {
-            rules.push(RunRule::new(RunClass::Hex, 1, 4).followed_by(b":"));
+            // Either the first two groups are full (`h:h:h:`, `a:b::`) or
+            // the address is compressed right after the first (`a::b`).
+            rules.push(
+                RunRule::new(RunClass::Hex, 1, 4)
+                    .followed_by(b":")
+                    .then(RunClass::Hex, 1, 4)
+                    .followed_by(b":")
+                    .then(RunClass::Hex, 0, 4)
+                    .followed_by(b":")
+                    .or_end(),
+            );
+            rules.push(
+                RunRule::new(RunClass::Hex, 1, 4)
+                    .followed_by(b":")
+                    .then(RunClass::Hex, 0, 0)
+                    .followed_by(b":"),
+            );
         }
         rules
     }

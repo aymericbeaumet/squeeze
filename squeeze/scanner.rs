@@ -1644,7 +1644,7 @@ impl Scanner {
         probe.candidate_position();
         if self.run_mask & bit != 0 {
             let runs = Runs::at_cached(input, pos, &mut state.runs, self.run_cap);
-            if !RunRule::allow(&self.run_rules[i], cur, &runs) {
+            if !RunRule::allow(&self.run_rules[i], cur, &runs, input, pos) {
                 probe.run_gated();
                 return false;
             }
@@ -1687,7 +1687,7 @@ impl Scanner {
             while gated != 0 {
                 let i = gated.trailing_zeros() as usize;
                 gated &= gated - 1;
-                if !RunRule::allow(&self.run_rules[i], input[pos], &runs) {
+                if !RunRule::allow(&self.run_rules[i], input[pos], &runs, input, pos) {
                     candidates &= !(1u32 << i);
                     probe.run_gated();
                 }
@@ -2156,7 +2156,7 @@ impl Scanner {
                     while gated != 0 {
                         let i = gated.trailing_zeros() as usize;
                         gated &= gated - 1;
-                        if !RunRule::allow(&self.run_rules[i], cur, &runs) {
+                        if !RunRule::allow(&self.run_rules[i], cur, &runs, input, pos) {
                             candidates &= !(1u32 << i);
                         }
                     }

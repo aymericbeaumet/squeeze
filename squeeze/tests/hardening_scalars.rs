@@ -436,8 +436,9 @@ fn phone_dispatch_is_gated_and_bounded() {
     assert_eq!(None, finder.try_at(b"x+14155551234", 1));
     assert!(!finder.could_start_after(b'9', b'9'));
     let rules = finder.run_rules();
-    let runs = squeeze::Runs::at(b"99999", 0);
-    assert!(!squeeze::RunRule::allow(&rules, b'9', &runs));
+    let input = b"99999";
+    let runs = squeeze::Runs::at(input, 0);
+    assert!(!squeeze::RunRule::allow(&rules, b'9', &runs, input, 0));
 }
 
 #[test]

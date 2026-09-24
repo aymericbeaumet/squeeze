@@ -236,16 +236,50 @@ impl Finder for Phone {
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
-        // `\d{3}[-.]`: an ASCII digit run of at most three, completed by a
-        // separator or by a non-ASCII digit.
-        let mut after = ByteSet::from_bytes(b"-.");
+        // `\d{3}[-.]\d{3}[-.]\d{4}` where `\d` also matches non-ASCII
+        // digits: the ASCII digit run of a group is either the whole group,
+        // followed by a separator, or is completed by a non-ASCII digit.
+        let mut leads = ByteSet::EMPTY;
         for b in digit_lead_bytes().filter(|&b| b >= 0x80) {
-            after = after.with(b);
+            leads = leads.with(b);
         }
-        let mut rule = RunRule::new(RunClass::Digit, 1, 3);
-        rule.after = after;
-        rule.after_end = false;
-        vec![rule]
+        let mixed = |rule: RunRule| {
+            let mut rule = rule;
+            let last = rule.then.iter_mut().rev().find_map(Option::as_mut);
+            match last {
+                Some(step) => {
+                    step.after = leads;
+                    step.after_end = false;
+                }
+                None => {
+                    rule.after = leads;
+                    rule.after_end = false;
+                }
+            }
+            rule
+        };
+        vec![
+            // All three groups ASCII.
+            RunRule::new(RunClass::Digit, 3, 3)
+                .followed_by(b"-.")
+                .then(RunClass::Digit, 3, 3)
+                .followed_by(b"-.")
+                .then(RunClass::Digit, 4, 4),
+            // A non-ASCII digit completes the first, second or third group.
+            mixed(RunRule::new(RunClass::Digit, 1, 3)),
+            mixed(RunRule::new(RunClass::Digit, 3, 3).followed_by(b"-.").then(
+                RunClass::Digit,
+                0,
+                3,
+            )),
+            mixed(
+                RunRule::new(RunClass::Digit, 3, 3)
+                    .followed_by(b"-.")
+                    .then(RunClass::Digit, 3, 3)
+                    .followed_by(b"-.")
+                    .then(RunClass::Digit, 0, 4),
+            ),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

@@ -68,7 +68,15 @@ impl Finder for Uuid {
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
-        vec![RunRule::new(RunClass::Hex, 8, 8).followed_by(b"-")]
+        // `xxxxxxxx-xxxx-xxxx-`.
+        vec![
+            RunRule::new(RunClass::Hex, 8, 8)
+                .followed_by(b"-")
+                .then(RunClass::Hex, 4, 4)
+                .followed_by(b"-")
+                .then(RunClass::Hex, 4, 4)
+                .followed_by(b"-"),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

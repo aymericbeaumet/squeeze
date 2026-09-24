@@ -224,7 +224,13 @@ impl Finder for Datetime {
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
-        vec![RunRule::new(RunClass::Digit, 4, 4).followed_by(b"-")]
+        // `YYYY-MM-`.
+        vec![
+            RunRule::new(RunClass::Digit, 4, 4)
+                .followed_by(b"-")
+                .then(RunClass::Digit, 2, 2)
+                .followed_by(b"-"),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
