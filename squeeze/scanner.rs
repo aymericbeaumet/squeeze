@@ -1717,9 +1717,20 @@ impl Scanner {
             // Lanes beyond the group count as hex (unknown), which only
             // keeps candidates. Runs are checked up to 32 lanes.
             let k = self.min_hex_run.min(32) as u32;
+            // Blocks packed back to back (a block spans BLOCK * STRIDE bits);
+            // bytes beyond the known blocks count as hex.
+            let block_bits = BLOCK as u32 * B::STRIDE;
+            let block_mask = (1u128 << block_bits) - 1;
             for i in 0..count {
-                let next = if i + 1 < count { hex[i + 1] } else { u64::MAX };
-                let mut window = (hex[i] as u128) | ((next as u128) << 64);
+                let mut window = u128::MAX;
+                let mut offset = 0u32;
+                let mut j = i;
+                while j < count && offset + block_bits <= 128 {
+                    window &= !(block_mask << offset);
+                    window |= (hex[j] as u128) << offset;
+                    offset += block_bits;
+                    j += 1;
+                }
                 // Shift ones in from past the window: an unknown byte counts
                 // as hex, so a run reaching the window's end is kept.
                 let extend = |w: u128, lanes: u32| {
@@ -1734,7 +1745,7 @@ impl Scanner {
                 if have < k {
                     window &= extend(window, k - have);
                 }
-                let long_runs = window as u64;
+                let long_runs = (window & block_mask) as u64;
                 cand[i] &= !hex[i] | long_runs;
             }
         }
