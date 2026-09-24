@@ -44,6 +44,14 @@ impl Finder for Handle {
         byte == b'@'
     }
 
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !(prev.is_ascii_alphanumeric() || prev == b'.' || prev == b'_')
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next.is_ascii_alphanumeric()
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         if input.get(pos)? != &b'@' {
             return None;

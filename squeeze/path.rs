@@ -142,6 +142,18 @@ impl Finder for Path {
         matches!(byte, b'/' | b'.' | b'~')
     }
 
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        Self::is_boundary(prev)
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        match cur {
+            b'~' => next == b'/',
+            b'.' => next == b'.' || next == b'/',
+            _ => !next.is_ascii_whitespace(),
+        }
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         let prefix_len = match input[pos] {
             b'~' if pos + 1 < input.len() && input[pos + 1] == b'/' => {

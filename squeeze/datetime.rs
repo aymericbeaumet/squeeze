@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -200,6 +200,18 @@ impl Finder for Datetime {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte.is_ascii_digit()
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !prev.is_ascii_digit()
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next.is_ascii_digit()
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        vec![RunRule::new(RunClass::Digit, 4, 4).followed_by(b"-")]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

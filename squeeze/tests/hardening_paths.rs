@@ -468,12 +468,45 @@ fn modeline_match_stops_at_newline() {
 // ===========================================================================
 
 #[test]
-fn modeline_is_a_plain_scan_mode_finder() {
+fn modeline_dispatch_is_gated_and_anchored() {
+    // Dispatch mode is fine as long as every attempt is anchored at the
+    // candidate and the gates keep candidates rare; the old quadratic
+    // implementation re-ran an unanchored regex from every byte.
     let finder = Modeline::default();
-    assert!(!finder.dispatchable());
+    assert!(finder.dispatchable());
     assert!(!finder.triggerable());
-    // Default try_at of a non-dispatchable finder returns None.
-    assert_eq!(None, finder.try_at(b"vim: ts=4", 0));
+    assert_eq!(Some(0..9), finder.try_at(b"vim: ts=4", 0));
+    assert_eq!(None, finder.try_at(b"xvim: ts=4", 1));
+    assert!(!finder.could_start_at(b'e') || !finder.could_continue_with(b'e', b'e'));
+}
+
+#[test]
+fn modeline_many_failing_candidates_stay_linear() {
+    // `ex:a ` has a boundary before `ex`, a colon, and an option run
+    // without `=`: every token is a candidate that fails only after
+    // scanning the run. The per-line memo makes later candidates fail at
+    // once, so 20k of them on one line cost milliseconds, not seconds.
+    let line = "ex:a ".repeat(20_000);
+    let scanner = Scanner::new(vec![Box::new(Modeline::default()) as Box<dyn Finder>]);
+    let started = std::time::Instant::now();
+    assert!(scanner.scan_line(&line).is_empty());
+    assert_eq!(None, Modeline::default().find(&line));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "modeline scan of 100KB adversarial line took {:?}",
+        started.elapsed()
+    );
+    // The memo is a cache only: after a failed run (ended by `!`, which is
+    // not an option byte) a later modeline is still found.
+    let line = format!("{}! ex:ts=4", "ex:a ".repeat(1000));
+    let matches = scanner.scan_line(&line);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(&line[matches[0].range.clone()], "ex:ts=4");
+    // And option runs legitimately span spaces and colons up to the `=`.
+    let line = format!("{}ex:ts=4", "ex:a ".repeat(3));
+    let matches = scanner.scan_line(&line);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(&line[matches[0].range.clone()], line);
 }
 
 #[test]

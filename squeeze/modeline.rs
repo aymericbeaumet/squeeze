@@ -7,62 +7,186 @@
 //! least one `option=value` assignment so prose such as "I prefer vim: it is
 //! great" is not misread as a modeline.
 
-use super::Finder;
-use regex::Regex;
+use super::{Finder, Memo};
+use crate::word::boundary_before;
 use std::ops::Range;
-use std::sync::OnceLock;
 
 #[derive(Default)]
 pub struct Modeline {}
 
-fn regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        // Forms:
-        //   vim: set ts=4 sw=4 et:   (second form: `set` + terminating colon)
-        //   vim: ts=4 sw=4           (first form: options to end of line)
-        //   vim:ts=4:sw=4
-        //   vim700: / vim<702: / vim=703: / vim>702: (version-gated prefixes)
-        //
-        // Constraints:
-        //   - no whitespace between the vi/vim/ex token and the `:` (vim
-        //     itself rejects `vim : ...`);
-        //   - the first form requires at least one `=` so plain prose after
-        //     `vim:` does not match; the second form is discriminating enough
-        //     through its `set ...:` structure;
-        //   - `[ \t]` instead of `\s` everywhere: finders are single-line by
-        //     contract, the match must never cross a newline.
-        Regex::new(
-            r"(?i)\b(?:vim(?:[<=>]?\d+)?|vi|ex):[ \t]*(?:set[ \t]+[^:\r\n]+:|[A-Za-z][A-Za-z0-9_:.,/\t -]*=[A-Za-z0-9_=:.,/\t -]*)",
-        )
-        .unwrap()
-    })
+// Forms:
+//   vim: set ts=4 sw=4 et:   (second form: `set` + terminating colon)
+//   vim: ts=4 sw=4           (first form: options to end of line)
+//   vim:ts=4:sw=4
+//   vim700: / vim<702: / vim=703: / vim>702: (version-gated prefixes)
+//
+// Constraints:
+//   - no whitespace between the vi/vim/ex token and the `:` (vim
+//     itself rejects `vim : ...`);
+//   - the first form requires at least one `=` so plain prose after
+//     `vim:` does not match; the second form is discriminating enough
+//     through its `set ...:` structure;
+//   - `[ \t]` instead of `\s` everywhere: finders are single-line by
+//     contract, the match must never cross a newline.
+//
+// This is a hand-written equivalent of the former regex
+// `(?i)\b(?:vim(?:[<=>]?\d+)?|vi|ex):[ \t]*(?:set[ \t]+[^:\r\n]+:|[A-Za-z][A-Za-z0-9_:.,/\t -]*=[A-Za-z0-9_=:.,/\t -]*)`.
+impl Modeline {
+    fn is_option_byte(b: u8) -> bool {
+        b.is_ascii_alphanumeric()
+            || matches!(b, b'_' | b':' | b'.' | b',' | b'/' | b'\t' | b' ' | b'-')
+    }
+
+    fn eq_ci(input: &[u8], pos: usize, word: &[u8]) -> bool {
+        input.len() >= pos + word.len() && input[pos..pos + word.len()].eq_ignore_ascii_case(word)
+    }
+
+    /// Position after the `:` that ends the `vim`/`vi`/`ex` token at `pos`.
+    fn keyword_end(input: &[u8], pos: usize) -> Option<usize> {
+        if Self::eq_ci(input, pos, b"vim") {
+            let p = pos + 3;
+            // Optional version: `[<=>]?\d+`, then the colon.
+            let mut q = p;
+            if matches!(input.get(q), Some(b'<' | b'=' | b'>')) {
+                q += 1;
+            }
+            let digits_start = q;
+            while input.get(q).is_some_and(u8::is_ascii_digit) {
+                q += 1;
+            }
+            if q > digits_start && input.get(q) == Some(&b':') {
+                return Some(q + 1);
+            }
+            return (input.get(p) == Some(&b':')).then_some(p + 1);
+        }
+        if Self::eq_ci(input, pos, b"vi") || Self::eq_ci(input, pos, b"ex") {
+            return (input.get(pos + 2) == Some(&b':')).then_some(pos + 3);
+        }
+        None
+    }
+
+    /// End of the options after the colon: `set ...:` first, then
+    /// `name=value...`.
+    ///
+    /// The `name=value` form scans the run of option bytes for its `=`. A
+    /// run without one fails for every candidate inside it, so `memo`
+    /// remembers the failed run and later candidates in it fail at once,
+    /// which keeps a line with many `ex:` tokens linear.
+    fn options_end(input: &[u8], after_colon: usize, memo: &mut Memo) -> Option<usize> {
+        let mut q = after_colon;
+        while matches!(input.get(q), Some(b' ' | b'\t')) {
+            q += 1;
+        }
+        if Self::eq_ci(input, q, b"set") {
+            let p = q + 3;
+            let mut r = p;
+            while matches!(input.get(r), Some(b' ' | b'\t')) {
+                r += 1;
+            }
+            let spaces = r - p;
+            if spaces >= 1 {
+                while input
+                    .get(r)
+                    .is_some_and(|&b| !matches!(b, b':' | b'\r' | b'\n'))
+                {
+                    r += 1;
+                }
+                // `[ \t]+[^:\r\n]+`: at least one space and one more byte.
+                if input.get(r) == Some(&b':') && r > p + 1 {
+                    return Some(r + 1);
+                }
+            }
+        }
+        if input.get(q).is_some_and(u8::is_ascii_alphabetic) {
+            if memo.covers(q) {
+                // Inside a run already known to end without `=`.
+                return None;
+            }
+            let mut r = q + 1;
+            while input.get(r).is_some_and(|&b| Self::is_option_byte(b)) {
+                r += 1;
+            }
+            if input.get(r) == Some(&b'=') {
+                r += 1;
+                while input
+                    .get(r)
+                    .is_some_and(|&b| Self::is_option_byte(b) || b == b'=')
+                {
+                    r += 1;
+                }
+                return Some(r);
+            }
+            *memo = Memo {
+                start: q,
+                end: r,
+                aux: 0,
+            };
+        }
+        None
+    }
+
+    fn match_at(input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
+        if !boundary_before(input, pos) {
+            return None;
+        }
+        let after_colon = Self::keyword_end(input, pos)?;
+        let end = Self::options_end(input, after_colon, memo)?;
+        Self::trim_range(input, pos, end)
+    }
+
+    fn trim_range(input: &[u8], start: usize, mut end: usize) -> Option<Range<usize>> {
+        // Trim trailing whitespace.
+        while end > start && matches!(input[end - 1], b' ' | b'\t') {
+            end -= 1;
+        }
+        Some(start..end)
+    }
 }
 
-// Modeline is a plain scan-mode finder: `find()` performs a single regex
-// pass over the input. It intentionally does not implement `dispatchable` /
-// `could_start_at` / `try_at` — the previous dispatch-mode implementation
-// re-ran an unanchored regex search from every candidate byte, which was
-// O(N²) on adversarial lines (a 100KB run of 'e' took seconds).
 impl Finder for Modeline {
     fn id(&self) -> &'static str {
         "modeline"
     }
 
-    fn find(&self, s: &str) -> Option<Range<usize>> {
-        let m = regex().find(s)?;
-        Self::trim_range(s, m.start(), m.end())
+    fn dispatchable(&self) -> bool {
+        true
     }
-}
 
-impl Modeline {
-    fn trim_range(s: &str, start: usize, mut end: usize) -> Option<Range<usize>> {
-        // Trim trailing whitespace.
-        let bytes = s.as_bytes();
-        while end > start && matches!(bytes[end - 1], b' ' | b'\t') {
-            end -= 1;
+    fn could_start_at(&self, byte: u8) -> bool {
+        matches!(byte, b'v' | b'V' | b'e' | b'E')
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        // `\b`: a non-ASCII previous byte is decoded by `try_at`.
+        prev >= 0x80 || !(prev.is_ascii_alphanumeric() || prev == b'_')
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        match cur {
+            b'v' | b'V' => matches!(next, b'i' | b'I'),
+            _ => matches!(next, b'x' | b'X'),
         }
-        Some(start..end)
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        Self::match_at(input, pos, &mut Memo::default())
+    }
+
+    fn try_at_memo(&self, input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
+        Self::match_at(input, pos, memo)
+    }
+
+    fn find(&self, s: &str) -> Option<Range<usize>> {
+        let input = s.as_bytes();
+        let mut memo = Memo::default();
+        for pos in 0..input.len() {
+            if self.could_start_at(input[pos])
+                && let Some(range) = Self::match_at(input, pos, &mut memo)
+            {
+                return Some(range);
+            }
+        }
+        None
     }
 }
 

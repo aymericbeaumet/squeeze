@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Finder, Memo, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -97,11 +97,14 @@ impl Cidr {
         Some(start..pos)
     }
 
-    fn try_ipv6_cidr(input: &[u8], idx: usize) -> Option<Range<usize>> {
+    fn try_ipv6_cidr(input: &[u8], idx: usize, memo: &mut Memo) -> Option<Range<usize>> {
         // Look for IPv6 addresses followed by /prefix
         // Handle both bare and bracketed forms
         let (ip_start, ip_end) = if input[idx] == b'[' {
-            let close = input[idx..].iter().position(|&b| b == b']')?;
+            // Bounded like the ip finder: a farther bracket cannot close a
+            // valid address.
+            let window = &input[idx..input.len().min(idx + 47)];
+            let close = window.iter().position(|&b| b == b']')?;
             let close_pos = idx + close;
             let inner = &input[idx + 1..close_pos];
             if !crate::ipv6::is_valid_ipv6(inner) {
@@ -118,21 +121,21 @@ impl Cidr {
             }
 
             let start = idx;
-            let mut end = idx;
             // '.' is part of the charset so embedded IPv4 tails
             // (`::ffff:0.0.0.0/96`, `64:ff9b::192.0.2.33/24`) are consumed
-            // whole instead of leaving a bogus v4 leftover.
-            while end < input.len()
-                && (input[end].is_ascii_hexdigit() || input[end] == b':' || input[end] == b'.')
-            {
-                end += 1;
-            }
+            // whole instead of leaving a bogus v4 leftover. The run is
+            // shared through the memo with every candidate inside it.
+            let (_, mut end) = crate::ip::Ip::run_bounds(input, idx, memo);
 
             // Strip trailing colons (except ::)
             while end > start && input[end - 1] == b':' && !(end >= 2 && input[end - 2] == b':') {
                 end -= 1;
             }
 
+            // Longer than any address: reject before scanning the candidate.
+            if end - start > crate::ipv6::MAX_IPV6_LEN {
+                return None;
+            }
             let candidate = &input[start..end];
             if !candidate.contains(&b':') {
                 return None;
@@ -198,14 +201,39 @@ impl Finder for Cidr {
         byte.is_ascii_hexdigit() || byte == b':' || byte == b'['
     }
 
+    fn could_start_after(&self, prev: u8, cur: u8) -> bool {
+        if cur == b'[' {
+            return true;
+        }
+        let v6 = (cur.is_ascii_hexdigit() || cur == b':')
+            && !(prev.is_ascii_alphanumeric() || prev == b':');
+        let v4 = cur.is_ascii_digit() && !(prev.is_ascii_digit() || prev == b'.' || prev == b':');
+        v6 || v4
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        cur == b'[' || next.is_ascii_hexdigit() || next == b':' || next == b'.'
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        vec![
+            RunRule::new(RunClass::Digit, 1, 3).followed_by(b"."),
+            RunRule::new(RunClass::Hex, 1, 4).followed_by(b":"),
+        ]
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        self.try_at_memo(input, pos, &mut Memo::default())
+    }
+
+    fn try_at_memo(&self, input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
         if input[pos].is_ascii_digit()
             && let Some(range) = Self::try_ipv4_cidr(input, pos)
         {
             return Some(range);
         }
         if (input[pos] == b'[' || input[pos].is_ascii_hexdigit() || input[pos] == b':')
-            && let Some(range) = Self::try_ipv6_cidr(input, pos)
+            && let Some(range) = Self::try_ipv6_cidr(input, pos, memo)
         {
             return Some(range);
         }
@@ -224,7 +252,7 @@ impl Finder for Cidr {
             }
 
             if (input[idx] == b'[' || input[idx].is_ascii_hexdigit() || input[idx] == b':')
-                && let Some(range) = Self::try_ipv6_cidr(input, idx)
+                && let Some(range) = Self::try_ipv6_cidr(input, idx, &mut Memo::default())
             {
                 return Some(range);
             }

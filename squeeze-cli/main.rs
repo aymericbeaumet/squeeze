@@ -1,5 +1,4 @@
 use clap::{Args, CommandFactory, Parser, ValueEnum};
-use rayon::{ThreadPool, prelude::*};
 use squeeze::{
     Finder,
     cidr::Cidr,
@@ -25,15 +24,17 @@ use squeeze::{
     uri::URI,
     uuid::Uuid,
 };
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, BufWriter, IsTerminal, Write};
+use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::mpsc::{channel, sync_channel};
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::{
-    io::Read,
+    io::{BufRead, BufReader},
     process::{Command, Stdio},
 };
 
@@ -655,10 +656,10 @@ fn must_buffer(opts: &Opts) -> bool {
     opts.last || opts.sort || opts.uniq || opts.copy || opts.output != Format::Text
 }
 
-/// Whether to scan with the parallel batch path. First-only mode must stay
-/// sequential: the parallel path blocks until a whole batch of lines has been
-/// read before scanning any of them, so `-1 --jobs N` on a slow stream would
-/// sit on a match it had already read instead of printing it and exiting.
+/// Whether to scan with the parallel chunk pipeline. First-only mode must
+/// stay sequential: the pipeline reads a whole chunk before scanning any of
+/// it, so `-1 --jobs N` on a slow stream would sit on a match it had already
+/// read instead of printing it and exiting.
 fn use_parallel(opts: &Opts) -> bool {
     opts.jobs > 1 && !opts.first
 }
@@ -678,13 +679,6 @@ struct ResultItem {
     column: usize,
     start: usize,
     end: usize,
-}
-
-#[derive(Clone, Debug)]
-struct LineRecord {
-    source: Option<String>,
-    line: usize,
-    text: String,
 }
 
 #[derive(Debug)]
@@ -822,14 +816,17 @@ fn write_text_line<W: Write + ?Sized>(
 ) -> io::Result<()> {
     if let Some(location) = location {
         if let Some(source) = location.source {
-            write!(out, "{source}:")?;
+            out.write_all(source.as_bytes())?;
+            out.write_all(b":")?;
         }
         write!(out, "{}:{}:", location.line, location.column)?;
     }
     if let Some(kind) = kind {
-        write!(out, "{kind}\t")?;
+        out.write_all(kind.as_bytes())?;
+        out.write_all(b"\t")?;
     }
-    writeln!(out, "{value}")
+    out.write_all(value.as_bytes())?;
+    out.write_all(b"\n")
 }
 
 fn write_json_string<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
@@ -1130,21 +1127,6 @@ fn make_result_item(
     })
 }
 
-fn collect_line_matches(
-    scanner: &Scanner,
-    opts: &Opts,
-    source: Option<&str>,
-    line_number: usize,
-    line: &str,
-    scratch: &mut Vec<Match>,
-) -> Vec<ResultItem> {
-    scan_line_matches_into(scanner, opts, line, scratch);
-    scratch
-        .iter()
-        .filter_map(|m| make_result_item(scanner, opts, source, line_number, line, m))
-        .collect()
-}
-
 fn emit_streaming_value(
     out: &mut dyn Write,
     opts: &Opts,
@@ -1203,35 +1185,293 @@ fn trim_line_ending(mut line: &[u8]) -> &[u8] {
     line
 }
 
+/// Views a trimmed line as text. Lines are scanned as UTF-8; invalid bytes
+/// cannot abort the scan (grep behavior), so an invalid line is converted
+/// lossily into `scratch` instead: the U+FFFD replacement characters are
+/// non-ASCII and match nothing, and the rest of the line is still scanned.
+/// Valid lines, the common case, borrow the input directly.
+#[inline]
+fn line_text<'a>(bytes: &'a [u8], scratch: &'a mut String) -> &'a str {
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            scratch.clear();
+            scratch.push_str(&String::from_utf8_lossy(bytes));
+            scratch.as_str()
+        }
+    }
+}
+
+/// Initial size of the read buffer; it grows to hold a line longer than
+/// this.
+const READ_BLOCK: usize = 256 * 1024;
+
+/// A reusable read buffer that hands out complete lines. Data is read in
+/// large blocks and lines are located with `memchr`, so the per-line cost is
+/// a slice, not a syscall or an allocation.
+struct LineBuffer {
+    buf: Vec<u8>,
+    /// Unconsumed data lives in `buf[start..end]`.
+    start: usize,
+    end: usize,
+    /// Position after the last newline already located in `buf[..end]`.
+    scanned: usize,
+}
+
+impl LineBuffer {
+    fn with_capacity(capacity: usize) -> Self {
+        LineBuffer {
+            buf: vec![0; capacity],
+            start: 0,
+            end: 0,
+            scanned: 0,
+        }
+    }
+
+    fn pending(&self) -> &[u8] {
+        &self.buf[self.start..self.end]
+    }
+
+    /// Reads once into the free space, compacting or growing the buffer as
+    /// needed. Returns the number of bytes read; 0 means end of input. A
+    /// single `read` is enough: it returns as soon as some data is
+    /// available, so a slow stream still gets its lines processed promptly.
+    fn fill(&mut self, reader: &mut dyn Read) -> io::Result<usize> {
+        if self.start == self.end {
+            self.start = 0;
+            self.end = 0;
+            self.scanned = 0;
+        } else if self.end == self.buf.len() {
+            if self.start > 0 {
+                self.buf.copy_within(self.start..self.end, 0);
+                self.end -= self.start;
+                self.scanned -= self.start;
+                self.start = 0;
+            } else {
+                let new_len = self.buf.len().saturating_mul(2).max(READ_BLOCK);
+                self.buf.resize(new_len, 0);
+            }
+        }
+        loop {
+            match reader.read(&mut self.buf[self.end..]) {
+                Ok(n) => {
+                    self.end += n;
+                    return Ok(n);
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Drops the complete buffered lines that cannot contain a match (the
+    /// scanner searches its few start bytes across the whole buffer) and
+    /// returns how many lines were dropped. A trailing unterminated line
+    /// is kept for the next read.
+    fn skip_non_candidates(&mut self, scanner: &Scanner) -> usize {
+        let pending = &self.buf[self.start..self.end];
+        let target = match scanner.skip_to_candidate_line(pending, 0) {
+            Some(offset) => offset,
+            None => memchr::memrchr(b'\n', pending).map_or(0, |nl| nl + 1),
+        };
+        if target == 0 {
+            return 0;
+        }
+        let skipped = memchr::memchr_iter(b'\n', &pending[..target]).count();
+        self.start += target;
+        self.scanned = self.scanned.max(self.start);
+        skipped
+    }
+
+    /// The next complete line, terminator included, if one is buffered.
+    fn next_line(&mut self) -> Option<&[u8]> {
+        let from = self.scanned.max(self.start);
+        let nl = memchr::memchr(b'\n', &self.buf[from..self.end])?;
+        let line_end = from + nl + 1;
+        let line = &self.buf[self.start..line_end];
+        self.start = line_end;
+        self.scanned = line_end;
+        Some(line)
+    }
+
+    /// Everything still buffered, as a final unterminated line.
+    fn take_rest(&mut self) -> Option<&[u8]> {
+        if self.start == self.end {
+            return None;
+        }
+        let rest = &self.buf[self.start..self.end];
+        self.start = self.end;
+        self.scanned = self.end;
+        Some(rest)
+    }
+}
+
+/// Per-scan scratch reused across lines.
+struct LineScratch {
+    matches: Vec<Match>,
+    lossy: String,
+}
+
+impl LineScratch {
+    fn new() -> Self {
+        LineScratch {
+            matches: Vec::new(),
+            lossy: String::new(),
+        }
+    }
+}
+
+/// Scans one raw line (terminator included) and emits its results. Returns
+/// `Ok(true)` when scanning must stop (`--first` found its match).
+#[allow(clippy::too_many_arguments)]
+fn scan_raw_line(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    line_number: usize,
+    raw: &[u8],
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    scratch: &mut LineScratch,
+    streaming: bool,
+) -> io::Result<bool> {
+    let line = line_text(trim_line_ending(raw), &mut scratch.lossy);
+    scan_line_matches_into(scanner, opts, line, &mut scratch.matches);
+    for m in &scratch.matches {
+        let value = &line[m.range.clone()];
+        if value.is_empty() {
+            continue;
+        }
+        if streaming {
+            let kind = scanner.finders()[m.finder_index].id();
+            let location = opts.with_location.then(|| Location {
+                source,
+                line: line_number,
+                column: byte_column(line, m.range.start),
+            });
+            emit_streaming_value(
+                out,
+                opts,
+                state.flush_streaming,
+                location.as_ref(),
+                kind,
+                value,
+            )?;
+            if opts.first {
+                return Ok(true);
+            }
+        } else if let Some(result) = make_result_item(scanner, opts, source, line_number, line, m)
+            && handle_result(out, opts, state, result)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 fn scan_lines_sequential(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
-    reader: &mut dyn BufRead,
+    reader: &mut dyn Read,
     out: &mut dyn Write,
     state: &mut OutputState,
 ) -> io::Result<bool> {
-    let mut raw_line = Vec::new();
-    let mut matches: Vec<Match> = Vec::new();
+    let mut lines = LineBuffer::with_capacity(READ_BLOCK);
+    let mut scratch = LineScratch::new();
     let mut line_number = 0;
     // In the plain streaming text path the match value is written straight
     // from the line slice, without allocating a ResultItem per match.
     let streaming = !must_buffer(opts);
 
     loop {
-        raw_line.clear();
-        if reader.read_until(b'\n', &mut raw_line)? == 0 {
-            break;
+        line_number += lines.skip_non_candidates(scanner);
+        while let Some(raw) = lines.next_line() {
+            line_number += 1;
+            if scan_raw_line(
+                scanner,
+                opts,
+                source,
+                line_number,
+                raw,
+                out,
+                state,
+                &mut scratch,
+                streaming,
+            )? {
+                return Ok(true);
+            }
+            line_number += lines.skip_non_candidates(scanner);
         }
-        line_number += 1;
-        // Lines are read as bytes and converted lossily so invalid UTF-8
-        // cannot abort the scan (grep behavior): the U+FFFD replacement
-        // characters are non-ASCII and match nothing, and every other line
-        // keeps being scanned. `from_utf8_lossy` borrows when the line is
-        // valid UTF-8, so the common case does not allocate.
-        let line = String::from_utf8_lossy(trim_line_ending(&raw_line));
-        scan_line_matches_into(scanner, opts, &line, &mut matches);
-        for m in &matches {
+        if lines.fill(reader)? == 0 {
+            if let Some(raw) = lines.take_rest() {
+                line_number += 1;
+                if scan_raw_line(
+                    scanner,
+                    opts,
+                    source,
+                    line_number,
+                    raw,
+                    out,
+                    state,
+                    &mut scratch,
+                    streaming,
+                )? {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+    }
+}
+
+/// Target size of a parallel chunk; a chunk always holds whole lines, so a
+/// longer line makes a longer chunk.
+const CHUNK_SIZE: usize = 512 * 1024;
+
+/// A run of whole lines handed to a worker.
+struct Chunk {
+    index: usize,
+    /// 1-based number of the first line in the chunk.
+    first_line: usize,
+    data: Vec<u8>,
+}
+
+/// What a worker produced for one chunk: formatted text for the streaming
+/// path, result items when the output must be shaped afterwards.
+enum ChunkOutput {
+    Text(Vec<u8>),
+    Items(Vec<ResultItem>),
+}
+
+struct ChunkResult {
+    index: usize,
+    output: ChunkOutput,
+}
+
+/// Whether the parallel workers can format text directly; `--open` needs
+/// the values on the main thread, so it goes through items.
+fn stream_text_in_workers(opts: &Opts) -> bool {
+    !must_buffer(opts) && !opts.open
+}
+
+fn scan_chunk(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    chunk: &Chunk,
+    scratch: &mut LineScratch,
+) -> ChunkOutput {
+    let streaming = stream_text_in_workers(opts);
+    let mut text = Vec::new();
+    let mut items = Vec::new();
+    let mut line_number = chunk.first_line;
+    let data = &chunk.data;
+    let mut pos = 0;
+    let mut emit = |raw: &[u8], line_number: usize, scratch: &mut LineScratch| {
+        let line = line_text(trim_line_ending(raw), &mut scratch.lossy);
+        scan_line_matches_into(scanner, opts, line, &mut scratch.matches);
+        for m in &scratch.matches {
             let value = &line[m.range.clone()];
             if value.is_empty() {
                 continue;
@@ -1241,92 +1481,182 @@ fn scan_lines_sequential(
                 let location = opts.with_location.then(|| Location {
                     source,
                     line: line_number,
-                    column: byte_column(&line, m.range.start),
+                    column: byte_column(line, m.range.start),
                 });
-                emit_streaming_value(
-                    out,
-                    opts,
-                    state.flush_streaming,
+                // Writing into a Vec cannot fail.
+                let _ = write_text_line(
+                    &mut text,
                     location.as_ref(),
-                    kind,
+                    opts.with_kind.then_some(kind),
                     value,
-                )?;
-                if opts.first {
-                    return Ok(true);
-                }
-            } else if let Some(result) =
-                make_result_item(scanner, opts, source, line_number, &line, m)
-                && handle_result(out, opts, state, result)?
+                );
+            } else if let Some(item) = make_result_item(scanner, opts, source, line_number, line, m)
             {
-                return Ok(true);
+                items.push(item);
             }
         }
+    };
+    while pos < data.len() {
+        // Jump straight to the next line that can match; lines in between
+        // only count towards the line number.
+        let Some(start) = scanner.skip_to_candidate_line(data, pos) else {
+            break;
+        };
+        line_number += memchr::memchr_iter(b'\n', &data[pos..start]).count();
+        pos = start;
+        let end = memchr::memchr(b'\n', &data[pos..]).map_or(data.len(), |nl| pos + nl + 1);
+        emit(&data[pos..end], line_number, scratch);
+        line_number += 1;
+        pos = end;
     }
-
-    Ok(false)
+    if streaming {
+        ChunkOutput::Text(text)
+    } else {
+        ChunkOutput::Items(items)
+    }
 }
-
-const PARALLEL_BATCH_LINES: usize = 4096;
 
 fn scan_lines_parallel(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
-    reader: &mut dyn BufRead,
+    reader: &mut dyn Read,
     out: &mut dyn Write,
     state: &mut OutputState,
-    pool: &ThreadPool,
+    jobs: usize,
 ) -> io::Result<bool> {
-    let mut raw_line = Vec::new();
-    let mut line_number = 0;
-
-    loop {
-        let mut batch = Vec::with_capacity(PARALLEL_BATCH_LINES);
-        for _ in 0..PARALLEL_BATCH_LINES {
-            raw_line.clear();
-            if reader.read_until(b'\n', &mut raw_line)? == 0 {
-                break;
-            }
-            line_number += 1;
-            batch.push(LineRecord {
-                source: source.map(ToOwned::to_owned),
-                line: line_number,
-                // Lossy conversion mirrors the sequential path: invalid
-                // UTF-8 must not abort the scan.
-                text: String::from_utf8_lossy(trim_line_ending(&raw_line)).into_owned(),
+    std::thread::scope(|scope| -> io::Result<bool> {
+        // Bounded work queue keeps memory proportional to the worker count;
+        // results go through an unbounded channel so a worker never blocks
+        // on the main thread, which is busy reading.
+        let (work_tx, work_rx) = sync_channel::<Chunk>(jobs * 2);
+        let (result_tx, result_rx) = channel::<ChunkResult>();
+        let work_rx = Arc::new(Mutex::new(work_rx));
+        for _ in 0..jobs {
+            let work_rx = Arc::clone(&work_rx);
+            let result_tx = result_tx.clone();
+            scope.spawn(move || {
+                let mut scratch = LineScratch::new();
+                loop {
+                    let chunk = match work_rx.lock() {
+                        Ok(rx) => rx.recv(),
+                        Err(_) => break,
+                    };
+                    let Ok(chunk) = chunk else { break };
+                    let output = scan_chunk(scanner, opts, source, &chunk, &mut scratch);
+                    if result_tx
+                        .send(ChunkResult {
+                            index: chunk.index,
+                            output,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
             });
         }
+        drop(result_tx);
 
-        if batch.is_empty() {
-            break;
-        }
-
-        let batch_results: Vec<Vec<ResultItem>> = pool.install(|| {
-            batch
-                .par_iter()
-                .map_init(Vec::new, |scratch, record| {
-                    collect_line_matches(
-                        scanner,
-                        opts,
-                        record.source.as_deref(),
-                        record.line,
-                        &record.text,
-                        scratch,
-                    )
-                })
-                .collect()
-        });
-
-        for line_results in batch_results {
-            for result in line_results {
-                if handle_result(out, opts, state, result)? {
-                    return Ok(true);
+        let mut pending: BTreeMap<usize, ChunkOutput> = BTreeMap::new();
+        let mut next_index = 0;
+        let write_ready = |pending: &mut BTreeMap<usize, ChunkOutput>,
+                           next_index: &mut usize,
+                           out: &mut dyn Write,
+                           state: &mut OutputState|
+         -> io::Result<bool> {
+            while let Some(output) = pending.remove(next_index) {
+                *next_index += 1;
+                match output {
+                    ChunkOutput::Text(text) => {
+                        out.write_all(&text)?;
+                        if state.flush_streaming {
+                            out.flush()?;
+                        }
+                    }
+                    ChunkOutput::Items(items) => {
+                        for item in items {
+                            if handle_result(out, opts, state, item)? {
+                                return Ok(true);
+                            }
+                        }
+                    }
                 }
             }
-        }
-    }
+            Ok(false)
+        };
 
-    Ok(false)
+        let mut lines = LineBuffer::with_capacity(CHUNK_SIZE * 2);
+        let mut index = 0;
+        let mut first_line = 1;
+        let mut eof = false;
+        while !eof {
+            // Fill up to a chunk's worth of whole lines.
+            while lines.pending().len() < CHUNK_SIZE && !eof {
+                if lines.fill(reader)? == 0 {
+                    eof = true;
+                }
+            }
+            let data = lines.pending();
+            let cut = if eof {
+                data.len()
+            } else {
+                match memchr::memrchr(b'\n', data) {
+                    Some(nl) => nl + 1,
+                    // One line longer than a chunk: keep reading it.
+                    None => {
+                        if lines.fill(reader)? == 0 {
+                            eof = true;
+                        }
+                        continue;
+                    }
+                }
+            };
+            if cut == 0 {
+                break;
+            }
+            let chunk_data = data[..cut].to_vec();
+            let newlines = memchr::memchr_iter(b'\n', &chunk_data).count();
+            let line_count = newlines + usize::from(!chunk_data.ends_with(b"\n"));
+            lines.start += cut;
+            lines.scanned = lines.scanned.max(lines.start);
+            if work_tx
+                .send(Chunk {
+                    index,
+                    first_line,
+                    data: chunk_data,
+                })
+                .is_err()
+            {
+                break;
+            }
+            index += 1;
+            first_line += line_count;
+
+            // Drain finished chunks while reading ahead.
+            while let Ok(result) = result_rx.try_recv() {
+                pending.insert(result.index, result.output);
+            }
+            if write_ready(&mut pending, &mut next_index, out, state)? {
+                drop(work_tx);
+                return Ok(true);
+            }
+        }
+        drop(work_tx);
+
+        while next_index < index {
+            match result_rx.recv() {
+                Ok(result) => {
+                    pending.insert(result.index, result.output);
+                }
+                Err(_) => break,
+            }
+            if write_ready(&mut pending, &mut next_index, out, state)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
 }
 
 fn has_glob_magic(input: &str) -> bool {
@@ -1369,13 +1699,12 @@ fn scan_reader(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
-    reader: &mut dyn BufRead,
+    reader: &mut dyn Read,
     out: &mut dyn Write,
     state: &mut OutputState,
-    pool: Option<&ThreadPool>,
 ) -> io::Result<bool> {
-    if let Some(pool) = pool {
-        scan_lines_parallel(scanner, opts, source, reader, out, state, pool)
+    if use_parallel(opts) {
+        scan_lines_parallel(scanner, opts, source, reader, out, state, opts.jobs)
     } else {
         scan_lines_sequential(scanner, opts, source, reader, out, state)
     }
@@ -1490,21 +1819,6 @@ fn main() -> ExitCode {
         }
     };
 
-    let pool = if use_parallel(&opts) {
-        match rayon::ThreadPoolBuilder::new()
-            .num_threads(opts.jobs)
-            .build()
-        {
-            Ok(pool) => Some(pool),
-            Err(e) => {
-                eprintln!("failed to build thread pool: {}", e);
-                return ExitCode::FAILURE;
-            }
-        }
-    } else {
-        None
-    };
-
     let stdout = io::stdout().lock();
     let mut out = BufWriter::new(stdout);
     let mut state = OutputState::new(&opts);
@@ -1514,34 +1828,24 @@ fn main() -> ExitCode {
             InputTarget::Stdin => {
                 let stdin = io::stdin();
                 let mut reader = stdin.lock();
-                scan_reader(
-                    &scanner,
-                    &opts,
-                    None,
-                    &mut reader,
-                    &mut out,
-                    &mut state,
-                    pool.as_ref(),
-                )
+                scan_reader(&scanner, &opts, None, &mut reader, &mut out, &mut state)
             }
             InputTarget::File(path) => {
                 let source = path.display().to_string();
-                let file = match File::open(&path) {
+                let mut file = match File::open(&path) {
                     Ok(file) => file,
                     Err(e) => {
                         eprintln!("failed to open '{}': {}", source, e);
                         return ExitCode::FAILURE;
                     }
                 };
-                let mut reader = BufReader::new(file);
                 scan_reader(
                     &scanner,
                     &opts,
                     Some(&source),
-                    &mut reader,
+                    &mut file,
                     &mut out,
                     &mut state,
-                    pool.as_ref(),
                 )
             }
         };
@@ -1628,8 +1932,8 @@ mod tests {
 
     #[test]
     fn first_mode_should_force_the_sequential_path() {
-        // The parallel path blocks filling a whole batch before scanning, so
-        // -1 has to dispatch to the sequential streaming path.
+        // The parallel path reads a whole chunk before scanning, so -1 has
+        // to dispatch to the sequential streaming path.
         let opts = Opts::try_parse_from(["squeeze", "--url", "--jobs", "4", "--first"]).unwrap();
         assert!(!use_parallel(&opts));
 

@@ -741,3 +741,188 @@ fn dispatch_consistent_cidr_known() {
         check_dispatch_consistency(Box::new(squeeze::cidr::Cidr::default()), input);
     }
 }
+
+/// Every dispatch finder, including the ones the scanner-level suites leave
+/// out, so the gate contract is checked for the complete set.
+fn dispatch_finders() -> Vec<Box<dyn Finder>> {
+    let mut hash = squeeze::hash::Hash::default();
+    for algorithm in ["md5", "sha1", "sha256", "sha512"] {
+        assert!(hash.add_algorithm(algorithm));
+    }
+    vec![
+        Box::new(squeeze::cidr::Cidr::default()),
+        Box::new(squeeze::color::Color::default()),
+        Box::new(squeeze::datetime::Datetime::default()),
+        Box::new(squeeze::emoji::Emoji::default()),
+        Box::new(squeeze::env::Env::default()),
+        Box::new(squeeze::handle::Handle::default()),
+        Box::new(hash),
+        Box::new(squeeze::ip::Ip::default()),
+        Box::new(squeeze::ip::Ip {
+            ipv4: true,
+            ipv6: false,
+        }),
+        Box::new(squeeze::ip::Ip {
+            ipv4: false,
+            ipv6: true,
+        }),
+        Box::new(squeeze::json::Json::default()),
+        Box::new(squeeze::jwt::Jwt::default()),
+        Box::new(squeeze::mac::Mac::default()),
+        Box::new(squeeze::path::Path::default()),
+        Box::new(squeeze::semver::Semver::default()),
+        Box::new(squeeze::uuid::Uuid::default()),
+    ]
+}
+
+/// The scanner skips `try_at` wherever a gate says no, so a gate that is
+/// stricter than its finder would silently lose matches. Check the contract
+/// at every position of the input, whatever the scanner would have done.
+fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
+    let input = line.as_bytes();
+    for finder in finders {
+        assert!(finder.dispatchable());
+        for pos in 0..input.len() {
+            let cur = input[pos];
+            if !finder.could_start_at(cur) {
+                continue;
+            }
+            let gated_prev = pos > 0 && !finder.could_start_after(input[pos - 1], cur);
+            let gated_next =
+                pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]);
+            let rules = finder.run_rules();
+            let gated_run = !squeeze::RunRule::allow(&rules, cur, &squeeze::Runs::at(input, pos));
+            if gated_prev || gated_next || gated_run {
+                assert_eq!(
+                    finder.try_at(input, pos),
+                    None,
+                    "{} gate rejected {line:?} at {pos} (prev gate: {gated_prev}, next gate: {gated_next}, run gate: {gated_run}) but try_at matched",
+                    finder.id()
+                );
+            }
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(2000))]
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_dense_input(
+        s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ -]{0,48}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_long_runs(
+        s in "( |-|:|\\.|/|x|[0-9a-f]{28,45}|[0-9a-f]{60,70}|[0-9a-f]{125,135}|[0-9]{1,5}|[0-9]{126,132}){1,6}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_structured_input(
+        s in "( |\\.|:|/|@|-|_|[a-z]{1,4}|v?[0-9]{1,4}|0x[0-9a-f]{2,8}|#[0-9a-fA-F]{3,8}|rgb\\([0-9, ]{5,11}\\)|\\$\\{?[A-Z_]{1,6}\\}?|eyJ[a-zA-Z0-9_-]{2,10}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}(:[0-9A-F]{2}){5}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z?)?|[0-9a-f]{32}|[0-9a-f]{40}|[0-9]️⃣|#️⃣|😀|🎉|©|~/[a-z]{1,4}|\\./[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|\\{\"[a-z]{1,3}\": [0-9]{1,3}\\}|\\[[0-9, ]{0,6}\\]){0,12}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_arbitrary_input(s in "\\PC{0,40}") {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+}
+
+/// One scanner per strategy and backend, built once: constructing the gate
+/// tables is far more expensive than a scan, especially in debug builds.
+fn strategy_scanners() -> &'static [Scanner] {
+    static SCANNERS: std::sync::OnceLock<Vec<Scanner>> = std::sync::OnceLock::new();
+    SCANNERS.get_or_init(|| {
+        let mut scanners = Vec::new();
+        for &strategy in squeeze::scanner::Strategy::ALL {
+            for scalar in [false, true] {
+                let mut scanner = Scanner::new(all_finders());
+                scanner.set_strategy(strategy);
+                if scalar {
+                    scanner.use_scalar_backend();
+                }
+                scanners.push(scanner);
+            }
+        }
+        scanners
+    })
+}
+
+/// Strategies and backends must agree byte for byte: the vector stage may
+/// only ever add candidates that the exact gates then reject.
+fn assert_strategies_agree(line: &str) {
+    let scanners = strategy_scanners();
+    let reference = scanners[0].scan_line(line);
+    assert_eq!(scanners[0].strategy(), squeeze::scanner::Strategy::Legacy);
+    for scanner in scanners {
+        let got = scanner.scan_line(line);
+        assert_eq!(
+            got,
+            reference,
+            "{} ({}) disagrees with legacy on {line:?}",
+            scanner.strategy().name(),
+            scanner.backend()
+        );
+        let first = scanner.scan_line_first(line);
+        assert_eq!(first, reference.first().cloned(), "first match on {line:?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn strategies_agree_on_dense_input(
+        s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ -]{0,70}"
+    ) {
+        assert_strategies_agree(&s);
+    }
+
+    #[test]
+    fn strategies_agree_on_structured_input(
+        s in "( |\\.|:|/|@|-|_|[a-z]{1,4}|v?[0-9]{1,4}|0x[0-9a-f]{2,8}|#[0-9a-fA-F]{3,8}|rgb\\([0-9, ]{5,11}\\)|\\$\\{?[A-Z_]{1,6}\\}?|eyJ[a-zA-Z0-9_-]{2,10}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}(:[0-9A-F]{2}){5}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z?)?|[0-9a-f]{32}|[0-9a-f]{40}|[0-9]️⃣|#️⃣|😀|🎉|©|~/[a-z]{1,4}|\\./[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|\\{\"[a-z]{1,3}\": [0-9]{1,3}\\}|\\[[0-9, ]{0,6}\\]|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|TODO: |vim: set ts=4:|\\+1-415-555-[0-9]{4}){0,14}"
+    ) {
+        assert_strategies_agree(&s);
+    }
+
+    #[test]
+    fn strategies_agree_on_arbitrary_input(s in "\\PC{0,50}") {
+        assert_strategies_agree(&s);
+    }
+}
+
+#[test]
+fn strategies_agree_around_block_boundaries() {
+    // Matches straddling or touching 16-byte block edges, at every offset.
+    let items = [
+        "5d41402abc4b2a76b9719d911017c592",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "https://example.com/a",
+        "user@example.com",
+        "192.168.1.1",
+        "2024-01-15T10:30:00Z",
+        "$HOME",
+        "#ff00aa",
+        "./src/main.rs",
+        "1️⃣",
+        "😀",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc",
+        "00:1A:2B:3C:4D:5E",
+        "v1.2.3",
+        "{\"a\": 1}",
+    ];
+    for item in items {
+        for pad in 0..40 {
+            let line = format!("{}{item}{}", "x".repeat(pad), " tail".repeat(pad % 3));
+            assert_strategies_agree(&line);
+            let line = format!("{}{item}", " ".repeat(pad));
+            assert_strategies_agree(&line);
+        }
+    }
+}

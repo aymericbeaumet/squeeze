@@ -1,4 +1,5 @@
-use crate::Finder;
+use crate::classify::{self, BLOCK, Backend, CAT_NONE, CATEGORY, Rules};
+use crate::{Finder, Memo, RunRule, Runs};
 use std::fmt;
 use std::ops::Range;
 
@@ -79,6 +80,62 @@ const fn build_byte_class_table() -> [u16; 256] {
 }
 
 static BYTE_CLASSES: [u16; 256] = build_byte_class_table();
+
+/// Coarse byte classes used to index the context gate tables. Bytes that
+/// finders single out in their boundary rules get their own class so the
+/// gates stay exact for them; everything else is grouped.
+const CTX_CLASSES: usize = 18;
+/// Class used when there is no byte (start or end of the line).
+const CTX_NONE: usize = CTX_CLASSES - 1;
+
+const fn ctx_class(b: u8) -> usize {
+    match b {
+        b'0'..=b'9' => 0,
+        b'a'..=b'f' | b'A'..=b'F' => 1,
+        b'g' | b'G' => 2,
+        b's' | b'S' => 3,
+        b'y' | b'Y' => 4,
+        b'h'..=b'z' | b'H'..=b'Z' => 5,
+        b'.' => 6,
+        b':' => 7,
+        b'-' => 8,
+        b'_' => 9,
+        b'/' => 10,
+        b'@' => 11,
+        b' ' | b'\t' | b'\n' | b'\r' | 0x0B | 0x0C => 12,
+        0x80..=0xBF => 13,
+        0xC0..=0xFF => 14,
+        b'(' | b'[' | b'{' | b'<' | b'"' | b'\'' | b'`' | b'=' | b'>' => 15,
+        _ => 16,
+    }
+}
+
+const fn build_ctx_class_table() -> [u8; 256] {
+    let mut table = [0u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        table[i] = ctx_class(i as u8) as u8;
+        i += 1;
+    }
+    table
+}
+
+static CTX_CLASS: [u8; 256] = build_ctx_class_table();
+
+/// Vector categories covering a context class (see `classify`).
+fn ctx_class_category(class: usize) -> u8 {
+    match class {
+        0 => classify::CAT_DIGIT,
+        1 => classify::CAT_HEX_ALPHA,
+        2 => classify::CAT_ALPHA_GO,
+        3 | 4 => classify::CAT_ALPHA_PZ,
+        5 => classify::CAT_OTHER_ALPHA,
+        6 => classify::CAT_DOT,
+        7 => classify::CAT_COLON,
+        13 | 14 => classify::CAT_HIGH,
+        _ => classify::CAT_OTHER,
+    }
+}
 
 #[inline]
 fn prescan(input: &[u8]) -> u16 {
@@ -161,19 +218,290 @@ impl fmt::Display for ScannerError {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Match {
     pub finder_index: usize,
     pub range: Range<usize>,
 }
 
+/// Per-finder operation counters, see [`ScanStats`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FinderStats {
+    /// Lines on which the finder ran (was not disabled by the prescan).
+    pub lines_run: u64,
+    /// Calls to [`Finder::find`] (scan mode).
+    pub find_calls: u64,
+    /// Calls to [`Finder::try_at`] (dispatch mode).
+    pub try_at_calls: u64,
+    /// Calls to [`Finder::try_trigger_at`] (trigger mode).
+    pub try_trigger_calls: u64,
+    /// Calls of any kind that returned `Some`.
+    pub hits: u64,
+    /// Matches kept after the per-finder overlap check.
+    pub matches: u64,
+}
+
+impl FinderStats {
+    /// Total finder invocations of any mode.
+    pub fn calls(&self) -> u64 {
+        self.find_calls + self.try_at_calls + self.try_trigger_calls
+    }
+
+    fn add(&mut self, other: &FinderStats) {
+        self.lines_run += other.lines_run;
+        self.find_calls += other.find_calls;
+        self.try_at_calls += other.try_at_calls;
+        self.try_trigger_calls += other.try_trigger_calls;
+        self.hits += other.hits;
+        self.matches += other.matches;
+    }
+}
+
+/// Operation counters collected by [`Scanner::scan_line_stats`].
+///
+/// The counters describe how much work the scanner and its finders did, so
+/// that performance can be reasoned about independently of wall-clock time:
+/// a finder invocation is the unit of work the scanner dispatches, and the
+/// ratio of invocations to hits shows how well candidate filtering works.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScanStats {
+    /// Lines scanned (including empty lines).
+    pub lines: u64,
+    /// Bytes scanned.
+    pub bytes: u64,
+    /// Lines on which the prescan disabled every finder.
+    pub lines_skipped: u64,
+    /// Finder×line pairs disabled by the prescan.
+    pub finder_lines_skipped: u64,
+    /// Positions visited by the dispatch and trigger loops (one per byte and
+    /// per loop that ran).
+    pub positions: u64,
+    /// Positions the vector stage passed on to the exact gates
+    /// ([`Strategy::Vector`] only).
+    pub coarse_positions: u64,
+    /// Positions where at least one candidate finder was invoked.
+    pub candidate_positions: u64,
+    /// Finder invocations avoided by run rules.
+    pub run_gated: u64,
+    /// Matches returned to the caller.
+    pub matches: u64,
+    /// Lines whose matches had to be sorted.
+    pub sorts: u64,
+    /// One entry per finder, in scanner order.
+    pub finders: Vec<FinderStats>,
+}
+
+impl ScanStats {
+    /// Creates counters sized for `scanner`.
+    pub fn for_scanner(scanner: &Scanner) -> Self {
+        ScanStats {
+            finders: vec![FinderStats::default(); scanner.finders.len()],
+            ..Default::default()
+        }
+    }
+
+    /// Adds `other` into `self`; both must come from scanners with the same
+    /// finder list.
+    pub fn merge(&mut self, other: &ScanStats) {
+        self.lines += other.lines;
+        self.bytes += other.bytes;
+        self.lines_skipped += other.lines_skipped;
+        self.finder_lines_skipped += other.finder_lines_skipped;
+        self.positions += other.positions;
+        self.coarse_positions += other.coarse_positions;
+        self.candidate_positions += other.candidate_positions;
+        self.run_gated += other.run_gated;
+        self.matches += other.matches;
+        self.sorts += other.sorts;
+        if self.finders.len() < other.finders.len() {
+            self.finders
+                .resize(other.finders.len(), FinderStats::default());
+        }
+        for (a, b) in self.finders.iter_mut().zip(&other.finders) {
+            a.add(b);
+        }
+    }
+
+    /// Total finder invocations of any mode.
+    pub fn calls(&self) -> u64 {
+        self.finders.iter().map(FinderStats::calls).sum()
+    }
+
+    /// Total finder invocations that returned `Some`.
+    pub fn hits(&self) -> u64 {
+        self.finders.iter().map(|f| f.hits).sum()
+    }
+}
+
+/// Receives scanner events. `()` ignores them at zero cost; [`ScanStats`]
+/// counts them.
+trait Probe {
+    #[inline(always)]
+    fn line(&mut self, _bytes: usize) {}
+    #[inline(always)]
+    fn line_skipped(&mut self) {}
+    #[inline(always)]
+    fn finders_skipped(&mut self, _count: u32) {}
+    #[inline(always)]
+    fn finder_run(&mut self, _finder: usize) {}
+    #[inline(always)]
+    fn positions(&mut self, _count: usize) {}
+    #[inline(always)]
+    fn coarse_position(&mut self) {}
+    #[inline(always)]
+    fn candidate_position(&mut self) {}
+    #[inline(always)]
+    fn run_gated(&mut self) {}
+    #[inline(always)]
+    fn find_call(&mut self, _finder: usize, _hit: bool) {}
+    #[inline(always)]
+    fn try_at_call(&mut self, _finder: usize, _hit: bool) {}
+    #[inline(always)]
+    fn try_trigger_call(&mut self, _finder: usize, _hit: bool) {}
+    #[inline(always)]
+    fn matched(&mut self, _finder: usize) {}
+    #[inline(always)]
+    fn sorted(&mut self) {}
+}
+
+impl Probe for () {}
+
+impl Probe for ScanStats {
+    fn line(&mut self, bytes: usize) {
+        self.lines += 1;
+        self.bytes += bytes as u64;
+    }
+    fn line_skipped(&mut self) {
+        self.lines_skipped += 1;
+    }
+    fn finders_skipped(&mut self, count: u32) {
+        self.finder_lines_skipped += u64::from(count);
+    }
+    fn finder_run(&mut self, finder: usize) {
+        self.finders[finder].lines_run += 1;
+    }
+    fn positions(&mut self, count: usize) {
+        self.positions += count as u64;
+    }
+    fn coarse_position(&mut self) {
+        self.coarse_positions += 1;
+    }
+    fn candidate_position(&mut self) {
+        self.candidate_positions += 1;
+    }
+    fn run_gated(&mut self) {
+        self.run_gated += 1;
+    }
+    fn find_call(&mut self, finder: usize, hit: bool) {
+        let f = &mut self.finders[finder];
+        f.find_calls += 1;
+        f.hits += u64::from(hit);
+    }
+    fn try_at_call(&mut self, finder: usize, hit: bool) {
+        let f = &mut self.finders[finder];
+        f.try_at_calls += 1;
+        f.hits += u64::from(hit);
+    }
+    fn try_trigger_call(&mut self, finder: usize, hit: bool) {
+        let f = &mut self.finders[finder];
+        f.try_trigger_calls += 1;
+        f.hits += u64::from(hit);
+    }
+    fn matched(&mut self, finder: usize) {
+        self.finders[finder].matches += 1;
+        self.matches += 1;
+    }
+    fn sorted(&mut self) {
+        self.sorts += 1;
+    }
+}
+
+/// How the scanner walks a line. Strategies produce identical matches; they
+/// exist so that alternatives can be measured against each other in the
+/// same process (see the `scanner` bench).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Strategy {
+    /// Byte-by-byte dispatch on the current byte only, dispatch and trigger
+    /// finders in separate passes. The original implementation.
+    Legacy,
+    /// Single pass with context gates: a finder is only invoked when the
+    /// previous and next bytes allow a match to start.
+    Gated,
+    /// Context gates evaluated sixteen bytes at a time with SIMD (or with
+    /// `memchr` when the finders start at three bytes or fewer), then the
+    /// exact gates on the surviving positions (default).
+    Vector,
+}
+
+impl Strategy {
+    /// All strategies, in evaluation order.
+    pub const ALL: &[Strategy] = &[Strategy::Legacy, Strategy::Gated, Strategy::Vector];
+
+    /// Short identifier, e.g. for command-line selection.
+    pub fn name(self) -> &'static str {
+        match self {
+            Strategy::Legacy => "legacy",
+            Strategy::Gated => "gated",
+            Strategy::Vector => "vector",
+        }
+    }
+
+    /// Parses [`name`](Strategy::name).
+    pub fn parse(name: &str) -> Option<Strategy> {
+        Strategy::ALL.iter().copied().find(|s| s.name() == name)
+    }
+}
+
+/// Per-line state of the dispatch/trigger pass: where each finder's last
+/// match ended (matches stay disjoint per finder) and each finder's memo.
+struct LineState {
+    finder_pos: [usize; MAX_FINDERS],
+    memos: [Memo; MAX_FINDERS],
+}
+
+impl LineState {
+    #[inline(always)]
+    fn new() -> LineState {
+        LineState {
+            finder_pos: [0; MAX_FINDERS],
+            memos: [Memo::default(); MAX_FINDERS],
+        }
+    }
+}
+
+/// Start bytes of a scanner whose finders begin at three bytes or fewer:
+/// those lines are walked with `memchr` instead of block classification.
+#[derive(Clone, Copy, Debug)]
+enum Sparse {
+    One(u8),
+    Two(u8, u8),
+    Three(u8, u8, u8),
+}
+
 pub struct Scanner {
     finders: Vec<Box<dyn Finder>>,
+    strategy: Strategy,
+    /// Coarse rules for the vector strategy, derived from the gate tables.
+    rules: Rules,
+    backend: classify::Kind,
+    sparse: Option<Sparse>,
+    /// Start bytes per dispatch finder (`Strategy::Legacy`).
     dispatch: [u32; 256],
+    /// Trigger bytes per trigger finder (`Strategy::Legacy`).
     trigger: [u32; 256],
+    /// Candidates by (class of previous byte, current byte); row `CTX_NONE`
+    /// is the start of the line. Covers dispatch and trigger finders.
+    gate_prev: Box<[[u32; 256]; CTX_CLASSES]>,
+    /// Candidates by (current byte, class of next byte); column `CTX_NONE`
+    /// is the end of the line.
+    gate_next: Box<[[u32; CTX_CLASSES]; 256]>,
     dispatch_mask: u32,
     trigger_mask: u32,
     scan_mask: u32,
+    /// Finders with run rules.
+    run_mask: u32,
+    run_rules: Vec<Vec<RunRule>>,
     skip_requirements: Vec<&'static [(u16, bool)]>,
 }
 
@@ -198,14 +526,46 @@ impl Scanner {
 
         let skip_requirements: Vec<&'static [(u16, bool)]> =
             finders.iter().map(|f| required_classes(f.id())).collect();
+        let run_rules: Vec<Vec<RunRule>> = finders
+            .iter()
+            .map(|f| {
+                if f.dispatchable() {
+                    f.run_rules()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let run_mask = run_rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rules)| !rules.is_empty())
+            .fold(0u32, |mask, (i, _)| mask | (1u32 << i));
+
+        let mut gate_prev = Box::new([[0u32; 256]; CTX_CLASSES]);
+        let mut gate_next = Box::new([[0u32; CTX_CLASSES]; 256]);
 
         for (i, finder) in finders.iter().enumerate() {
             let bit = 1u32 << i;
             if finder.dispatchable() {
                 dispatch_mask |= bit;
-                for b in 0..=255u8 {
-                    if finder.could_start_at(b) {
-                        dispatch[b as usize] |= bit;
+                for cur in 0..=255u8 {
+                    if !finder.could_start_at(cur) {
+                        continue;
+                    }
+                    dispatch[cur as usize] |= bit;
+                    // A class is allowed as soon as one of its bytes is: the
+                    // gate only skips contexts every byte of the class rules
+                    // out, so it can never lose a match.
+                    gate_prev[CTX_NONE][cur as usize] |= bit;
+                    gate_next[cur as usize][CTX_NONE] |= bit;
+                    for other in 0..=255u8 {
+                        if finder.could_start_after(other, cur) {
+                            gate_prev[ctx_class(other)][cur as usize] |= bit;
+                        }
+                        if finder.could_continue_with(cur, other) {
+                            gate_next[cur as usize][ctx_class(other)] |= bit;
+                        }
                     }
                 }
             } else if finder.triggerable() {
@@ -213,6 +573,12 @@ impl Scanner {
                 for b in 0..=255u8 {
                     if finder.could_trigger_at(b) {
                         trigger[b as usize] |= bit;
+                        for row in gate_prev.iter_mut() {
+                            row[b as usize] |= bit;
+                        }
+                        for cell in gate_next[b as usize].iter_mut() {
+                            *cell |= bit;
+                        }
                     }
                 }
             } else {
@@ -220,19 +586,88 @@ impl Scanner {
             }
         }
 
+        // Coarse rules: for each finder and start byte, the previous/next
+        // byte classes its gates accept, mapped to the vector categories.
+        // Categories are coarser than classes and unions only widen, so the
+        // vector stage always yields a superset of the exact gates.
+        let ctx_mask = dispatch_mask | trigger_mask;
+        let mut items = Vec::new();
+        for i in 0..finders.len() {
+            let bit = 1u32 << i;
+            if bit & ctx_mask == 0 {
+                continue;
+            }
+            for b in 0..=255u8 {
+                if gate_prev[CTX_NONE][b as usize] & bit == 0 {
+                    continue;
+                }
+                let mut prev = 0u8;
+                let mut next = 0u8;
+                for class in 0..CTX_NONE {
+                    if gate_prev[class][b as usize] & bit != 0 {
+                        prev |= ctx_class_category(class);
+                    }
+                    if gate_next[b as usize][class] & bit != 0 {
+                        next |= ctx_class_category(class);
+                    }
+                }
+                items.push((b, prev, next));
+            }
+        }
+        let rules = Rules::build(items);
+        let start_bytes: Vec<u8> = (0..=255u8)
+            .filter(|&b| gate_prev[CTX_NONE][b as usize] & ctx_mask != 0)
+            .collect();
+        let sparse = match start_bytes.as_slice() {
+            [a] => Some(Sparse::One(*a)),
+            [a, b] => Some(Sparse::Two(*a, *b)),
+            [a, b, c] => Some(Sparse::Three(*a, *b, *c)),
+            _ => None,
+        };
+
         Ok(Scanner {
             finders,
+            strategy: Strategy::Vector,
+            rules,
+            backend: classify::detect(),
+            sparse,
             dispatch,
             trigger,
+            gate_prev,
+            gate_next,
             dispatch_mask,
             trigger_mask,
             scan_mask,
+            run_mask,
+            run_rules,
             skip_requirements,
         })
     }
 
     pub fn finders(&self) -> &[Box<dyn Finder>] {
         &self.finders
+    }
+
+    /// The line-walking strategy in use.
+    pub fn strategy(&self) -> Strategy {
+        self.strategy
+    }
+
+    /// Selects the line-walking strategy; results do not depend on it.
+    pub fn set_strategy(&mut self, strategy: Strategy) {
+        self.strategy = strategy;
+    }
+
+    /// Name of the block classifier used by [`Strategy::Vector`]
+    /// (`"neon"`, `"ssse3"` or `"scalar"`), for diagnostics.
+    pub fn backend(&self) -> &'static str {
+        self.backend.name()
+    }
+
+    /// Forces the portable block classifier (for tests and benchmarks).
+    #[doc(hidden)]
+    pub fn use_scalar_backend(&mut self) {
+        self.backend = classify::Kind::Scalar;
     }
 
     #[inline]
@@ -252,19 +687,98 @@ impl Scanner {
         matches
     }
 
+    /// Start of the first line at or after `from` (itself a line start) in
+    /// `text` that may contain a match, or `None` when no later line can.
+    ///
+    /// When the finders start at three bytes or fewer, those bytes are
+    /// searched with `memchr` across the whole buffer, so lines that cannot
+    /// match are never visited individually; otherwise every line is a
+    /// candidate and `from` is returned. Lines end at `\n`.
+    pub fn skip_to_candidate_line(&self, text: &[u8], from: usize) -> Option<usize> {
+        let from = from.min(text.len());
+        let Some(sparse) = self.sparse else {
+            return Some(from);
+        };
+        let hay = &text[from..];
+        let hit = match sparse {
+            Sparse::One(a) => memchr::memchr(a, hay),
+            Sparse::Two(a, b) => memchr::memchr2(a, b, hay),
+            Sparse::Three(a, b, c) => memchr::memchr3(a, b, c, hay),
+        }?;
+        let hit = from + hit;
+        Some(
+            memchr::memrchr(b'\n', &text[from..hit])
+                .map(|nl| from + nl + 1)
+                .unwrap_or(from),
+        )
+    }
+
     pub fn scan_line_into(&self, line: &str, matches: &mut Vec<Match>) {
+        self.scan_line_probe(line, matches, &mut ());
+    }
+
+    /// Like [`scan_line_into`](Self::scan_line_into), additionally counting
+    /// the work performed into `stats`.
+    pub fn scan_line_stats(&self, line: &str, matches: &mut Vec<Match>, stats: &mut ScanStats) {
+        if stats.finders.len() < self.finders.len() {
+            stats
+                .finders
+                .resize(self.finders.len(), FinderStats::default());
+        }
+        self.scan_line_probe(line, matches, stats);
+    }
+
+    /// Prescan and per-finder activation shared by every entry point.
+    /// Returns the active finder mask, or `None` when nothing can match.
+    #[inline]
+    fn activate<P: Probe>(&self, input: &[u8], probe: &mut P) -> Option<u32> {
+        probe.line(input.len());
+        if input.is_empty() {
+            probe.line_skipped();
+            return None;
+        }
+        let all = if self.finders.is_empty() {
+            0
+        } else {
+            u32::MAX >> (32 - self.finders.len())
+        };
+        // A sparse scanner walks the line with `memchr` for its few start
+        // bytes, which already skips everything the prescan could disable;
+        // the prescan would only add a pass over every byte.
+        if self.sparse.is_some() && self.strategy == Strategy::Vector {
+            if all == 0 {
+                probe.line_skipped();
+                return None;
+            }
+            let mut bits = all;
+            while bits != 0 {
+                probe.finder_run(bits.trailing_zeros() as usize);
+                bits &= bits - 1;
+            }
+            return Some(all);
+        }
+        let line_classes = prescan(input);
+        let active = self.compute_active(line_classes);
+        probe.finders_skipped((all & !active).count_ones());
+        if active == 0 {
+            probe.line_skipped();
+            return None;
+        }
+        let mut bits = active;
+        while bits != 0 {
+            probe.finder_run(bits.trailing_zeros() as usize);
+            bits &= bits - 1;
+        }
+        Some(active)
+    }
+
+    fn scan_line_probe<P: Probe>(&self, line: &str, matches: &mut Vec<Match>, probe: &mut P) {
         matches.clear();
 
         let input = line.as_bytes();
-        if input.is_empty() {
+        let Some(active) = self.activate(input, probe) else {
             return;
-        }
-
-        let line_classes = prescan(input);
-        let active = self.compute_active(line_classes);
-        if active == 0 {
-            return;
-        }
+        };
 
         let active_scan = active & self.scan_mask;
         if active_scan != 0 {
@@ -275,7 +789,10 @@ impl Scanner {
                 let finder = &self.finders[i];
                 let mut idx = 0;
                 while idx < line.len() {
-                    if let Some(range) = finder.find(&line[idx..]) {
+                    let found = finder.find(&line[idx..]);
+                    probe.find_call(i, found.is_some());
+                    if let Some(range) = found {
+                        probe.matched(i);
                         matches.push(Match {
                             finder_index: i,
                             range: (idx + range.start)..(idx + range.end),
@@ -288,12 +805,48 @@ impl Scanner {
             }
         }
 
+        match self.strategy {
+            Strategy::Legacy => self.walk_legacy(input, active, matches, probe),
+            Strategy::Gated => self.walk_gated(input, active, matches, probe),
+            Strategy::Vector => self.walk_vector(input, active, matches, probe),
+        }
+
+        // Scan-mode matches come first in position order, then the merged
+        // dispatch/trigger pass in candidate order; trigger matches may start
+        // before their trigger byte, so check before paying for a sort.
+        let sorted = matches.windows(2).all(|w| {
+            (w[0].range.start, w[0].finder_index) <= (w[1].range.start, w[1].finder_index)
+        });
+        if !sorted {
+            probe.sorted();
+            matches.sort_unstable_by(|a, b| {
+                a.range
+                    .start
+                    .cmp(&b.range.start)
+                    .then(a.finder_index.cmp(&b.finder_index))
+            });
+        }
+    }
+
+    /// `Strategy::Legacy`: the original two-pass byte loop.
+    fn walk_legacy<P: Probe>(
+        &self,
+        input: &[u8],
+        active: u32,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
         let active_dispatch = active & self.dispatch_mask;
         if active_dispatch != 0 {
             let mut finder_pos = [0usize; MAX_FINDERS];
+            probe.positions(input.len());
 
             for pos in 0..input.len() {
                 let mut candidates = self.dispatch[input[pos] as usize] & active_dispatch;
+                if candidates == 0 {
+                    continue;
+                }
+                probe.candidate_position();
                 while candidates != 0 {
                     let i = candidates.trailing_zeros() as usize;
                     candidates &= candidates - 1;
@@ -301,10 +854,13 @@ impl Scanner {
                     if pos < finder_pos[i] {
                         continue;
                     }
-                    if let Some(range) = self.finders[i].try_at(input, pos) {
+                    let found = self.finders[i].try_at(input, pos);
+                    probe.try_at_call(i, found.is_some());
+                    if let Some(range) = found {
                         if range.start < finder_pos[i] {
                             continue;
                         }
+                        probe.matched(i);
                         matches.push(Match {
                             finder_index: i,
                             range: range.clone(),
@@ -318,9 +874,14 @@ impl Scanner {
         let active_trigger = active & self.trigger_mask;
         if active_trigger != 0 {
             let mut finder_pos = [0usize; MAX_FINDERS];
+            probe.positions(input.len());
 
             for pos in 0..input.len() {
                 let mut candidates = self.trigger[input[pos] as usize] & active_trigger;
+                if candidates == 0 {
+                    continue;
+                }
+                probe.candidate_position();
                 while candidates != 0 {
                     let i = candidates.trailing_zeros() as usize;
                     candidates &= candidates - 1;
@@ -328,14 +889,14 @@ impl Scanner {
                     if pos < finder_pos[i] {
                         continue;
                     }
-                    if let Some(range) = self.finders[i].try_trigger_at(input, pos) {
-                        // Trigger matches can extend backward past the previous
-                        // match for this finder (e.g. an email local part walked
-                        // back across it); matches must stay disjoint per finder.
+                    let found = self.finders[i].try_trigger_at(input, pos);
+                    probe.try_trigger_call(i, found.is_some());
+                    if let Some(range) = found {
                         if range.start < finder_pos[i] {
                             continue;
                         }
                         finder_pos[i] = range.end;
+                        probe.matched(i);
                         matches.push(Match {
                             finder_index: i,
                             range,
@@ -344,28 +905,252 @@ impl Scanner {
                 }
             }
         }
+    }
 
-        matches.sort_unstable_by(|a, b| {
-            a.range
-                .start
-                .cmp(&b.range.start)
-                .then(a.finder_index.cmp(&b.finder_index))
-        });
+    /// Runs every finder the exact gates allow at `pos`, keeping matches
+    /// disjoint per finder through `finder_pos`.
+    #[inline(always)]
+    fn probe_position<P: Probe>(
+        &self,
+        input: &[u8],
+        pos: usize,
+        active_ctx: u32,
+        state: &mut LineState,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
+        let cur = input[pos];
+        let prev_class = if pos > 0 {
+            CTX_CLASS[input[pos - 1] as usize] as usize
+        } else {
+            CTX_NONE
+        };
+        let mut candidates = self.gate_prev[prev_class][cur as usize] & active_ctx;
+        if candidates == 0 {
+            return;
+        }
+        let next_class = if pos + 1 < input.len() {
+            CTX_CLASS[input[pos + 1] as usize] as usize
+        } else {
+            CTX_NONE
+        };
+        candidates &= self.gate_next[cur as usize][next_class];
+        if candidates == 0 {
+            return;
+        }
+        probe.candidate_position();
+        self.invoke(input, pos, candidates, state, matches, probe);
+    }
+
+    /// Invokes the finders in `candidates` at `pos`.
+    #[inline(always)]
+    fn invoke<P: Probe>(
+        &self,
+        input: &[u8],
+        pos: usize,
+        mut candidates: u32,
+        state: &mut LineState,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
+        let LineState { finder_pos, memos } = state;
+        if candidates & self.run_mask != 0 {
+            let runs = Runs::at(input, pos);
+            let mut gated = candidates & self.run_mask;
+            while gated != 0 {
+                let i = gated.trailing_zeros() as usize;
+                gated &= gated - 1;
+                if !RunRule::allow(&self.run_rules[i], input[pos], &runs) {
+                    candidates &= !(1u32 << i);
+                    probe.run_gated();
+                }
+            }
+        }
+        while candidates != 0 {
+            let i = candidates.trailing_zeros() as usize;
+            candidates &= candidates - 1;
+
+            if pos < finder_pos[i] {
+                continue;
+            }
+            let found = if self.dispatch_mask & (1u32 << i) != 0 {
+                let found = self.finders[i].try_at_memo(input, pos, &mut memos[i]);
+                probe.try_at_call(i, found.is_some());
+                found
+            } else {
+                let found = self.finders[i].try_trigger_at_memo(input, pos, &mut memos[i]);
+                probe.try_trigger_call(i, found.is_some());
+                found
+            };
+            if let Some(range) = found {
+                // Trigger matches can extend backward past the previous
+                // match for this finder (e.g. an email local part walked
+                // back across it); matches must stay disjoint per finder.
+                if range.start < finder_pos[i] {
+                    continue;
+                }
+                finder_pos[i] = range.end;
+                probe.matched(i);
+                matches.push(Match {
+                    finder_index: i,
+                    range,
+                });
+            }
+        }
+    }
+
+    /// `Strategy::Gated`: one pass, context-gated candidates.
+    fn walk_gated<P: Probe>(
+        &self,
+        input: &[u8],
+        active: u32,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
+        let active_ctx = active & (self.dispatch_mask | self.trigger_mask);
+        if active_ctx == 0 {
+            return;
+        }
+        let mut state = LineState::new();
+        probe.positions(input.len());
+        let len = input.len();
+        let mut prev_class = CTX_NONE;
+
+        for pos in 0..len {
+            let cur = input[pos];
+            let mut candidates = self.gate_prev[prev_class][cur as usize] & active_ctx;
+            prev_class = CTX_CLASS[cur as usize] as usize;
+            if candidates == 0 {
+                continue;
+            }
+            let next_class = if pos + 1 < len {
+                CTX_CLASS[input[pos + 1] as usize] as usize
+            } else {
+                CTX_NONE
+            };
+            candidates &= self.gate_next[cur as usize][next_class];
+            if candidates == 0 {
+                continue;
+            }
+            probe.candidate_position();
+            self.invoke(input, pos, candidates, &mut state, matches, probe);
+        }
+    }
+
+    /// `Strategy::Vector`: candidates from `memchr` or the block classifier,
+    /// then the exact gates.
+    fn walk_vector<P: Probe>(
+        &self,
+        input: &[u8],
+        active: u32,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
+        let active_ctx = active & (self.dispatch_mask | self.trigger_mask);
+        if active_ctx == 0 {
+            return;
+        }
+        let mut state = LineState::new();
+        probe.positions(input.len());
+
+        if let Some(sparse) = self.sparse {
+            match sparse {
+                Sparse::One(a) => {
+                    for pos in memchr::memchr_iter(a, input) {
+                        probe.coarse_position();
+                        self.probe_position(input, pos, active_ctx, &mut state, matches, probe);
+                    }
+                }
+                Sparse::Two(a, b) => {
+                    for pos in memchr::memchr2_iter(a, b, input) {
+                        probe.coarse_position();
+                        self.probe_position(input, pos, active_ctx, &mut state, matches, probe);
+                    }
+                }
+                Sparse::Three(a, b, c) => {
+                    for pos in memchr::memchr3_iter(a, b, c, input) {
+                        probe.coarse_position();
+                        self.probe_position(input, pos, active_ctx, &mut state, matches, probe);
+                    }
+                }
+            }
+            return;
+        }
+
+        match self.backend {
+            classify::Kind::Scalar => self
+                .walk_blocks::<classify::Scalar, P>(input, active_ctx, &mut state, matches, probe),
+            #[cfg(target_arch = "aarch64")]
+            classify::Kind::Neon => self.walk_blocks::<classify::neon::Neon, P>(
+                input, active_ctx, &mut state, matches, probe,
+            ),
+            #[cfg(target_arch = "x86_64")]
+            classify::Kind::Ssse3 => {
+                // SAFETY: `Kind::Ssse3` is only selected after the CPU check.
+                unsafe { self.walk_blocks_ssse3(input, active_ctx, &mut state, matches, probe) }
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "ssse3")]
+    unsafe fn walk_blocks_ssse3<P: Probe>(
+        &self,
+        input: &[u8],
+        active_ctx: u32,
+        state: &mut LineState,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
+        self.walk_blocks::<classify::ssse3::Ssse3, P>(input, active_ctx, state, matches, probe)
+    }
+
+    #[inline(always)]
+    fn walk_blocks<B: Backend, P: Probe>(
+        &self,
+        input: &[u8],
+        active_ctx: u32,
+        state: &mut LineState,
+        matches: &mut Vec<Match>,
+        probe: &mut P,
+    ) {
+        let len = input.len();
+        let mut prev_cat = CAT_NONE;
+        let mut base = 0;
+        while base < len {
+            let remaining = len - base;
+            let (block, valid, next_cat) = if remaining >= BLOCK {
+                let block: &[u8; BLOCK] = input[base..base + BLOCK].try_into().unwrap();
+                let next_cat = if remaining > BLOCK {
+                    CATEGORY[input[base + BLOCK] as usize]
+                } else {
+                    CAT_NONE
+                };
+                (*block, B::lanes(BLOCK), next_cat)
+            } else {
+                // Tail: pad with spaces, which start nothing, and drop the
+                // padded lanes anyway.
+                let mut block = [b' '; BLOCK];
+                block[..remaining].copy_from_slice(&input[base..]);
+                (block, B::lanes(remaining), CAT_NONE)
+            };
+            let mut mask = B::block(&self.rules, &block, prev_cat, next_cat) & valid;
+            while mask != 0 {
+                let lane = B::lane(mask);
+                mask = B::clear(mask, lane);
+                probe.coarse_position();
+                self.probe_position(input, base + lane, active_ctx, state, matches, probe);
+            }
+            prev_cat = CATEGORY[block[BLOCK - 1] as usize];
+            base += BLOCK;
+        }
     }
 
     /// Returns the same match as `scan_line(line).into_iter().next()`: the
     /// earliest-starting match, ties broken by the lowest finder index.
     pub fn scan_line_first(&self, line: &str) -> Option<Match> {
         let input = line.as_bytes();
-        if input.is_empty() {
-            return None;
-        }
-
-        let line_classes = prescan(input);
-        let active = self.compute_active(line_classes);
-        if active == 0 {
-            return None;
-        }
+        let active = self.activate(input, &mut ())?;
 
         let mut best: Option<Match> = None;
         // Matches scan_line's sort order: (range.start, finder_index) ascending.
@@ -391,62 +1176,67 @@ impl Scanner {
             }
         }
 
-        let active_dispatch = active & self.dispatch_mask;
-        if active_dispatch != 0 {
-            let mut finder_pos = [0usize; MAX_FINDERS];
+        let active_ctx = active & (self.dispatch_mask | self.trigger_mask);
+        if active_ctx != 0 {
+            let mut state = LineState::new();
+            let len = input.len();
+            let mut prev_class = CTX_NONE;
+            let mut allowed = active_ctx;
 
-            for pos in 0..input.len() {
+            for pos in 0..len {
                 // Dispatch matches start at `pos`, so once `pos` passes the best
-                // start no candidate can win (ties at equal start still can).
-                if let Some(b) = &best
+                // start no dispatch candidate can win (ties at equal start still
+                // can). Trigger matches can start before their trigger byte, so
+                // those finders must keep visiting every position.
+                if allowed & self.dispatch_mask != 0
+                    && let Some(b) = &best
                     && pos > b.range.start
                 {
-                    break;
+                    allowed &= self.trigger_mask;
+                    if allowed == 0 {
+                        break;
+                    }
                 }
-                let mut candidates = self.dispatch[input[pos] as usize] & active_dispatch;
+                let cur = input[pos];
+                let mut candidates = self.gate_prev[prev_class][cur as usize] & allowed;
+                prev_class = CTX_CLASS[cur as usize] as usize;
+                if candidates == 0 {
+                    continue;
+                }
+                let next_class = if pos + 1 < len {
+                    CTX_CLASS[input[pos + 1] as usize] as usize
+                } else {
+                    CTX_NONE
+                };
+                candidates &= self.gate_next[cur as usize][next_class];
+                if candidates & self.run_mask != 0 {
+                    let runs = Runs::at(input, pos);
+                    let mut gated = candidates & self.run_mask;
+                    while gated != 0 {
+                        let i = gated.trailing_zeros() as usize;
+                        gated &= gated - 1;
+                        if !RunRule::allow(&self.run_rules[i], cur, &runs) {
+                            candidates &= !(1u32 << i);
+                        }
+                    }
+                }
                 while candidates != 0 {
                     let i = candidates.trailing_zeros() as usize;
                     candidates &= candidates - 1;
 
-                    if pos < finder_pos[i] {
+                    if pos < state.finder_pos[i] {
                         continue;
                     }
-                    if let Some(range) = self.finders[i].try_at(input, pos) {
-                        if range.start < finder_pos[i] {
+                    let found = if self.dispatch_mask & (1u32 << i) != 0 {
+                        self.finders[i].try_at_memo(input, pos, &mut state.memos[i])
+                    } else {
+                        self.finders[i].try_trigger_at_memo(input, pos, &mut state.memos[i])
+                    };
+                    if let Some(range) = found {
+                        if range.start < state.finder_pos[i] {
                             continue;
                         }
-                        finder_pos[i] = range.end;
-                        if beats(&best, range.start, i) {
-                            best = Some(Match {
-                                finder_index: i,
-                                range,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        let active_trigger = active & self.trigger_mask;
-        if active_trigger != 0 {
-            let mut finder_pos = [0usize; MAX_FINDERS];
-
-            // Trigger matches can start before their trigger position, so every
-            // position must be visited even once a best match exists.
-            for pos in 0..input.len() {
-                let mut candidates = self.trigger[input[pos] as usize] & active_trigger;
-                while candidates != 0 {
-                    let i = candidates.trailing_zeros() as usize;
-                    candidates &= candidates - 1;
-
-                    if pos < finder_pos[i] {
-                        continue;
-                    }
-                    if let Some(range) = self.finders[i].try_trigger_at(input, pos) {
-                        if range.start < finder_pos[i] {
-                            continue;
-                        }
-                        finder_pos[i] = range.end;
+                        state.finder_pos[i] = range.end;
                         if beats(&best, range.start, i) {
                             best = Some(Match {
                                 finder_index: i,
@@ -564,6 +1354,34 @@ mod tests {
     fn can_skip_path_without_prefix() {
         let cl = prescan(b"no paths here");
         assert!(can_skip_with_mask(cl, required_classes("path")));
+    }
+
+    #[test]
+    fn skip_to_candidate_line_jumps_over_lines_without_start_bytes() {
+        let scanner = Scanner::new(vec![Box::new(crate::email::Email::default())]);
+        let text = b"no mail\nstill none\nhi a@b.co there\ntail";
+        assert_eq!(scanner.skip_to_candidate_line(text, 0), Some(19));
+        assert_eq!(scanner.skip_to_candidate_line(text, 19), Some(19));
+        assert_eq!(scanner.skip_to_candidate_line(text, 34), None);
+        assert_eq!(scanner.skip_to_candidate_line(text, 100), None);
+        let scanner = Scanner::new(vec![Box::new(crate::hash::Hash::default())]);
+        assert_eq!(scanner.skip_to_candidate_line(text, 8), Some(8));
+    }
+
+    #[test]
+    fn sparse_scanner_matches_prescanned_results() {
+        let text = "mail a@b.co, url http://x.y, none";
+        let finders = || -> Vec<Box<dyn Finder>> {
+            vec![
+                Box::new(crate::email::Email::default()),
+                Box::new(crate::uri::URI::default()),
+            ]
+        };
+        let mut gated = Scanner::new(finders());
+        gated.set_strategy(Strategy::Gated);
+        let vector = Scanner::new(finders());
+        assert_eq!(gated.scan_line(text), vector.scan_line(text));
+        assert_eq!(gated.scan_line("nothing"), vector.scan_line("nothing"));
     }
 
     #[test]
@@ -939,9 +1757,9 @@ mod tests {
         let scanner = Scanner::new(finders);
         for b in 0..=255u8 {
             if b == b'$' {
-                assert_ne!(scanner.dispatch[b as usize], 0);
+                assert_ne!(scanner.gate_prev[CTX_NONE][b as usize], 0);
             } else {
-                assert_eq!(scanner.dispatch[b as usize], 0);
+                assert_eq!(scanner.gate_prev[CTX_NONE][b as usize], 0);
             }
         }
     }
@@ -950,13 +1768,22 @@ mod tests {
     fn dispatch_table_color_selective() {
         let finders: Vec<Box<dyn Finder>> = vec![Box::new(crate::color::Color::default())];
         let scanner = Scanner::new(finders);
-        assert_ne!(scanner.dispatch[b'#' as usize], 0);
-        assert_ne!(scanner.dispatch[b'r' as usize], 0);
-        assert_ne!(scanner.dispatch[b'R' as usize], 0);
-        assert_ne!(scanner.dispatch[b'h' as usize], 0);
-        assert_ne!(scanner.dispatch[b'H' as usize], 0);
-        assert_eq!(scanner.dispatch[b'x' as usize], 0);
-        assert_eq!(scanner.dispatch[b' ' as usize], 0);
+        let start = &scanner.gate_prev[CTX_NONE];
+        assert_ne!(start[b'#' as usize], 0);
+        assert_ne!(start[b'r' as usize], 0);
+        assert_ne!(start[b'R' as usize], 0);
+        assert_ne!(start[b'h' as usize], 0);
+        assert_ne!(start[b'H' as usize], 0);
+        assert_eq!(start[b'x' as usize], 0);
+        assert_eq!(start[b' ' as usize], 0);
+        // `#` has no previous-byte rule; `r` must follow a non-alphanumeric.
+        assert_ne!(scanner.gate_prev[ctx_class(b'x')][b'#' as usize], 0);
+        assert_eq!(scanner.gate_prev[ctx_class(b'x')][b'r' as usize], 0);
+        assert_ne!(scanner.gate_prev[ctx_class(b' ')][b'r' as usize], 0);
+        // `r` must be followed by `g`, `#` by a hex digit.
+        assert_ne!(scanner.gate_next[b'r' as usize][ctx_class(b'g')], 0);
+        assert_eq!(scanner.gate_next[b'r' as usize][ctx_class(b'x')], 0);
+        assert_eq!(scanner.gate_next[b'#' as usize][ctx_class(b'x')], 0);
     }
 
     #[test]

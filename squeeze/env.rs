@@ -99,6 +99,10 @@ impl Finder for Env {
         byte == b'$'
     }
 
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next == b'{' || Self::is_name_start(next)
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         if input[pos] != b'$' {
             return None;

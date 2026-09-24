@@ -401,6 +401,15 @@ impl Finder for Emoji {
         matches!(byte, 0xC2 | 0xE2 | 0xE3 | 0xF0) || Self::is_keycap_base(byte)
     }
 
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        if Self::is_keycap_base(cur) {
+            next == VS16_BYTES[0] || next == KEYCAP_BYTES[0]
+        } else {
+            // A multi-byte lead byte is always followed by a continuation byte.
+            next & 0xC0 == 0x80
+        }
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         let len = Self::match_len_at(input, pos)?;
         Some(pos..pos + len)

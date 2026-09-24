@@ -104,6 +104,18 @@ impl Finder for Color {
         byte == b'#' || matches!(byte, b'r' | b'R' | b'h' | b'H')
     }
 
+    fn could_start_after(&self, prev: u8, cur: u8) -> bool {
+        cur == b'#' || !prev.is_ascii_alphanumeric()
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        match cur {
+            b'#' => Self::is_hex(next),
+            b'r' | b'R' => next.eq_ignore_ascii_case(&b'g'),
+            _ => next.eq_ignore_ascii_case(&b's'),
+        }
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         if input[pos] == b'#'
             && let Some(range) = Self::try_hex_color(input, pos)

@@ -1,71 +1,175 @@
-use super::Finder;
-use regex::Regex;
+use super::{ByteSet, Finder, RunClass, RunRule};
+use crate::word::{digit_at, digit_lead_bytes, space_at};
 use std::ops::Range;
 use std::sync::OnceLock;
 
-pub struct Phone {
-    regex: &'static Regex,
-}
+/// Phone number finder.
+///
+/// Hand-written equivalent of the former regex
+/// `\+[1-9]\d{0,2}[\s.\-]?(?:\(?\d{1,4}\)?[\s.\-]?){1,7}\d` (E.164 with
+/// optional separators), `\(\d{3}\)[\s.\-]?\d{3}[\s.\-]?\d{4}` and
+/// `\d{3}[\-\.]\d{3}[\-\.]\d{4}` (North American forms), including the
+/// regex crate's Unicode `\d` and `\s`, followed by the same validation.
+#[derive(Default)]
+pub struct Phone {}
 
-impl Default for Phone {
-    fn default() -> Self {
-        static RE: OnceLock<Regex> = OnceLock::new();
-        let regex = RE.get_or_init(|| {
-            Regex::new(concat!(
-                r"(?:",
-                // E.164 international: +CC with digits/separators. Up to 7
-                // digit groups covers pair-grouped numbers such as
-                // `+33 1 42 96 12 34`; total digits are validated later.
-                r"\+[1-9]\d{0,2}[\s.\-]?(?:\(?\d{1,4}\)?[\s.\-]?){1,7}\d",
-                r"|",
-                // North American: (XXX) XXX-XXXX
-                r"\(\d{3}\)[\s.\-]?\d{3}[\s.\-]?\d{4}",
-                r"|",
-                // North American: XXX-XXX-XXXX or XXX.XXX.XXXX (require separator)
-                r"\d{3}[\-\.]\d{3}[\-\.]\d{4}",
-                r")",
-            ))
-            .unwrap()
-        });
-        Phone { regex }
-    }
-}
+/// Longest run of E.164 digit groups.
+const MAX_GROUPS: usize = 7;
 
 impl Phone {
     fn count_digits(s: &str) -> usize {
         s.bytes().filter(|b| b.is_ascii_digit()).count()
     }
-}
 
-impl Finder for Phone {
-    fn id(&self) -> &'static str {
-        "phone"
+    /// `[\s.\-]` at `pos`: byte length of the separator.
+    #[inline]
+    fn separator_at(input: &[u8], pos: usize) -> Option<usize> {
+        match input.get(pos) {
+            Some(b'.' | b'-') => Some(1),
+            _ => space_at(input, pos),
+        }
     }
 
-    // Phone is a plain scan-mode finder: a single anchored-resume regex pass
-    // per find() call. It deliberately does not implement dispatchable/
-    // could_start_at/try_at — the previous dispatch implementation ran an
-    // unanchored regex search at every digit/'+'/'(' position, which was
-    // O(n^2) on digit-heavy lines (~60s for a 100KB digit run).
-    fn find(&self, s: &str) -> Option<Range<usize>> {
-        let mut at = 0;
-        while at < s.len() {
-            let m = self.regex.find_at(s, at)?;
-            if let Some(range) = self.validate_match(s, m.start(), m.end()) {
-                return Some(range);
+    /// Ends of `\d{1,max}` at `pos`, longest first.
+    fn digit_ends(input: &[u8], pos: usize, max: usize) -> Vec<usize> {
+        let mut ends = Vec::with_capacity(max);
+        let mut p = pos;
+        for _ in 0..max {
+            match digit_at(input, p) {
+                Some(width) => {
+                    p += width;
+                    ends.push(p);
+                }
+                None => break,
             }
-            // Resume *inside* the failed candidate: a valid number may
-            // overlap it (e.g. `415.555.1234` inside `x+415.555.1234`).
-            // Every candidate starts with an ASCII byte ('+', '(' or a
-            // digit), so start+1 is always a char boundary.
-            at = m.start() + 1;
+        }
+        ends.reverse();
+        ends
+    }
+
+    /// `(?:\(?\d{1,4}\)?[\s.\-]?){1,7}\d` from `pos` with `count` groups
+    /// already matched, in backtracking order: more groups first.
+    fn e164_groups(input: &[u8], pos: usize, count: usize) -> Option<usize> {
+        if count < MAX_GROUPS {
+            let opens: &[usize] = if input.get(pos) == Some(&b'(') {
+                &[1, 0]
+            } else {
+                &[0]
+            };
+            for &open in opens {
+                let a = pos + open;
+                for b in Self::digit_ends(input, a, 4) {
+                    let closes: &[usize] = if input.get(b) == Some(&b')') {
+                        &[1, 0]
+                    } else {
+                        &[0]
+                    };
+                    for &close in closes {
+                        let c = b + close;
+                        let seps: [Option<usize>; 2] = [Self::separator_at(input, c), Some(0)];
+                        for sep in seps.into_iter().flatten() {
+                            if let Some(end) = Self::e164_groups(input, c + sep, count + 1) {
+                                return Some(end);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if count >= 1 {
+            return digit_at(input, pos).map(|width| pos + width);
         }
         None
     }
-}
 
-impl Phone {
-    fn validate_match(&self, s: &str, start: usize, end: usize) -> Option<Range<usize>> {
+    /// `\+[1-9]\d{0,2}[\s.\-]?` then the groups.
+    fn match_e164(input: &[u8], pos: usize) -> Option<usize> {
+        if input.get(pos) != Some(&b'+') || !matches!(input.get(pos + 1), Some(b'1'..=b'9')) {
+            return None;
+        }
+        let p = pos + 2;
+        let mut ends = Self::digit_ends(input, p, 2);
+        ends.push(p);
+        for q in ends {
+            let seps: [Option<usize>; 2] = [Self::separator_at(input, q), Some(0)];
+            for sep in seps.into_iter().flatten() {
+                if let Some(end) = Self::e164_groups(input, q + sep, 0) {
+                    return Some(end);
+                }
+            }
+        }
+        None
+    }
+
+    /// Exactly `n` `\d` at `pos`.
+    fn digits(input: &[u8], pos: usize, n: usize) -> Option<usize> {
+        let mut p = pos;
+        for _ in 0..n {
+            p += digit_at(input, p)?;
+        }
+        Some(p)
+    }
+
+    /// `\(\d{3}\)[\s.\-]?\d{3}[\s.\-]?\d{4}`.
+    fn match_paren(input: &[u8], pos: usize) -> Option<usize> {
+        if input.get(pos) != Some(&b'(') {
+            return None;
+        }
+        let p = Self::digits(input, pos + 1, 3)?;
+        if input.get(p) != Some(&b')') {
+            return None;
+        }
+        let p = p + 1;
+        let p = p + Self::separator_at(input, p).unwrap_or(0);
+        let p = Self::digits(input, p, 3)?;
+        let p = p + Self::separator_at(input, p).unwrap_or(0);
+        Self::digits(input, p, 4)
+    }
+
+    /// `\d{3}[\-\.]\d{3}[\-\.]\d{4}`.
+    fn match_dashed(input: &[u8], pos: usize) -> Option<usize> {
+        let p = Self::digits(input, pos, 3)?;
+        if !matches!(input.get(p), Some(b'-' | b'.')) {
+            return None;
+        }
+        let p = Self::digits(input, p + 1, 3)?;
+        if !matches!(input.get(p), Some(b'-' | b'.')) {
+            return None;
+        }
+        Self::digits(input, p + 1, 4)
+    }
+
+    fn match_at(input: &[u8], pos: usize) -> Option<usize> {
+        match input.get(pos)? {
+            b'+' => Self::match_e164(input, pos),
+            b'(' => Self::match_paren(input, pos),
+            _ => Self::match_dashed(input, pos),
+        }
+    }
+
+    fn start_bytes() -> &'static ByteSet {
+        static SET: OnceLock<ByteSet> = OnceLock::new();
+        SET.get_or_init(|| {
+            let mut set = ByteSet::from_bytes(b"+(");
+            for b in digit_lead_bytes() {
+                set = set.with(b);
+            }
+            set
+        })
+    }
+
+    fn digit_leads() -> &'static ByteSet {
+        static SET: OnceLock<ByteSet> = OnceLock::new();
+        SET.get_or_init(|| {
+            let mut set = ByteSet::EMPTY;
+            for b in digit_lead_bytes() {
+                set = set.with(b);
+            }
+            set
+        })
+    }
+
+    fn validate_match(s: &str, start: usize, end: usize) -> Option<Range<usize>> {
         let input = s.as_bytes();
         let matched = &s[start..end];
 
@@ -98,6 +202,73 @@ impl Phone {
         }
 
         Some(start..end)
+    }
+
+    fn range_at(input: &[u8], pos: usize) -> Option<Range<usize>> {
+        let end = Self::match_at(input, pos)?;
+        // SAFETY of the str view: the scanner only hands out valid UTF-8 and
+        // every match boundary sits on a character boundary.
+        let s = std::str::from_utf8(input).ok()?;
+        Self::validate_match(s, pos, end)
+    }
+}
+
+impl Finder for Phone {
+    fn id(&self) -> &'static str {
+        "phone"
+    }
+
+    fn dispatchable(&self) -> bool {
+        true
+    }
+
+    fn could_start_at(&self, byte: u8) -> bool {
+        Self::start_bytes().contains(byte)
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !prev.is_ascii_alphanumeric()
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        match cur {
+            b'+' => matches!(next, b'1'..=b'9'),
+            b'(' => Self::digit_leads().contains(next),
+            b'0'..=b'9' => Self::digit_leads().contains(next),
+            _ => next & 0xC0 == 0x80,
+        }
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `\d{3}[-.]`: an ASCII digit run of at most three, completed by a
+        // separator or by a non-ASCII digit.
+        let mut after = ByteSet::from_bytes(b"-.");
+        for b in digit_lead_bytes().filter(|&b| b >= 0x80) {
+            after = after.with(b);
+        }
+        let mut rule = RunRule::new(RunClass::Digit, 1, 3);
+        rule.after = after;
+        rule.after_end = false;
+        vec![rule]
+    }
+
+    fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        Self::range_at(input, pos)
+    }
+
+    // Candidates are tried in position order; a rejected candidate is
+    // simply followed by the next position, which may lie inside it.
+    fn find(&self, s: &str) -> Option<Range<usize>> {
+        let input = s.as_bytes();
+        for pos in 0..input.len() {
+            if self.could_start_at(input[pos])
+                && let Some(end) = Self::match_at(input, pos)
+                && let Some(range) = Self::validate_match(s, pos, end)
+            {
+                return Some(range);
+            }
+        }
+        None
     }
 }
 

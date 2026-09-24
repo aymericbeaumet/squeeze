@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -70,6 +70,22 @@ impl Finder for Semver {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte.is_ascii_digit() || byte == b'v' || byte == b'V'
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !prev.is_ascii_alphanumeric() && prev != b'.'
+    }
+
+    fn could_continue_with(&self, cur: u8, next: u8) -> bool {
+        if cur.is_ascii_digit() {
+            next.is_ascii_digit() || next == b'.'
+        } else {
+            next.is_ascii_digit()
+        }
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        vec![RunRule::new(RunClass::Digit, 1, crate::RUN_CAP).followed_by(b".")]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

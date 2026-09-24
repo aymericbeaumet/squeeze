@@ -81,6 +81,14 @@ impl Finder for Jwt {
         byte == b'e'
     }
 
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !Self::is_base64url(prev)
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next == b'y'
+    }
+
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         if input[pos] != b'e' {
             return None;

@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Finder, RunClass, RunRule};
 use std::ops::Range;
 
 const MD5_LEN: usize = 32;
@@ -66,6 +66,36 @@ impl Finder for Hash {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte.is_ascii_hexdigit()
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !Self::is_hex(prev)
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        Self::is_hex(next)
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        let mask = if self.lengths == 0 {
+            ALL_BITS
+        } else {
+            self.lengths
+        };
+        let lengths = [
+            (MD5_BIT, MD5_LEN),
+            (SHA1_BIT, SHA1_LEN),
+            (SHA256_BIT, SHA256_LEN),
+            (SHA512_BIT, SHA512_LEN),
+        ];
+        let enabled = lengths.iter().filter(|(bit, _)| mask & bit != 0);
+        let min = enabled
+            .clone()
+            .map(|(_, len)| *len)
+            .min()
+            .unwrap_or(MD5_LEN);
+        let max = enabled.map(|(_, len)| *len).max().unwrap_or(SHA512_LEN);
+        vec![RunRule::new(RunClass::Hex, min as u8, max as u8)]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

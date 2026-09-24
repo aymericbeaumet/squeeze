@@ -21,10 +21,11 @@ path = "benches/scanner.rs"
 harness = false
 
 [dependencies]
+memchr = "2"
 phf = { version = "0.14", features = ["macros"] }
-regex = "1.13"
-regex-syntax = "0.8"
 
 [dev-dependencies]
 glob = "0.3"
 proptest = "1"
+regex = "1.13"
+regex-syntax = "0.8"

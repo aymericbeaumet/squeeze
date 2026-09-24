@@ -23,8 +23,12 @@ run = [
 run = "cargo test --workspace --locked -- --nocapture"
 
 [tasks.bench]
-description = "Benchmark scanner throughput"
-run = "cargo bench --locked -p squeeze --bench scanner"
+description = "Benchmark scanner throughput and operation counts (pass options after --)"
+run = "cargo bench --locked -p squeeze --bench scanner --"
+
+[tasks.bench-cli]
+description = "Benchmark the CLI against ripgrep, grep and ugrep (needs hyperfine)"
+run = "scripts/bench-cli.sh"
 
 [tasks.lint]
 description = "Lint all targets"

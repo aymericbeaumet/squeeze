@@ -13,3 +13,14 @@
   Preserve all six native targets when changing workflows.
 - After changing release automation, run `actionlint` and, with Python 3.11+,
   `python3 -m unittest discover -s .github/scripts -p 'test_*.py'`.
+- Performance work is measured, never guessed: `mise run bench -- --stats` reports
+  throughput and finder operation counts per corpus (`--strategy all` compares
+  scanner strategies interleaved, `--save`/`--compare` diff runs), and
+  `mise run bench-cli` compares the CLI with ripgrep, grep and ugrep. Operation
+  counts are the reliable signal on a loaded machine; see
+  [performance](docs/performance.md) for the architecture and the rules
+  finders must follow (gates, run rules, memo) with their property tests.
+- Finder changes must keep `cargo test -p squeeze` green: the fuzz suites check
+  gate/rule contracts and strategy parity, `regex_parity` pins the hand-written
+  codetag/modeline/phone matchers to the former regexes, and `linear_scans`
+  rejects quadratic rescans on adversarial lines.
