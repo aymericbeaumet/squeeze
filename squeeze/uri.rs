@@ -87,6 +87,38 @@ impl SchemeConfigs {
     }
 }
 
+/// Whether the two bytes before a colon can end a registered scheme (ASCII
+/// case-insensitive). In lax mode an unregistered scheme needs `//` after
+/// the colon, so a colon followed by anything else can only start a URI
+/// when this says so: an O(1) rejection of every timestamp and `key:value`
+/// colon before the scheme is walked back.
+fn can_end_registered_scheme(prev2: u8, prev1: u8) -> bool {
+    static TABLE: std::sync::OnceLock<Box<[u64; 1024]>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut table = Box::new([0u64; 1024]);
+        let mut set = |a: u8, b: u8| {
+            let index = usize::from(a) << 8 | usize::from(b);
+            table[index >> 6] |= 1 << (index & 63);
+        };
+        for scheme in crate::iana::URI_SCHEMES.iter() {
+            let bytes = scheme.as_bytes();
+            match bytes {
+                [] => {}
+                [only] => {
+                    for a in 0..=255u8 {
+                        set(a, *only);
+                    }
+                }
+                [.., a, b] => set(*a, *b),
+            }
+        }
+        table
+    });
+    let index =
+        usize::from(prev2.to_ascii_lowercase()) << 8 | usize::from(prev1.to_ascii_lowercase());
+    table[index >> 6] & (1 << (index & 63)) != 0
+}
+
 fn is_registered_scheme(scheme: &str) -> bool {
     let mut buf = [0u8; MAX_SCHEME_LEN];
     let Some(lower) = buf.get_mut(..scheme.len()) else {
@@ -138,8 +170,49 @@ impl Finder for URI {
         true
     }
 
+    fn line_agnostic(&self) -> bool {
+        // Every walk stops at whitespace, which includes line terminators.
+        true
+    }
+
     fn could_trigger_at(&self, byte: u8) -> bool {
         byte == b':'
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        // `rlook_scheme` needs at least one scheme byte right before the colon.
+        Self::is_alpha(prev) || Self::is_digit(prev) || matches!(prev, b'+' | b'-' | b'.')
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        if self.strict {
+            return true;
+        }
+        // Lax mode: a second colon marks a code path, and a byte that cannot
+        // begin a hier-part, query or fragment leaves a prose-only tail.
+        next.is_ascii_alphanumeric()
+            || matches!(
+                next,
+                b'-' | b'.'
+                    | b'_'
+                    | b'~'
+                    | b'%'
+                    | b'!'
+                    | b'$'
+                    | b'&'
+                    | b'\''
+                    | b'('
+                    | b')'
+                    | b'*'
+                    | b'+'
+                    | b','
+                    | b';'
+                    | b'='
+                    | b'@'
+                    | b'/'
+                    | b'?'
+                    | b'#'
+            )
     }
 
     fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
@@ -190,6 +263,25 @@ impl URI {
     fn try_at_colon(&self, input: &[u8], colon_idx: usize) -> Option<Range<usize>> {
         if input[colon_idx] != b':' {
             return None;
+        }
+
+        // Lax mode without an allowlist: anything but `//` after the colon
+        // requires a registered scheme, whose last two bytes sit right
+        // before the colon. Checked first, before any walk.
+        if !self.strict
+            && self.schemes.is_empty()
+            && input.get(colon_idx + 1) != Some(&b'/')
+            && colon_idx >= 1
+        {
+            let prev1 = input[colon_idx - 1];
+            let prev2 = if colon_idx >= 2 {
+                input[colon_idx - 2]
+            } else {
+                b' '
+            };
+            if !can_end_registered_scheme(prev2, prev1) {
+                return None;
+            }
         }
 
         let scheme_idx = self.rlook_scheme(&input[..colon_idx])?;

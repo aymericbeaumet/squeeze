@@ -141,6 +141,9 @@ struct Mnemonic {
     /// Alphanumeric mnemonics must sit on word boundaries (`\b`); others
     /// (`???`, `!!!`) match anywhere.
     word: bool,
+    /// Byte length when every character is ASCII: a word mnemonic can then
+    /// only match an ASCII word of exactly that length.
+    ascii_len: Option<usize>,
 }
 
 /// Simple case folding as used by regex `(?i)`: one character maps to one
@@ -196,6 +199,7 @@ impl Index {
         let mut prepared: Vec<Mnemonic> = mnemonics
             .map(|m| Mnemonic {
                 word: m.chars().all(|c| c.is_alphanumeric()),
+                ascii_len: m.is_ascii().then_some(m.len()),
                 folded: m.chars().map(fold).collect(),
             })
             .collect();
@@ -323,8 +327,31 @@ impl Codetag {
     /// note, colon) when one starts at `pos`, with the end of the mnemonic.
     fn match_at(&self, input: &[u8], pos: usize) -> Option<(usize, usize)> {
         let index = self.index();
-        for &id in &index.by_first[input[pos] as usize] {
+        let ids = &index.by_first[input[pos] as usize];
+        if ids.is_empty() {
+            return None;
+        }
+        // Length of the ASCII word at `pos`, when it is delimited by ASCII:
+        // a word mnemonic must then be exactly that long (`\b` on both
+        // sides), which rejects most words without comparing characters.
+        let mut word_end = pos;
+        let mut ascii = true;
+        while let Some(&b) = input.get(word_end) {
+            if b >= 0x80 {
+                ascii = false;
+                break;
+            }
+            if !(b.is_ascii_alphanumeric() || b == b'_') {
+                break;
+            }
+            word_end += 1;
+        }
+        let word_len = word_end - pos;
+        for &id in ids {
             let m = &index.mnemonics[id as usize];
+            if m.word && ascii && m.ascii_len.is_some_and(|len| len != word_len) {
+                continue;
+            }
             let Some(end) = m.match_at(input, pos) else {
                 continue;
             };

@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Anchor, ByteSet, Finder};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -114,6 +114,13 @@ impl Finder for Color {
             b'r' | b'R' => next.eq_ignore_ascii_case(&b'g'),
             _ => next.eq_ignore_ascii_case(&b's'),
         }
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor {
+            bytes: ByteSet::from_bytes(b"#("),
+            walk: ByteSet::from_fn(|b| b.is_ascii_alphabetic()),
+        })
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

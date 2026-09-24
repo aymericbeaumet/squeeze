@@ -25,13 +25,14 @@
 //! - [`uuid::Uuid`] - Extract UUIDs
 //! - [`mirror::Mirror`] - A passthrough finder that returns the entire input
 //!
-//! The [`scanner::Scanner`] runs any set of finders over a line in one pass:
-//! a prescan disables finders whose bytes are absent, SIMD classification
-//! and per-finder context gates keep finder calls to the positions where a
-//! match can start, and declarative run rules gate several finders at once
-//! from a single measurement of the digit and hex runs. See
-//! `docs/performance.md` in the repository for the architecture, the
-//! contracts finders follow, and how to measure.
+//! The [`scanner::Scanner`] runs any set of finders over a line, or over a
+//! whole buffer of lines with [`scanner::Scanner::scan_buffer`], in one
+//! pass: a prescan disables finders whose bytes are absent, SIMD
+//! classification and per-finder context gates keep finder calls to the
+//! positions where a match can start, and declarative run rules gate
+//! several finders at once from a single measurement of the digit and hex
+//! runs. See `docs/performance.md` in the repository for the architecture,
+//! the contracts finders follow, and how to measure.
 //!
 //! ## Example
 //!
@@ -147,17 +148,133 @@ pub struct Runs {
     pub hex: Run,
 }
 
+/// The last hex run measured on a line, so candidates inside the same run
+/// (digit-run starts inside a hash, say) do not measure it again.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct RunCache {
+    start: usize,
+    end: usize,
+    /// The run may continue past `end` (the measurement hit the cap).
+    open: bool,
+}
+
+/// Hex and digit lane masks the vector stage already computed for the
+/// bytes around a candidate: `hex[0]`/`digit[0]` cover the block holding
+/// the candidate at `lane`, following entries the following blocks.
+pub(crate) struct RunHint<'a> {
+    pub(crate) hex: &'a [u64],
+    pub(crate) digit: &'a [u64],
+    pub(crate) lane: usize,
+    pub(crate) stride: u32,
+}
+
+impl RunHint<'_> {
+    /// Consecutive set lanes from `lane` across `masks`, or `None` when the
+    /// run reaches the end of the last mask (it may continue).
+    #[inline(always)]
+    pub(crate) fn run(&self, masks: &[u64]) -> Option<usize> {
+        let lane_bits = |m: u64, lane: usize| {
+            let shifted = m >> (lane as u32 * self.stride);
+            (((!shifted).trailing_zeros() / self.stride) as usize).min(BLOCK_LANES - lane)
+        };
+        let mut lane = self.lane;
+        let mut total = 0;
+        for &m in masks {
+            let run = lane_bits(m, lane);
+            total += run;
+            if run < BLOCK_LANES - lane {
+                return Some(total);
+            }
+            lane = 0;
+        }
+        None
+    }
+}
+
+/// Lanes per vector block (see `classify::BLOCK`).
+const BLOCK_LANES: usize = 16;
+
 impl Runs {
     /// Measures the runs starting at `pos`.
     pub fn at(input: &[u8], pos: usize) -> Runs {
-        let cap = RUN_CAP as usize;
-        let end = input.len().min(pos + cap);
-        let mut hex = pos;
-        while hex < end && input[hex].is_ascii_hexdigit() {
-            hex += 1;
+        Self::at_cached(input, pos, &mut RunCache::default(), RUN_CAP as usize)
+    }
+
+    /// Like [`at_cached`](Self::at_cached), taking the run lengths from the
+    /// vector stage's lane masks when they cover the whole run.
+    #[inline(always)]
+    pub(crate) fn at_hinted(
+        input: &[u8],
+        pos: usize,
+        hint: &RunHint<'_>,
+        cache: &mut RunCache,
+        cap: usize,
+    ) -> Runs {
+        if cache.start <= pos && pos < cache.end && (!cache.open || cache.end - pos > cap) {
+            return Self::at_cached(input, pos, cache, cap);
         }
+        let hex_len = match hint.run(hint.hex) {
+            Some(len) => len.min(cap),
+            None => {
+                // The run leaves the masks: continue byte by byte.
+                let limit = input.len().min(pos + cap);
+                let mut hex = pos + hint.hex.len() * BLOCK_LANES - hint.lane;
+                while hex < limit && input[hex].is_ascii_hexdigit() {
+                    hex += 1;
+                }
+                hex.min(limit) - pos
+            }
+        };
+        let hex_end = pos + hex_len;
+        *cache = RunCache {
+            start: pos,
+            end: hex_end,
+            open: hex_len >= cap && hex_end < input.len(),
+        };
+        let digit_len = match hint.run(hint.digit) {
+            Some(len) => len.min(hex_len),
+            None => {
+                let mut digit = pos + hint.digit.len() * BLOCK_LANES - hint.lane;
+                while digit < hex_end && input[digit].is_ascii_digit() {
+                    digit += 1;
+                }
+                digit.min(hex_end) - pos
+            }
+        };
+        let run = |len: usize| Run {
+            len: len as u8,
+            capped: len >= cap,
+            after: input.get(pos + len).copied(),
+        };
+        Runs {
+            digit: run(digit_len),
+            hex: run(hex_len),
+        }
+    }
+
+    /// Measures the runs starting at `pos`, reporting runs of `cap` bytes or
+    /// more as capped, and reusing `cache` when `pos` lies inside the hex
+    /// run it remembers.
+    #[inline(always)]
+    pub(crate) fn at_cached(input: &[u8], pos: usize, cache: &mut RunCache, cap: usize) -> Runs {
+        let hex_end =
+            if cache.start <= pos && pos < cache.end && (!cache.open || cache.end - pos > cap) {
+                cache.end.min(pos + cap)
+            } else {
+                let limit = input.len().min(pos + cap);
+                let mut hex = pos;
+                while hex < limit && input[hex].is_ascii_hexdigit() {
+                    hex += 1;
+                }
+                *cache = RunCache {
+                    start: pos,
+                    end: hex,
+                    open: hex == limit && hex < input.len(),
+                };
+                hex
+            };
         let mut digit = pos;
-        while digit < hex && input[digit].is_ascii_digit() {
+        while digit < hex_end && input[digit].is_ascii_digit() {
             digit += 1;
         }
         let run = |stop: usize| Run {
@@ -167,7 +284,7 @@ impl Runs {
         };
         Runs {
             digit: run(digit),
-            hex: run(hex),
+            hex: run(hex_end),
         }
     }
 
@@ -243,6 +360,7 @@ impl RunRule {
 
     /// Evaluates a finder's rules: a match may start when no rule applies
     /// to `cur`, or when at least one applicable rule accepts `runs`.
+    #[inline(always)]
     pub fn allow(rules: &[RunRule], cur: u8, runs: &Runs) -> bool {
         let mut applicable = false;
         for rule in rules {
@@ -278,6 +396,15 @@ impl Memo {
     pub fn covers(&self, pos: usize) -> bool {
         self.start <= pos && pos < self.end
     }
+}
+
+/// Bytes that every match of a dispatch finder contains, and the bytes that
+/// may lie between a match's start and its first anchor byte, see
+/// [`Finder::anchor`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub bytes: ByteSet,
+    pub walk: ByteSet,
 }
 
 /// A trait for finding patterns in text.
@@ -350,20 +477,22 @@ pub trait Finder: Send + Sync {
         None
     }
 
-    /// Whether a dispatch-mode match could start at byte `cur` when the byte
-    /// immediately before it is `prev`.
+    /// Whether a match could be attempted at byte `cur` when the byte
+    /// immediately before it is `prev`: a dispatch-mode start, or a
+    /// trigger-mode trigger byte.
     ///
-    /// Only meaningful when [`dispatchable`](Finder::dispatchable) returns
-    /// true. Must agree with [`try_at`](Finder::try_at): whenever this returns
-    /// `false`, `try_at` must return `None` in that context. The
-    /// [`scanner::Scanner`] folds the answers into lookup tables so positions
-    /// that cannot start a match never reach the finder.
+    /// Only meaningful when [`dispatchable`](Finder::dispatchable) or
+    /// [`triggerable`](Finder::triggerable) returns true. Must agree with
+    /// [`try_at`](Finder::try_at) (or [`try_trigger_at`](Finder::try_trigger_at)):
+    /// whenever this returns `false`, the attempt must return `None` in that
+    /// context. The [`scanner::Scanner`] folds the answers into lookup tables
+    /// so positions that cannot start a match never reach the finder.
     fn could_start_after(&self, _prev: u8, _cur: u8) -> bool {
         true
     }
 
-    /// Whether a dispatch-mode match starting at byte `cur` could have `next`
-    /// as its second byte. Same contract as
+    /// Whether an attempt at byte `cur` could succeed when the byte
+    /// immediately after it is `next`. Same contract as
     /// [`could_start_after`](Finder::could_start_after).
     fn could_continue_with(&self, _cur: u8, _next: u8) -> bool {
         true
@@ -388,6 +517,32 @@ pub trait Finder: Send + Sync {
     ) -> Option<Range<usize>> {
         let _ = memo;
         self.try_trigger_at(input, pos)
+    }
+
+    /// Whether the finder's attempts never read past a line terminator on
+    /// their own: every walk it performs stops at `\n` (and `\r`) because
+    /// those bytes belong to no class it accepts, and it never reports a
+    /// range extending to the end of its input. Such a finder can be run
+    /// over a whole buffer with absolute positions instead of a line at a
+    /// time, which lets the scanner skip resolving the line of every
+    /// candidate. Defaults to `false`.
+    fn line_agnostic(&self) -> bool {
+        false
+    }
+
+    /// Bytes every match of this dispatch finder contains (`bytes`), and the
+    /// bytes that can separate a match start from the first of them
+    /// (`walk`). When every finder of a scanner declares an anchor (or is a
+    /// trigger finder) and the anchor bytes number three or fewer, the
+    /// scanner searches for those bytes with `memchr`, walks back over
+    /// `walk` and tries the dispatch positions in order, so lines without
+    /// an anchor byte cost nothing.
+    ///
+    /// Contract: for every range `try_at` returns, some byte of the range is
+    /// in `bytes`, and every byte from the range start up to the first such
+    /// byte is in `walk`.
+    fn anchor(&self) -> Option<Anchor> {
+        None
     }
 
     /// Rules on the digit or hex run starting at a candidate position,

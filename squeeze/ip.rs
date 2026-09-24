@@ -1,4 +1,4 @@
-use super::{Finder, Memo, RunClass, RunRule};
+use super::{Anchor, ByteSet, Finder, Memo, RunClass, RunRule};
 use std::ops::Range;
 
 pub struct Ip {
@@ -225,6 +225,20 @@ impl Finder for Ip {
 
     fn could_continue_with(&self, cur: u8, next: u8) -> bool {
         cur == b'[' || next.is_ascii_hexdigit() || next == b':' || next == b'.'
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        let mut bytes = ByteSet::EMPTY;
+        if self.ipv4 {
+            bytes = bytes.with(b'.');
+        }
+        if self.ipv6 {
+            bytes = bytes.with(b':');
+        }
+        Some(Anchor {
+            bytes,
+            walk: ByteSet::from_fn(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[')),
+        })
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

@@ -1,4 +1,4 @@
-use super::{Finder, RunClass, RunRule};
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -52,6 +52,13 @@ impl Finder for Uuid {
 
     fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
         Self::is_hex(next)
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor {
+            bytes: ByteSet::from_bytes(b"-"),
+            walk: ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
+        })
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

@@ -37,6 +37,10 @@ pub(crate) const BLOCK: usize = 16;
 
 pub(crate) const fn category(b: u8) -> u8 {
     match b {
+        // Line terminators act like the absence of a byte: a buffer scan sees
+        // them where a line scan sees the start or end of the line, and
+        // "no byte" forbids nothing.
+        b'\n' | b'\r' => CAT_NONE,
         b'0'..=b'9' => CAT_DIGIT,
         b'a'..=b'f' | b'A'..=b'F' => CAT_HEX_ALPHA,
         b'g'..=b'o' | b'G'..=b'O' => CAT_ALPHA_GO,
@@ -218,17 +222,39 @@ impl Rules {
     }
 }
 
-/// A block classifier: returns the candidate lanes of a 16-byte block as a
-/// bitmask with [`Backend::STRIDE`] bits per lane (all bits of a lane set
-/// when it is a candidate). `prev_cat`/`next_cat` are the categories of the
-/// bytes around the block, or [`CAT_NONE`] at the start/end of the line.
+/// Lane vectors produced by a block classifier: candidate lanes, hex-digit
+/// lanes and decimal-digit lanes (the latter two feed run measurement).
+pub(crate) struct Lanes<V> {
+    pub(crate) cand: V,
+    pub(crate) hex: V,
+    pub(crate) digit: V,
+}
+
+/// A block classifier. `block` classifies 16 bytes into lane vectors;
+/// `mask` turns a vector into a bitmask with [`Backend::STRIDE`] bits per
+/// lane (all bits of a lane set when it is selected). `prev_cat`/`next_cat`
+/// are the categories of the bytes around the block, or [`CAT_NONE`] at the
+/// start/end of the line.
 pub(crate) trait Backend: Copy {
     const NAME: &'static str;
     const STRIDE: u32;
+    type Vec: Copy;
+    /// Rule tables in vector form, loaded once per line.
+    type Tables: Copy;
 
-    fn block(rules: &Rules, block: &[u8; BLOCK], prev_cat: u8, next_cat: u8) -> u64;
+    fn tables(rules: &Rules) -> Self::Tables;
+    fn block(
+        tables: &Self::Tables,
+        rules: &Rules,
+        block: &[u8; BLOCK],
+        prev_cat: u8,
+        next_cat: u8,
+    ) -> Lanes<Self::Vec>;
+    fn or(a: Self::Vec, b: Self::Vec) -> Self::Vec;
+    fn is_zero(v: Self::Vec) -> bool;
+    fn mask(v: Self::Vec) -> u64;
 
-    /// Lane index of the lowest candidate bit.
+    /// Lane index of the lowest set bit.
     #[inline(always)]
     fn lane(mask: u64) -> usize {
         (mask.trailing_zeros() / Self::STRIDE) as usize
@@ -260,10 +286,49 @@ pub(crate) struct Scalar;
 impl Backend for Scalar {
     const NAME: &'static str = "scalar";
     const STRIDE: u32 = 1;
+    type Vec = u64;
+    type Tables = ();
+
+    fn tables(_rules: &Rules) -> Self::Tables {}
 
     #[inline]
-    fn block(rules: &Rules, block: &[u8; BLOCK], prev_cat: u8, next_cat: u8) -> u64 {
-        rules.candidates_scalar(block, prev_cat, next_cat)
+    fn block(
+        _tables: &Self::Tables,
+        rules: &Rules,
+        block: &[u8; BLOCK],
+        prev_cat: u8,
+        next_cat: u8,
+    ) -> Lanes<u64> {
+        let mut hex = 0u64;
+        let mut digit = 0u64;
+        for (lane, &b) in block.iter().enumerate() {
+            if b.is_ascii_hexdigit() {
+                hex |= 1 << lane;
+            }
+            if b.is_ascii_digit() {
+                digit |= 1 << lane;
+            }
+        }
+        Lanes {
+            cand: rules.candidates_scalar(block, prev_cat, next_cat),
+            hex,
+            digit,
+        }
+    }
+
+    #[inline(always)]
+    fn or(a: u64, b: u64) -> u64 {
+        a | b
+    }
+
+    #[inline(always)]
+    fn is_zero(v: u64) -> bool {
+        v == 0
+    }
+
+    #[inline(always)]
+    fn mask(v: u64) -> u64 {
+        v
     }
 }
 
@@ -308,63 +373,111 @@ pub(crate) fn detect() -> Kind {
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod neon {
-    use super::{BLOCK, Backend, CAT_OTHER, CATEGORY_SETS, Rules};
+    use super::{BLOCK, Backend, CAT_DIGIT, CAT_HEX_ALPHA, CAT_OTHER, CATEGORY_SETS, Lanes, Rules};
     use core::arch::aarch64::*;
 
     #[derive(Clone, Copy, Debug)]
     pub(crate) struct Neon;
 
+    #[derive(Clone, Copy)]
+    pub(crate) struct Tables {
+        cat_lo: uint8x16_t,
+        cat_hi: uint8x16_t,
+        start_lo: uint8x16_t,
+        start_hi: uint8x16_t,
+        prev_a: uint8x16_t,
+        next_a: uint8x16_t,
+        prev_b: uint8x16_t,
+        next_b: uint8x16_t,
+    }
+
     impl Backend for Neon {
         const NAME: &'static str = "neon";
         const STRIDE: u32 = 4;
+        type Vec = uint8x16_t;
+        type Tables = Tables;
 
         #[inline(always)]
-        fn block(rules: &Rules, block: &[u8; BLOCK], prev_cat: u8, next_cat: u8) -> u64 {
+        fn tables(rules: &Rules) -> Tables {
             // SAFETY: NEON is part of the aarch64 baseline; every load reads
+            // exactly 16 bytes from a `[u8; 16]`.
+            unsafe {
+                Tables {
+                    cat_lo: vld1q_u8(CATEGORY_SETS.lo.as_ptr()),
+                    cat_hi: vld1q_u8(CATEGORY_SETS.hi.as_ptr()),
+                    start_lo: vld1q_u8(rules.start.lo.as_ptr()),
+                    start_hi: vld1q_u8(rules.start.hi.as_ptr()),
+                    prev_a: vld1q_u8(rules.prev_forbidden_a.as_ptr()),
+                    next_a: vld1q_u8(rules.next_forbidden_a.as_ptr()),
+                    prev_b: vld1q_u8(rules.prev_forbidden_b.as_ptr()),
+                    next_b: vld1q_u8(rules.next_forbidden_b.as_ptr()),
+                }
+            }
+        }
+
+        #[inline(always)]
+        fn block(
+            t: &Tables,
+            _rules: &Rules,
+            block: &[u8; BLOCK],
+            prev_cat: u8,
+            next_cat: u8,
+        ) -> Lanes<uint8x16_t> {
+            // SAFETY: NEON is part of the aarch64 baseline; the load reads
             // exactly 16 bytes from a `[u8; 16]`.
             unsafe {
                 let v = vld1q_u8(block.as_ptr());
                 let lo = vandq_u8(v, vdupq_n_u8(0x0F));
                 let hi = vshrq_n_u8::<4>(v);
 
-                let cat_lo = vqtbl1q_u8(vld1q_u8(CATEGORY_SETS.lo.as_ptr()), lo);
-                let cat_hi = vqtbl1q_u8(vld1q_u8(CATEGORY_SETS.hi.as_ptr()), hi);
-                let cat = vandq_u8(cat_lo, cat_hi);
-                let other = vandq_u8(vceqzq_u8(cat), vdupq_n_u8(CAT_OTHER));
+                let cat = vandq_u8(vqtbl1q_u8(t.cat_lo, lo), vqtbl1q_u8(t.cat_hi, hi));
+                let newline = vorrq_u8(
+                    vceqq_u8(v, vdupq_n_u8(b'\n')),
+                    vceqq_u8(v, vdupq_n_u8(b'\r')),
+                );
+                let other = vbicq_u8(vandq_u8(vceqzq_u8(cat), vdupq_n_u8(CAT_OTHER)), newline);
                 let cat = vorrq_u8(cat, other);
                 // Category index: popcount(cat - 1) for a one-hot byte.
                 let index = vcntq_u8(vsubq_u8(cat, vdupq_n_u8(1)));
 
-                let start_lo = vqtbl1q_u8(vld1q_u8(rules.start.lo.as_ptr()), lo);
-                let start_hi = vqtbl1q_u8(vld1q_u8(rules.start.hi.as_ptr()), hi);
-                let is_start = vtstq_u8(start_lo, start_hi);
+                let is_start = vtstq_u8(vqtbl1q_u8(t.start_lo, lo), vqtbl1q_u8(t.start_hi, hi));
 
                 let prev = vextq_u8::<15>(vdupq_n_u8(prev_cat), cat);
                 let next = vextq_u8::<1>(cat, vdupq_n_u8(next_cat));
                 let bad_a = vorrq_u8(
-                    vtstq_u8(
-                        prev,
-                        vqtbl1q_u8(vld1q_u8(rules.prev_forbidden_a.as_ptr()), index),
-                    ),
-                    vtstq_u8(
-                        next,
-                        vqtbl1q_u8(vld1q_u8(rules.next_forbidden_a.as_ptr()), index),
-                    ),
+                    vtstq_u8(prev, vqtbl1q_u8(t.prev_a, index)),
+                    vtstq_u8(next, vqtbl1q_u8(t.next_a, index)),
                 );
                 let bad_b = vorrq_u8(
-                    vtstq_u8(
-                        prev,
-                        vqtbl1q_u8(vld1q_u8(rules.prev_forbidden_b.as_ptr()), index),
-                    ),
-                    vtstq_u8(
-                        next,
-                        vqtbl1q_u8(vld1q_u8(rules.next_forbidden_b.as_ptr()), index),
-                    ),
+                    vtstq_u8(prev, vqtbl1q_u8(t.prev_b, index)),
+                    vtstq_u8(next, vqtbl1q_u8(t.next_b, index)),
                 );
-                let cand = vbicq_u8(is_start, vandq_u8(bad_a, bad_b));
+                Lanes {
+                    cand: vbicq_u8(is_start, vandq_u8(bad_a, bad_b)),
+                    hex: vtstq_u8(cat, vdupq_n_u8(CAT_DIGIT | CAT_HEX_ALPHA)),
+                    digit: vtstq_u8(cat, vdupq_n_u8(CAT_DIGIT)),
+                }
+            }
+        }
 
-                // Narrowing shift: each 0x00/0xFF lane becomes a nibble.
-                let nibbles = vshrn_n_u16::<4>(vreinterpretq_u16_u8(cand));
+        #[inline(always)]
+        fn or(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+            // SAFETY: baseline NEON.
+            unsafe { vorrq_u8(a, b) }
+        }
+
+        #[inline(always)]
+        fn is_zero(v: uint8x16_t) -> bool {
+            // SAFETY: baseline NEON.
+            unsafe { vmaxvq_u8(v) == 0 }
+        }
+
+        #[inline(always)]
+        fn mask(v: uint8x16_t) -> u64 {
+            // Narrowing shift: each 0x00/0xFF lane becomes a nibble.
+            // SAFETY: baseline NEON.
+            unsafe {
+                let nibbles = vshrn_n_u16::<4>(vreinterpretq_u16_u8(v));
                 vget_lane_u64::<0>(vreinterpret_u64_u8(nibbles))
             }
         }
@@ -373,31 +486,92 @@ pub(crate) mod neon {
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod ssse3 {
-    use super::{BLOCK, Backend, CAT_OTHER, CATEGORY_SETS, Rules};
+    use super::{BLOCK, Backend, CAT_DIGIT, CAT_HEX_ALPHA, CAT_OTHER, CATEGORY_SETS, Lanes, Rules};
     use core::arch::x86_64::*;
 
     #[derive(Clone, Copy, Debug)]
     pub(crate) struct Ssse3;
 
+    #[derive(Clone, Copy)]
+    pub(crate) struct Tables {
+        cat_lo: __m128i,
+        cat_hi: __m128i,
+        start_lo: __m128i,
+        start_hi: __m128i,
+        prev_a: __m128i,
+        next_a: __m128i,
+        prev_b: __m128i,
+        next_b: __m128i,
+    }
+
     impl Backend for Ssse3 {
         const NAME: &'static str = "ssse3";
         const STRIDE: u32 = 1;
+        type Vec = __m128i;
+        type Tables = Tables;
 
         #[inline(always)]
-        fn block(rules: &Rules, block: &[u8; BLOCK], prev_cat: u8, next_cat: u8) -> u64 {
+        fn tables(rules: &Rules) -> Tables {
+            // SAFETY: SSE2 loads are part of the x86_64 baseline; every load
+            // reads exactly 16 bytes from a `[u8; 16]`.
+            unsafe {
+                let load = |p: *const u8| _mm_loadu_si128(p as *const __m128i);
+                Tables {
+                    cat_lo: load(CATEGORY_SETS.lo.as_ptr()),
+                    cat_hi: load(CATEGORY_SETS.hi.as_ptr()),
+                    start_lo: load(rules.start.lo.as_ptr()),
+                    start_hi: load(rules.start.hi.as_ptr()),
+                    prev_a: load(rules.prev_forbidden_a.as_ptr()),
+                    next_a: load(rules.next_forbidden_a.as_ptr()),
+                    prev_b: load(rules.prev_forbidden_b.as_ptr()),
+                    next_b: load(rules.next_forbidden_b.as_ptr()),
+                }
+            }
+        }
+
+        #[inline(always)]
+        fn block(
+            t: &Tables,
+            _rules: &Rules,
+            block: &[u8; BLOCK],
+            prev_cat: u8,
+            next_cat: u8,
+        ) -> Lanes<__m128i> {
             // SAFETY: only reached from a `#[target_feature(enable =
             // "ssse3")]` walk that `detect` selected after checking the CPU.
-            unsafe { candidates(rules, block, prev_cat, next_cat) }
+            unsafe { candidates(t, block, prev_cat, next_cat) }
+        }
+
+        #[inline(always)]
+        fn or(a: __m128i, b: __m128i) -> __m128i {
+            // SAFETY: baseline SSE2.
+            unsafe { _mm_or_si128(a, b) }
+        }
+
+        #[inline(always)]
+        fn is_zero(v: __m128i) -> bool {
+            // SAFETY: baseline SSE2.
+            unsafe { _mm_movemask_epi8(v) == 0 }
+        }
+
+        #[inline(always)]
+        fn mask(v: __m128i) -> u64 {
+            // SAFETY: baseline SSE2.
+            unsafe { _mm_movemask_epi8(v) as u32 as u64 }
         }
     }
 
     #[target_feature(enable = "ssse3")]
     #[inline]
-    unsafe fn candidates(rules: &Rules, block: &[u8; BLOCK], prev_cat: u8, next_cat: u8) -> u64 {
-        // SAFETY: every load reads exactly 16 bytes from a `[u8; 16]`.
+    unsafe fn candidates(
+        t: &Tables,
+        block: &[u8; BLOCK],
+        prev_cat: u8,
+        next_cat: u8,
+    ) -> Lanes<__m128i> {
+        // SAFETY: the load reads exactly 16 bytes from a `[u8; 16]`.
         unsafe {
-            let load = |p: *const u8| _mm_loadu_si128(p as *const __m128i);
-            let v = load(block.as_ptr());
+            let v = _mm_loadu_si128(block.as_ptr() as *const __m128i);
             let low_nibbles = _mm_set1_epi8(0x0F);
             let lo = _mm_and_si128(v, low_nibbles);
             let hi = _mm_and_si128(_mm_srli_epi16::<4>(v), low_nibbles);
@@ -407,10 +581,18 @@ pub(crate) mod ssse3 {
                 _mm_andnot_si128(_mm_cmpeq_epi8(_mm_and_si128(x, m), zero), ones)
             };
 
-            let cat_lo = _mm_shuffle_epi8(load(CATEGORY_SETS.lo.as_ptr()), lo);
-            let cat_hi = _mm_shuffle_epi8(load(CATEGORY_SETS.hi.as_ptr()), hi);
-            let cat = _mm_and_si128(cat_lo, cat_hi);
-            let other = _mm_and_si128(_mm_cmpeq_epi8(cat, zero), _mm_set1_epi8(CAT_OTHER as i8));
+            let cat = _mm_and_si128(
+                _mm_shuffle_epi8(t.cat_lo, lo),
+                _mm_shuffle_epi8(t.cat_hi, hi),
+            );
+            let newline = _mm_or_si128(
+                _mm_cmpeq_epi8(v, _mm_set1_epi8(b'\n' as i8)),
+                _mm_cmpeq_epi8(v, _mm_set1_epi8(b'\r' as i8)),
+            );
+            let other = _mm_andnot_si128(
+                newline,
+                _mm_and_si128(_mm_cmpeq_epi8(cat, zero), _mm_set1_epi8(CAT_OTHER as i8)),
+            );
             let cat = _mm_or_si128(cat, other);
             // Category index: popcount(cat - 1) via a nibble popcount table.
             let minus_one = _mm_sub_epi8(cat, _mm_set1_epi8(1));
@@ -422,34 +604,26 @@ pub(crate) mod ssse3 {
             );
             let index = _mm_add_epi8(pop_lo, pop_hi);
 
-            let start_lo = _mm_shuffle_epi8(load(rules.start.lo.as_ptr()), lo);
-            let start_hi = _mm_shuffle_epi8(load(rules.start.hi.as_ptr()), hi);
-            let is_start = tst(start_lo, start_hi);
+            let is_start = tst(
+                _mm_shuffle_epi8(t.start_lo, lo),
+                _mm_shuffle_epi8(t.start_hi, hi),
+            );
 
             let prev = _mm_alignr_epi8::<15>(cat, _mm_set1_epi8(prev_cat as i8));
             let next = _mm_alignr_epi8::<1>(_mm_set1_epi8(next_cat as i8), cat);
             let bad_a = _mm_or_si128(
-                tst(
-                    prev,
-                    _mm_shuffle_epi8(load(rules.prev_forbidden_a.as_ptr()), index),
-                ),
-                tst(
-                    next,
-                    _mm_shuffle_epi8(load(rules.next_forbidden_a.as_ptr()), index),
-                ),
+                tst(prev, _mm_shuffle_epi8(t.prev_a, index)),
+                tst(next, _mm_shuffle_epi8(t.next_a, index)),
             );
             let bad_b = _mm_or_si128(
-                tst(
-                    prev,
-                    _mm_shuffle_epi8(load(rules.prev_forbidden_b.as_ptr()), index),
-                ),
-                tst(
-                    next,
-                    _mm_shuffle_epi8(load(rules.next_forbidden_b.as_ptr()), index),
-                ),
+                tst(prev, _mm_shuffle_epi8(t.prev_b, index)),
+                tst(next, _mm_shuffle_epi8(t.next_b, index)),
             );
-            let cand = _mm_andnot_si128(_mm_and_si128(bad_a, bad_b), is_start);
-            _mm_movemask_epi8(cand) as u32 as u64
+            Lanes {
+                cand: _mm_andnot_si128(_mm_and_si128(bad_a, bad_b), is_start),
+                hex: tst(cat, _mm_set1_epi8((CAT_DIGIT | CAT_HEX_ALPHA) as i8)),
+                digit: tst(cat, _mm_set1_epi8(CAT_DIGIT as i8)),
+            }
         }
     }
 }
@@ -462,6 +636,11 @@ mod tests {
     fn categories_partition_every_byte() {
         for b in 0..=255u8 {
             let cat = CATEGORY[b as usize];
+            if b == b'\n' || b == b'\r' {
+                assert_eq!(cat, CAT_NONE);
+                assert_eq!(CATEGORY_SETS.lookup(b), 0);
+                continue;
+            }
             assert_eq!(cat.count_ones(), 1, "byte {b:#x} has category {cat:#b}");
             let via_sets = match CATEGORY_SETS.lookup(b) {
                 0 => CAT_OTHER,
@@ -539,6 +718,7 @@ mod tests {
     }
 
     fn check_backend<B: Backend>(rules: &Rules) {
+        let tables = B::tables(rules);
         let mut seed = 0x9E37_79B9_7F4A_7C15u64;
         let mut next = || {
             seed ^= seed << 13;
@@ -568,8 +748,11 @@ mod tests {
                 CATEGORY[(next() >> 8) as u8 as usize]
             };
             let expected = lanes_of::<Scalar>(rules.candidates_scalar(&block, prev_cat, next_cat));
-            let got = lanes_of::<B>(B::block(rules, &block, prev_cat, next_cat));
-            // Vector groups use the product closure, so they may only add.
+            let lanes = B::block(&tables, rules, &block, prev_cat, next_cat);
+            let got = lanes_of::<B>(B::mask(lanes.cand));
+            assert_eq!(B::is_zero(lanes.cand), got.is_empty(), "{}", B::NAME);
+            // Vector start sets are exact for ASCII and widened for high
+            // bytes, so they may only add.
             for lane in &expected {
                 assert!(
                     got.contains(lane),
@@ -584,6 +767,42 @@ mod tests {
                     "{} invented lane {lane} on {block:?}",
                     B::NAME
                 );
+            }
+            let hex: Vec<usize> = (0..BLOCK)
+                .filter(|&i| block[i].is_ascii_hexdigit())
+                .collect();
+            let digit: Vec<usize> = (0..BLOCK).filter(|&i| block[i].is_ascii_digit()).collect();
+            assert_eq!(
+                lanes_of::<B>(B::mask(lanes.hex)),
+                hex,
+                "{} hex lanes",
+                B::NAME
+            );
+            assert_eq!(
+                lanes_of::<B>(B::mask(lanes.digit)),
+                digit,
+                "{} digit lanes",
+                B::NAME
+            );
+            // Run lengths read from the masks agree with the bytes.
+            let hex_mask = [B::mask(lanes.hex)];
+            for lane in 0..BLOCK {
+                let run = block[lane..]
+                    .iter()
+                    .take_while(|b| b.is_ascii_hexdigit())
+                    .count();
+                let hint = crate::RunHint {
+                    hex: &hex_mask,
+                    digit: &hex_mask,
+                    lane,
+                    stride: B::STRIDE,
+                };
+                let got = hint.run(&hex_mask);
+                if lane + run < BLOCK {
+                    assert_eq!(got, Some(run), "{} run from {lane} on {block:?}", B::NAME);
+                } else {
+                    assert_eq!(got, None, "{} open run from {lane} on {block:?}", B::NAME);
+                }
             }
         }
     }

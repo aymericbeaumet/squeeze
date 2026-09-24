@@ -109,10 +109,11 @@ struct Opts {
     #[arg(
         long = "jobs",
         short = 'j',
-        default_value_t = 1,
-        help = "scan lines in parallel (1 = sequential streaming)"
+        default_value = "auto",
+        value_parser = parse_jobs,
+        help = "scanning threads; auto uses every core for files of 8 MiB and more and one thread otherwise (-1 always scans sequentially)"
     )]
-    jobs: usize,
+    jobs: Jobs,
     #[arg(
         long = "with-kind",
         help = "include the finder kind (and match position in structured output)"
@@ -660,8 +661,44 @@ fn must_buffer(opts: &Opts) -> bool {
 /// stay sequential: the pipeline reads a whole chunk before scanning any of
 /// it, so `-1 --jobs N` on a slow stream would sit on a match it had already
 /// read instead of printing it and exiting.
-fn use_parallel(opts: &Opts) -> bool {
-    opts.jobs > 1 && !opts.first
+/// `--jobs`: an explicit thread count, or `auto`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Jobs {
+    Auto,
+    Count(usize),
+}
+
+fn parse_jobs(value: &str) -> Result<Jobs, String> {
+    if value.eq_ignore_ascii_case("auto") {
+        return Ok(Jobs::Auto);
+    }
+    value
+        .parse()
+        .map(Jobs::Count)
+        .map_err(|_| "expected a thread count or 'auto'".to_string())
+}
+
+/// Inputs at least this large are scanned on every core under `--jobs auto`.
+const AUTO_PARALLEL_MIN_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Threads to scan one input with. `--first` must stay sequential: the
+/// parallel path scans a whole chunk before printing, so `-1` on a slow
+/// stream would sit on a match it had already read. `auto` only
+/// parallelises inputs whose size is known and large enough to amortise the
+/// threads; streams stay sequential unless a count is given.
+fn effective_jobs(opts: &Opts, input_len: Option<u64>) -> usize {
+    if opts.first {
+        return 1;
+    }
+    match opts.jobs {
+        Jobs::Count(n) => n,
+        Jobs::Auto => match input_len {
+            Some(len) if len >= AUTO_PARALLEL_MIN_BYTES => std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            _ => 1,
+        },
+    }
 }
 
 /// A closed downstream reader (`squeeze ... | head -1`) is a normal way for a
@@ -1191,7 +1228,17 @@ fn trim_line_ending(mut line: &[u8]) -> &[u8] {
 /// non-ASCII and match nothing, and the rest of the line is still scanned.
 /// Valid lines, the common case, borrow the input directly.
 #[inline]
-fn line_text<'a>(bytes: &'a [u8], scratch: &'a mut String) -> &'a str {
+/// The line as text. `valid` says the bytes were already validated as part
+/// of a larger UTF-8 block (lines are cut at ASCII newlines, so a line of a
+/// valid block is valid); otherwise the line is checked here and, when
+/// invalid, converted lossily into `scratch`.
+fn line_text<'a>(bytes: &'a [u8], valid: bool, scratch: &'a mut String) -> &'a str {
+    if valid {
+        debug_assert!(std::str::from_utf8(bytes).is_ok());
+        // SAFETY: `valid` is only passed for a slice cut at newline
+        // boundaries out of a block that `validate_block` accepted.
+        return unsafe { std::str::from_utf8_unchecked(bytes) };
+    }
     match std::str::from_utf8(bytes) {
         Ok(text) => text,
         Err(_) => {
@@ -1200,6 +1247,13 @@ fn line_text<'a>(bytes: &'a [u8], scratch: &'a mut String) -> &'a str {
             scratch.as_str()
         }
     }
+}
+
+/// Whether a whole block is valid UTF-8. `simdutf8` validates with SIMD,
+/// which matters: the standard validator is the single largest cost of a
+/// sparse scan once nothing else touches every byte.
+fn validate_block(block: &[u8]) -> bool {
+    simdutf8::basic::from_utf8(block).is_ok()
 }
 
 /// Initial size of the read buffer; it grows to hold a line longer than
@@ -1214,8 +1268,6 @@ struct LineBuffer {
     /// Unconsumed data lives in `buf[start..end]`.
     start: usize,
     end: usize,
-    /// Position after the last newline already located in `buf[..end]`.
-    scanned: usize,
 }
 
 impl LineBuffer {
@@ -1224,12 +1276,24 @@ impl LineBuffer {
             buf: vec![0; capacity],
             start: 0,
             end: 0,
-            scanned: 0,
         }
     }
 
     fn pending(&self) -> &[u8] {
         &self.buf[self.start..self.end]
+    }
+
+    /// Every complete line that is buffered (up to the last newline).
+    fn complete_lines(&self) -> &[u8] {
+        let pending = self.pending();
+        match memchr::memrchr(b'\n', pending) {
+            Some(nl) => &pending[..nl + 1],
+            None => &pending[..0],
+        }
+    }
+
+    fn consume(&mut self, len: usize) {
+        self.start += len;
     }
 
     /// Reads once into the free space, compacting or growing the buffer as
@@ -1240,12 +1304,10 @@ impl LineBuffer {
         if self.start == self.end {
             self.start = 0;
             self.end = 0;
-            self.scanned = 0;
         } else if self.end == self.buf.len() {
             if self.start > 0 {
                 self.buf.copy_within(self.start..self.end, 0);
                 self.end -= self.start;
-                self.scanned -= self.start;
                 self.start = 0;
             } else {
                 let new_len = self.buf.len().saturating_mul(2).max(READ_BLOCK);
@@ -1264,36 +1326,6 @@ impl LineBuffer {
         }
     }
 
-    /// Drops the complete buffered lines that cannot contain a match (the
-    /// scanner searches its few start bytes across the whole buffer) and
-    /// returns how many lines were dropped. A trailing unterminated line
-    /// is kept for the next read.
-    fn skip_non_candidates(&mut self, scanner: &Scanner) -> usize {
-        let pending = &self.buf[self.start..self.end];
-        let target = match scanner.skip_to_candidate_line(pending, 0) {
-            Some(offset) => offset,
-            None => memchr::memrchr(b'\n', pending).map_or(0, |nl| nl + 1),
-        };
-        if target == 0 {
-            return 0;
-        }
-        let skipped = memchr::memchr_iter(b'\n', &pending[..target]).count();
-        self.start += target;
-        self.scanned = self.scanned.max(self.start);
-        skipped
-    }
-
-    /// The next complete line, terminator included, if one is buffered.
-    fn next_line(&mut self) -> Option<&[u8]> {
-        let from = self.scanned.max(self.start);
-        let nl = memchr::memchr(b'\n', &self.buf[from..self.end])?;
-        let line_end = from + nl + 1;
-        let line = &self.buf[self.start..line_end];
-        self.start = line_end;
-        self.scanned = line_end;
-        Some(line)
-    }
-
     /// Everything still buffered, as a final unterminated line.
     fn take_rest(&mut self) -> Option<&[u8]> {
         if self.start == self.end {
@@ -1301,7 +1333,6 @@ impl LineBuffer {
         }
         let rest = &self.buf[self.start..self.end];
         self.start = self.end;
-        self.scanned = self.end;
         Some(rest)
     }
 }
@@ -1321,23 +1352,21 @@ impl LineScratch {
     }
 }
 
-/// Scans one raw line (terminator included) and emits its results. Returns
-/// `Ok(true)` when scanning must stop (`--first` found its match).
+/// Emits the matches of one line. Returns `Ok(true)` when scanning must
+/// stop (`--first` found its match).
 #[allow(clippy::too_many_arguments)]
-fn scan_raw_line(
+fn emit_line_matches(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
     line_number: usize,
-    raw: &[u8],
+    line: &str,
+    matches: &[Match],
     out: &mut dyn Write,
     state: &mut OutputState,
-    scratch: &mut LineScratch,
     streaming: bool,
 ) -> io::Result<bool> {
-    let line = line_text(trim_line_ending(raw), &mut scratch.lossy);
-    scan_line_matches_into(scanner, opts, line, &mut scratch.matches);
-    for m in &scratch.matches {
+    for m in matches {
         let value = &line[m.range.clone()];
         if value.is_empty() {
             continue;
@@ -1369,6 +1398,137 @@ fn scan_raw_line(
     Ok(false)
 }
 
+/// Counts lines lazily: only the newlines between emitted lines are
+/// counted, so lines without matches cost one `memchr` pass at most.
+struct LineCounter {
+    counted_upto: usize,
+    newlines: usize,
+}
+
+impl LineCounter {
+    fn new(first_line: usize) -> Self {
+        LineCounter {
+            counted_upto: 0,
+            newlines: first_line - 1,
+        }
+    }
+
+    /// 1-based number of the line starting at `line_start` in `data`.
+    #[inline]
+    fn number(&mut self, data: &[u8], line_start: usize) -> usize {
+        if line_start > self.counted_upto {
+            self.newlines +=
+                memchr::memchr_iter(b'\n', &data[self.counted_upto..line_start]).count();
+            self.counted_upto = line_start;
+        }
+        self.newlines + 1
+    }
+}
+
+/// Scans a block of whole lines. A valid UTF-8 block goes through
+/// `Scanner::scan_buffer` in one pass; an invalid one falls back to a scan
+/// per line with lossy conversion. `first_line` numbers the block's first
+/// line. Returns `Ok(true)` when scanning must stop.
+#[allow(clippy::too_many_arguments)]
+fn scan_block(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    first_line: usize,
+    block: &[u8],
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    scratch: &mut LineScratch,
+    streaming: bool,
+) -> io::Result<bool> {
+    if !validate_block(block) {
+        let mut line_number = first_line;
+        let mut pos = 0;
+        while pos < block.len() {
+            let end = memchr::memchr(b'\n', &block[pos..]).map_or(block.len(), |nl| pos + nl + 1);
+            if scan_raw_line(
+                scanner,
+                opts,
+                source,
+                line_number,
+                &block[pos..end],
+                false,
+                out,
+                state,
+                scratch,
+                streaming,
+            )? {
+                return Ok(true);
+            }
+            line_number += 1;
+            pos = end;
+        }
+        return Ok(false);
+    }
+    // SAFETY: `validate_block` accepted the whole block.
+    let text = unsafe { std::str::from_utf8_unchecked(block) };
+    let mut counter = LineCounter::new(first_line);
+    let mut failure: Option<io::Error> = None;
+    let mut stop = false;
+    let stopped = scanner.scan_buffer(text, |start, end, matches| {
+        let line_number = counter.number(block, start);
+        match emit_line_matches(
+            scanner,
+            opts,
+            source,
+            line_number,
+            &text[start..end],
+            matches,
+            out,
+            state,
+            streaming,
+        ) {
+            Ok(done) => {
+                stop = done;
+                done
+            }
+            Err(e) => {
+                failure = Some(e);
+                true
+            }
+        }
+    });
+    if let Some(e) = failure {
+        return Err(e);
+    }
+    Ok(stopped && stop)
+}
+
+/// Scans one raw line (terminator included) and emits its results. Returns
+/// `Ok(true)` when scanning must stop (`--first` found its match).
+#[allow(clippy::too_many_arguments)]
+fn scan_raw_line(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    line_number: usize,
+    raw: &[u8],
+    valid: bool,
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    scratch: &mut LineScratch,
+    streaming: bool,
+) -> io::Result<bool> {
+    let line = line_text(trim_line_ending(raw), valid, &mut scratch.lossy);
+    scan_line_matches_into(scanner, opts, line, &mut scratch.matches);
+    emit_line_matches(
+        scanner,
+        opts,
+        source,
+        line_number,
+        line,
+        &scratch.matches,
+        out,
+        state,
+        streaming,
+    )
+}
+
 fn scan_lines_sequential(
     scanner: &Scanner,
     opts: &Opts,
@@ -1379,21 +1539,23 @@ fn scan_lines_sequential(
 ) -> io::Result<bool> {
     let mut lines = LineBuffer::with_capacity(READ_BLOCK);
     let mut scratch = LineScratch::new();
-    let mut line_number = 0;
+    let mut line_number = 1;
     // In the plain streaming text path the match value is written straight
     // from the line slice, without allocating a ResultItem per match.
     let streaming = !must_buffer(opts);
 
     loop {
-        line_number += lines.skip_non_candidates(scanner);
-        while let Some(raw) = lines.next_line() {
-            line_number += 1;
-            if scan_raw_line(
+        // Every complete line that is buffered, as one block.
+        let block = lines.complete_lines();
+        if !block.is_empty() {
+            let count = memchr::memchr_iter(b'\n', block).count();
+            let len = block.len();
+            if scan_block(
                 scanner,
                 opts,
                 source,
                 line_number,
-                raw,
+                block,
                 out,
                 state,
                 &mut scratch,
@@ -1401,40 +1563,106 @@ fn scan_lines_sequential(
             )? {
                 return Ok(true);
             }
-            line_number += lines.skip_non_candidates(scanner);
+            line_number += count;
+            lines.consume(len);
         }
         if lines.fill(reader)? == 0 {
-            if let Some(raw) = lines.take_rest() {
-                line_number += 1;
-                if scan_raw_line(
+            if let Some(raw) = lines.take_rest()
+                && scan_raw_line(
                     scanner,
                     opts,
                     source,
                     line_number,
                     raw,
+                    false,
                     out,
                     state,
                     &mut scratch,
                     streaming,
-                )? {
-                    return Ok(true);
-                }
+                )?
+            {
+                return Ok(true);
             }
             return Ok(false);
         }
     }
 }
 
+/// Bytes validated and scanned per step of the whole-buffer path: large
+/// enough to amortise the block validation, small enough to stay in cache.
+const BUFFER_WINDOW: usize = 1024 * 1024;
+
+/// Sequential scan of an input held entirely in memory (a mapped file):
+/// windows of whole lines, each scanned as one block.
+fn scan_buffer_sequential(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    data: &[u8],
+    out: &mut dyn Write,
+    state: &mut OutputState,
+) -> io::Result<bool> {
+    let mut scratch = LineScratch::new();
+    let streaming = !must_buffer(opts);
+    let mut line_number = 1;
+    let mut pos = 0;
+    while pos < data.len() {
+        let window_end = if pos + BUFFER_WINDOW >= data.len() {
+            data.len()
+        } else {
+            let limit = pos + BUFFER_WINDOW;
+            match memchr::memrchr(b'\n', &data[pos..limit]) {
+                Some(nl) => pos + nl + 1,
+                None => {
+                    memchr::memchr(b'\n', &data[limit..]).map_or(data.len(), |nl| limit + nl + 1)
+                }
+            }
+        };
+        let block = &data[pos..window_end];
+        if scan_block(
+            scanner,
+            opts,
+            source,
+            line_number,
+            block,
+            out,
+            state,
+            &mut scratch,
+            streaming,
+        )? {
+            return Ok(true);
+        }
+        line_number += memchr::memchr_iter(b'\n', block).count();
+        pos = window_end;
+    }
+    Ok(false)
+}
+
 /// Target size of a parallel chunk; a chunk always holds whole lines, so a
 /// longer line makes a longer chunk.
 const CHUNK_SIZE: usize = 512 * 1024;
 
-/// A run of whole lines handed to a worker.
-struct Chunk {
+/// A run of whole lines handed to a worker: copied out of a stream, or a
+/// slice of a mapped file.
+struct Chunk<'a> {
     index: usize,
     /// 1-based number of the first line in the chunk.
     first_line: usize,
-    data: Vec<u8>,
+    data: ChunkData<'a>,
+}
+
+enum ChunkData<'a> {
+    Owned(Vec<u8>),
+    Borrowed(&'a [u8]),
+}
+
+impl ChunkData<'_> {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            ChunkData::Owned(data) => data,
+            ChunkData::Borrowed(data) => data,
+        }
+    }
 }
 
 /// What a worker produced for one chunk: formatted text for the streaming
@@ -1465,13 +1693,10 @@ fn scan_chunk(
     let streaming = stream_text_in_workers(opts);
     let mut text = Vec::new();
     let mut items = Vec::new();
-    let mut line_number = chunk.first_line;
-    let data = &chunk.data;
-    let mut pos = 0;
-    let mut emit = |raw: &[u8], line_number: usize, scratch: &mut LineScratch| {
-        let line = line_text(trim_line_ending(raw), &mut scratch.lossy);
-        scan_line_matches_into(scanner, opts, line, &mut scratch.matches);
-        for m in &scratch.matches {
+    let data = chunk.data.as_slice();
+    let valid = validate_block(data);
+    let mut emit = |line: &str, line_number: usize, matches: &[Match]| {
+        for m in matches {
             let value = &line[m.range.clone()];
             if value.is_empty() {
                 continue;
@@ -1496,18 +1721,26 @@ fn scan_chunk(
             }
         }
     };
-    while pos < data.len() {
-        // Jump straight to the next line that can match; lines in between
-        // only count towards the line number.
-        let Some(start) = scanner.skip_to_candidate_line(data, pos) else {
-            break;
-        };
-        line_number += memchr::memchr_iter(b'\n', &data[pos..start]).count();
-        pos = start;
-        let end = memchr::memchr(b'\n', &data[pos..]).map_or(data.len(), |nl| pos + nl + 1);
-        emit(&data[pos..end], line_number, scratch);
-        line_number += 1;
-        pos = end;
+    if valid {
+        // SAFETY: `validate_block` accepted the whole chunk.
+        let text = unsafe { std::str::from_utf8_unchecked(data) };
+        let mut counter = LineCounter::new(chunk.first_line);
+        scanner.scan_buffer(text, |start, end, matches| {
+            let line_number = counter.number(data, start);
+            emit(&text[start..end], line_number, matches);
+            false
+        });
+    } else {
+        let mut line_number = chunk.first_line;
+        let mut pos = 0;
+        while pos < data.len() {
+            let end = memchr::memchr(b'\n', &data[pos..]).map_or(data.len(), |nl| pos + nl + 1);
+            let line = line_text(trim_line_ending(&data[pos..end]), false, &mut scratch.lossy);
+            scan_line_matches_into(scanner, opts, line, &mut scratch.matches);
+            emit(line, line_number, &scratch.matches);
+            line_number += 1;
+            pos = end;
+        }
     }
     if streaming {
         ChunkOutput::Text(text)
@@ -1516,20 +1749,23 @@ fn scan_chunk(
     }
 }
 
-fn scan_lines_parallel(
-    scanner: &Scanner,
-    opts: &Opts,
-    source: Option<&str>,
-    reader: &mut dyn Read,
+/// Runs the parallel pipeline over the chunks `next_chunk` yields, in order:
+/// `jobs` workers scan them, and the main thread writes results back in
+/// chunk order through a reorder buffer while producing further chunks.
+fn parallel_pipeline<'s, 'a>(
+    scanner: &'s Scanner,
+    opts: &'s Opts,
+    source: Option<&'s str>,
     out: &mut dyn Write,
     state: &mut OutputState,
     jobs: usize,
+    mut next_chunk: impl FnMut() -> io::Result<Option<Chunk<'a>>>,
 ) -> io::Result<bool> {
     std::thread::scope(|scope| -> io::Result<bool> {
         // Bounded work queue keeps memory proportional to the worker count;
         // results go through an unbounded channel so a worker never blocks
         // on the main thread, which is busy reading.
-        let (work_tx, work_rx) = sync_channel::<Chunk>(jobs * 2);
+        let (work_tx, work_rx) = sync_channel::<Chunk<'a>>(jobs * 2);
         let (result_tx, result_rx) = channel::<ChunkResult>();
         let work_rx = Arc::new(Mutex::new(work_rx));
         for _ in 0..jobs {
@@ -1586,11 +1822,56 @@ fn scan_lines_parallel(
             Ok(false)
         };
 
-        let mut lines = LineBuffer::with_capacity(CHUNK_SIZE * 2);
-        let mut index = 0;
-        let mut first_line = 1;
-        let mut eof = false;
-        while !eof {
+        let mut produced = 0;
+        while let Some(chunk) = next_chunk()? {
+            produced = chunk.index + 1;
+            if work_tx.send(chunk).is_err() {
+                break;
+            }
+            // Drain finished chunks while producing further ones.
+            while let Ok(result) = result_rx.try_recv() {
+                pending.insert(result.index, result.output);
+            }
+            if write_ready(&mut pending, &mut next_index, out, state)? {
+                drop(work_tx);
+                return Ok(true);
+            }
+        }
+        drop(work_tx);
+
+        while next_index < produced {
+            match result_rx.recv() {
+                Ok(result) => {
+                    pending.insert(result.index, result.output);
+                }
+                Err(_) => break,
+            }
+            if write_ready(&mut pending, &mut next_index, out, state)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+}
+
+fn scan_lines_parallel(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    reader: &mut dyn Read,
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    jobs: usize,
+) -> io::Result<bool> {
+    let mut lines = LineBuffer::with_capacity(CHUNK_SIZE * 2);
+    let mut index = 0;
+    let mut first_line = 1;
+    let mut eof = false;
+    let next_chunk = || -> io::Result<Option<Chunk<'static>>> {
+        loop {
+            if eof && lines.pending().is_empty() {
+                return Ok(None);
+            }
             // Fill up to a chunk's worth of whole lines.
             while lines.pending().len() < CHUNK_SIZE && !eof {
                 if lines.fill(reader)? == 0 {
@@ -1613,50 +1894,68 @@ fn scan_lines_parallel(
                 }
             };
             if cut == 0 {
-                break;
+                return Ok(None);
             }
             let chunk_data = data[..cut].to_vec();
             let newlines = memchr::memchr_iter(b'\n', &chunk_data).count();
             let line_count = newlines + usize::from(!chunk_data.ends_with(b"\n"));
-            lines.start += cut;
-            lines.scanned = lines.scanned.max(lines.start);
-            if work_tx
-                .send(Chunk {
-                    index,
-                    first_line,
-                    data: chunk_data,
-                })
-                .is_err()
-            {
-                break;
-            }
+            lines.consume(cut);
+            let chunk = Chunk {
+                index,
+                first_line,
+                data: ChunkData::Owned(chunk_data),
+            };
             index += 1;
             first_line += line_count;
-
-            // Drain finished chunks while reading ahead.
-            while let Ok(result) = result_rx.try_recv() {
-                pending.insert(result.index, result.output);
-            }
-            if write_ready(&mut pending, &mut next_index, out, state)? {
-                drop(work_tx);
-                return Ok(true);
-            }
+            return Ok(Some(chunk));
         }
-        drop(work_tx);
+    };
+    parallel_pipeline(scanner, opts, source, out, state, jobs, next_chunk)
+}
 
-        while next_index < index {
-            match result_rx.recv() {
-                Ok(result) => {
-                    pending.insert(result.index, result.output);
+/// Parallel scan of an input held entirely in memory: chunks are slices,
+/// nothing is copied.
+fn scan_buffer_parallel<'a>(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    data: &'a [u8],
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    jobs: usize,
+) -> io::Result<bool> {
+    let mut pos = 0;
+    let mut index = 0;
+    let mut first_line = 1;
+    let next_chunk = || -> io::Result<Option<Chunk<'a>>> {
+        if pos >= data.len() {
+            return Ok(None);
+        }
+        let end = if pos + CHUNK_SIZE >= data.len() {
+            data.len()
+        } else {
+            let limit = pos + CHUNK_SIZE;
+            match memchr::memrchr(b'\n', &data[pos..limit]) {
+                Some(nl) => pos + nl + 1,
+                None => {
+                    memchr::memchr(b'\n', &data[limit..]).map_or(data.len(), |nl| limit + nl + 1)
                 }
-                Err(_) => break,
             }
-            if write_ready(&mut pending, &mut next_index, out, state)? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    })
+        };
+        let slice = &data[pos..end];
+        let newlines = memchr::memchr_iter(b'\n', slice).count();
+        let line_count = newlines + usize::from(!slice.ends_with(b"\n"));
+        let chunk = Chunk {
+            index,
+            first_line,
+            data: ChunkData::Borrowed(slice),
+        };
+        index += 1;
+        first_line += line_count;
+        pos = end;
+        Ok(Some(chunk))
+    };
+    parallel_pipeline(scanner, opts, source, out, state, jobs, next_chunk)
 }
 
 fn has_glob_magic(input: &str) -> bool {
@@ -1702,13 +2001,34 @@ fn scan_reader(
     reader: &mut dyn Read,
     out: &mut dyn Write,
     state: &mut OutputState,
+    jobs: usize,
 ) -> io::Result<bool> {
-    if use_parallel(opts) {
-        scan_lines_parallel(scanner, opts, source, reader, out, state, opts.jobs)
+    if jobs > 1 {
+        scan_lines_parallel(scanner, opts, source, reader, out, state, jobs)
     } else {
         scan_lines_sequential(scanner, opts, source, reader, out, state)
     }
 }
+
+fn scan_buffer(
+    scanner: &Scanner,
+    opts: &Opts,
+    source: Option<&str>,
+    data: &[u8],
+    out: &mut dyn Write,
+    state: &mut OutputState,
+    jobs: usize,
+) -> io::Result<bool> {
+    if jobs > 1 {
+        scan_buffer_parallel(scanner, opts, source, data, out, state, jobs)
+    } else {
+        scan_buffer_sequential(scanner, opts, source, data, out, state)
+    }
+}
+
+/// Regular files at least this large are memory-mapped; smaller ones are
+/// read whole. Either way the file is scanned from memory without copies.
+const MMAP_MIN_BYTES: u64 = 64 * 1024;
 
 fn finalize_results(
     out: &mut dyn Write,
@@ -1779,7 +2099,7 @@ fn main() -> ExitCode {
 
     // Validated before the empty-finders check so `--jobs 0` reports its own
     // error even when no finder flags are given.
-    if opts.jobs == 0 {
+    if opts.jobs == Jobs::Count(0) {
         eprintln!("--jobs must be >= 1");
         return ExitCode::FAILURE;
     }
@@ -1828,7 +2148,16 @@ fn main() -> ExitCode {
             InputTarget::Stdin => {
                 let stdin = io::stdin();
                 let mut reader = stdin.lock();
-                scan_reader(&scanner, &opts, None, &mut reader, &mut out, &mut state)
+                let jobs = effective_jobs(&opts, None);
+                scan_reader(
+                    &scanner,
+                    &opts,
+                    None,
+                    &mut reader,
+                    &mut out,
+                    &mut state,
+                    jobs,
+                )
             }
             InputTarget::File(path) => {
                 let source = path.display().to_string();
@@ -1839,14 +2168,69 @@ fn main() -> ExitCode {
                         return ExitCode::FAILURE;
                     }
                 };
-                scan_reader(
-                    &scanner,
-                    &opts,
-                    Some(&source),
-                    &mut file,
-                    &mut out,
-                    &mut state,
-                )
+                let regular_len = file
+                    .metadata()
+                    .ok()
+                    .filter(|m| m.is_file())
+                    .map(|m| m.len());
+                let jobs = effective_jobs(&opts, regular_len);
+                match regular_len {
+                    Some(len) if len >= MMAP_MIN_BYTES => {
+                        // SAFETY: the mapping is read-only and lives for the
+                        // scan only. As with any mapped file, truncation by
+                        // another process during the scan is undefined
+                        // (SIGBUS); squeeze accepts that for the same reason
+                        // grep tools do: it avoids copying every byte.
+                        match unsafe { memmap2::Mmap::map(&file) } {
+                            Ok(map) => {
+                                // Read-ahead for a single forward pass.
+                                let _ = map.advise(memmap2::Advice::Sequential);
+                                scan_buffer(
+                                    &scanner,
+                                    &opts,
+                                    Some(&source),
+                                    &map,
+                                    &mut out,
+                                    &mut state,
+                                    jobs,
+                                )
+                            }
+                            Err(_) => scan_reader(
+                                &scanner,
+                                &opts,
+                                Some(&source),
+                                &mut file,
+                                &mut out,
+                                &mut state,
+                                jobs,
+                            ),
+                        }
+                    }
+                    Some(_) => {
+                        let mut data = Vec::new();
+                        match file.read_to_end(&mut data) {
+                            Ok(_) => scan_buffer(
+                                &scanner,
+                                &opts,
+                                Some(&source),
+                                &data,
+                                &mut out,
+                                &mut state,
+                                jobs,
+                            ),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    None => scan_reader(
+                        &scanner,
+                        &opts,
+                        Some(&source),
+                        &mut file,
+                        &mut out,
+                        &mut state,
+                        jobs,
+                    ),
+                }
             }
         };
 
@@ -1935,13 +2319,27 @@ mod tests {
         // The parallel path reads a whole chunk before scanning, so -1 has
         // to dispatch to the sequential streaming path.
         let opts = Opts::try_parse_from(["squeeze", "--url", "--jobs", "4", "--first"]).unwrap();
-        assert!(!use_parallel(&opts));
+        assert_eq!(effective_jobs(&opts, Some(1 << 30)), 1);
 
         let opts = Opts::try_parse_from(["squeeze", "--url", "--jobs", "4"]).unwrap();
-        assert!(use_parallel(&opts));
+        assert_eq!(effective_jobs(&opts, None), 4);
+        assert_eq!(effective_jobs(&opts, Some(10)), 4);
 
+        // `auto`: streams and small files stay sequential, large files use
+        // every core.
         let opts = Opts::try_parse_from(["squeeze", "--url"]).unwrap();
-        assert!(!use_parallel(&opts));
+        assert_eq!(opts.jobs, Jobs::Auto);
+        assert_eq!(effective_jobs(&opts, None), 1);
+        assert_eq!(effective_jobs(&opts, Some(AUTO_PARALLEL_MIN_BYTES - 1)), 1);
+        assert_eq!(
+            effective_jobs(&opts, Some(AUTO_PARALLEL_MIN_BYTES)),
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        );
+        assert_eq!(parse_jobs("AUTO"), Ok(Jobs::Auto));
+        assert_eq!(parse_jobs("0"), Ok(Jobs::Count(0)));
+        assert!(parse_jobs("many").is_err());
     }
 
     #[test]

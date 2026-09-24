@@ -772,6 +772,13 @@ fn dispatch_finders() -> Vec<Box<dyn Finder>> {
         Box::new(squeeze::path::Path::default()),
         Box::new(squeeze::semver::Semver::default()),
         Box::new(squeeze::uuid::Uuid::default()),
+        Box::new(squeeze::email::Email::default()),
+        Box::new(squeeze::uri::URI::default()),
+        Box::new({
+            let mut strict = squeeze::uri::URI::default();
+            strict.strict = true;
+            strict
+        }),
     ]
 }
 
@@ -781,9 +788,26 @@ fn dispatch_finders() -> Vec<Box<dyn Finder>> {
 fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
     let input = line.as_bytes();
     for finder in finders {
-        assert!(finder.dispatchable());
+        let trigger = finder.triggerable();
+        assert!(finder.dispatchable() || trigger);
         for pos in 0..input.len() {
             let cur = input[pos];
+            if trigger {
+                if !finder.could_trigger_at(cur) {
+                    continue;
+                }
+                let gated = (pos > 0 && !finder.could_start_after(input[pos - 1], cur))
+                    || (pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]));
+                if gated {
+                    assert_eq!(
+                        finder.try_trigger_at(input, pos),
+                        None,
+                        "{} trigger gate rejected {line:?} at {pos} but try_trigger_at matched",
+                        finder.id()
+                    );
+                }
+                continue;
+            }
             if !finder.could_start_at(cur) {
                 continue;
             }
@@ -809,7 +833,7 @@ proptest! {
 
     #[test]
     fn dispatch_gates_never_reject_a_match_on_dense_input(
-        s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ -]{0,48}"
+        s in "[0-9a-fA-FgGsSyYxzRHrhe.:/@$#{}\\[\\]()<>\"'`=+~_ %?!,;*&-]{0,48}"
     ) {
         assert_gates_agree(&dispatch_finders(), &s);
     }
@@ -924,5 +948,353 @@ fn strategies_agree_around_block_boundaries() {
             let line = format!("{}{item}", " ".repeat(pad));
             assert_strategies_agree(&line);
         }
+    }
+}
+
+/// `scan_buffer` must report exactly what `scan_line` reports for every
+/// line of the buffer, with line offsets, terminators and `\r`s handled
+/// as the CLI's per-line path does.
+fn assert_buffer_agrees(text: &str) {
+    let scanners = strategy_scanners();
+    let reference = &scanners[0]; // legacy, per line
+    let mut expected = Vec::new();
+    let mut pos = 0;
+    let bytes = text.as_bytes();
+    while pos < bytes.len() {
+        let nl = bytes[pos..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| pos + i);
+        let mut end = nl;
+        while end > pos && bytes[end - 1] == b'\r' {
+            end -= 1;
+        }
+        let matches = reference.scan_line(&text[pos..end]);
+        if !matches.is_empty() {
+            expected.push((pos, end, matches));
+        }
+        pos = nl + 1;
+    }
+    for scanner in scanners {
+        let mut got = Vec::new();
+        let stopped = scanner.scan_buffer(text, |start, end, matches| {
+            got.push((start, end, matches.to_vec()));
+            false
+        });
+        assert!(!stopped);
+        assert_eq!(
+            got,
+            expected,
+            "{} ({}) scan_buffer disagrees with per-line scanning on {text:?}",
+            scanner.strategy().name(),
+            scanner.backend()
+        );
+        // Stopping after the first emitted line.
+        if let Some(first) = expected.first() {
+            let mut seen = Vec::new();
+            let stopped = scanner.scan_buffer(text, |start, end, matches| {
+                seen.push((start, end, matches.to_vec()));
+                true
+            });
+            assert!(stopped);
+            assert_eq!(seen, vec![first.clone()]);
+        }
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn scan_buffer_agrees_with_per_line_scanning(
+        lines in proptest::collection::vec(
+            "( |\\.|:|/|@|-|_|\r|[a-z]{1,4}|v?[0-9]{1,4}|0x[0-9a-f]{2,8}|#[0-9a-fA-F]{3,8}|\\$\\{?[A-Z_]{1,6}\\}?|eyJ[a-zA-Z0-9_-]{2,10}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}(:[0-9A-F]{2}){5}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z?)?|[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64}|😀|©|~/[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|\\{\"[a-z]{1,3}\": [0-9]{1,3}\\}|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|TODO: |vim: set ts=4:|\\+1-415-555-[0-9]{4}){0,10}",
+            0..8
+        ),
+        crlf in proptest::bool::ANY,
+        trailing_newline in proptest::bool::ANY,
+    ) {
+        let sep = if crlf { "\r\n" } else { "\n" };
+        let mut text = lines.join(sep);
+        if trailing_newline {
+            text.push_str(sep);
+        }
+        assert_buffer_agrees(&text);
+    }
+
+    #[test]
+    fn scan_buffer_agrees_on_arbitrary_input(s in "(\\PC|\n|\r){0,120}") {
+        assert_buffer_agrees(&s);
+        assert_sparse_buffers_agree(&s);
+    }
+
+    #[test]
+    fn sparse_scan_buffer_agrees_on_structured_lines(
+        lines in proptest::collection::vec(
+            "( |:|/|@|\\.|-|\r|[a-z]{1,4}|[0-9]{1,4}|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|mailto:[a-z]{2,5}@[a-z]{2,5}\\.com|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\$\\{?[A-Z_]{1,6}\\}?|~/[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|[0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}){0,10}",
+            0..8
+        ),
+        crlf in proptest::bool::ANY,
+    ) {
+        let sep = if crlf { "\r\n" } else { "\n" };
+        let text = lines.join(sep);
+        assert_sparse_buffers_agree(&text);
+    }
+}
+
+#[test]
+fn scan_buffer_handles_edges() {
+    for text in [
+        "",
+        "\n",
+        "\r\n\r\n",
+        "a@b.co",
+        "a@b.co\n",
+        "\na@b.co",
+        "x\n\n5d41402abc4b2a76b9719d911017c592\r\n\nhttps://e.com\n",
+        "550e8400-e29b-41d4-a716-446655440000\n192.168.1.1\n$HOME\n",
+        &format!("{}\n{}", "1".repeat(200), "a@b.co ".repeat(40)),
+        &format!("{}\r\nend@x.io", "deadbeef".repeat(20)),
+    ] {
+        assert_buffer_agrees(text);
+    }
+}
+
+/// Anchor contract: every dispatch match contains an anchor byte, reached
+/// from the match start over `walk` bytes only.
+fn assert_anchors_hold(finders: &[Box<dyn Finder>], line: &str) {
+    let input = line.as_bytes();
+    for finder in finders {
+        let Some(anchor) = finder.anchor() else {
+            continue;
+        };
+        for pos in 0..input.len() {
+            if !finder.could_start_at(input[pos]) {
+                continue;
+            }
+            if let Some(range) = finder.try_at(input, pos) {
+                let first = range
+                    .clone()
+                    .find(|&i| anchor.bytes.contains(input[i]))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{} match {:?} in {line:?} has no anchor byte",
+                            finder.id(),
+                            range
+                        )
+                    });
+                for (i, &b) in input.iter().enumerate().take(first).skip(range.start) {
+                    assert!(
+                        anchor.walk.contains(b),
+                        "{} match {:?} in {line:?}: byte {i} before the anchor is not a walk byte",
+                        finder.id(),
+                        range
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Every anchored finder scanned alone uses the anchor plan; it must agree
+/// with the plain dispatch walk of the legacy strategy.
+fn anchored_pairs() -> &'static [(Scanner, Scanner)] {
+    static PAIRS: std::sync::OnceLock<Vec<(Scanner, Scanner)>> = std::sync::OnceLock::new();
+    PAIRS.get_or_init(|| {
+        let singles: Vec<Box<dyn Fn() -> Box<dyn Finder>>> = vec![
+            Box::new(|| Box::new(squeeze::uuid::Uuid::default())),
+            Box::new(|| Box::new(squeeze::ip::Ip::default())),
+            Box::new(|| {
+                Box::new(squeeze::ip::Ip {
+                    ipv4: true,
+                    ipv6: false,
+                })
+            }),
+            Box::new(|| {
+                Box::new(squeeze::ip::Ip {
+                    ipv4: false,
+                    ipv6: true,
+                })
+            }),
+            Box::new(|| Box::new(squeeze::cidr::Cidr::default())),
+            Box::new(|| Box::new(squeeze::datetime::Datetime::default())),
+            Box::new(|| Box::new(squeeze::semver::Semver::default())),
+            Box::new(|| Box::new(squeeze::mac::Mac::default())),
+            Box::new(|| Box::new(squeeze::color::Color::default())),
+        ];
+        let mut pairs = Vec::new();
+        for make in &singles {
+            let anchored = Scanner::new(vec![make()]);
+            assert_eq!(anchored.plan(), "anchors", "{}", anchored.finders()[0].id());
+            let _ = &anchored;
+            let mut legacy = Scanner::new(vec![make()]);
+            legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+            pairs.push((anchored, legacy));
+        }
+        // Block-plan scanners with a minimum hex run: hash alone, and a
+        // single algorithm.
+        for make in [
+            (|| Box::new(squeeze::hash::Hash::default()) as Box<dyn Finder>)
+                as fn() -> Box<dyn Finder>,
+            || {
+                let mut hash = squeeze::hash::Hash::default();
+                assert!(hash.add_algorithm("sha256"));
+                Box::new(hash)
+            },
+            || {
+                let mut hash = squeeze::hash::Hash::default();
+                assert!(hash.add_algorithm("md5"));
+                Box::new(hash)
+            },
+        ] {
+            let fast = Scanner::new(vec![make()]);
+            assert_eq!(fast.plan(), "blocks");
+            let mut legacy = Scanner::new(vec![make()]);
+            legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+            pairs.push((fast, legacy));
+        }
+        // Two anchored finders together, and an anchored finder with a trigger one.
+        let mut legacy = Scanner::new(vec![
+            Box::new(squeeze::datetime::Datetime::default()),
+            Box::new(squeeze::ip::Ip::default()),
+        ]);
+        legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+        pairs.push((
+            Scanner::new(vec![
+                Box::new(squeeze::datetime::Datetime::default()),
+                Box::new(squeeze::ip::Ip::default()),
+            ]),
+            legacy,
+        ));
+        let mut legacy = Scanner::new(vec![
+            Box::new(squeeze::uuid::Uuid::default()),
+            Box::new(squeeze::email::Email::default()),
+        ]);
+        legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+        pairs.push((
+            Scanner::new(vec![
+                Box::new(squeeze::uuid::Uuid::default()),
+                Box::new(squeeze::email::Email::default()),
+            ]),
+            legacy,
+        ));
+        pairs
+    })
+}
+
+/// Sparse and anchored scanners must also agree with per-line scanning on
+/// whole buffers (they resolve lines lazily or only around matches).
+fn assert_sparse_buffers_agree(text: &str) {
+    let scanners = sparse_scanners();
+    for (fast, legacy) in scanners {
+        let mut expected = Vec::new();
+        let bytes = text.as_bytes();
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let nl = bytes[pos..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(bytes.len(), |i| pos + i);
+            let mut end = nl;
+            while end > pos && bytes[end - 1] == b'\r' {
+                end -= 1;
+            }
+            let matches = legacy.scan_line(&text[pos..end]);
+            if !matches.is_empty() {
+                expected.push((pos, end, matches));
+            }
+            pos = nl + 1;
+        }
+        let mut got = Vec::new();
+        fast.scan_buffer(text, |s, e, m| {
+            got.push((s, e, m.to_vec()));
+            false
+        });
+        assert_eq!(
+            got,
+            expected,
+            "{} plan for {:?} disagrees with per-line scanning on {text:?}",
+            fast.plan(),
+            fast.finders().iter().map(|f| f.id()).collect::<Vec<_>>()
+        );
+    }
+}
+
+fn sparse_scanners() -> &'static [(Scanner, Scanner)] {
+    static PAIRS: std::sync::OnceLock<Vec<(Scanner, Scanner)>> = std::sync::OnceLock::new();
+    PAIRS.get_or_init(|| {
+        type Make = Box<dyn Fn() -> Vec<Box<dyn Finder>>>;
+        let sets: Vec<Make> = vec![
+            Box::new(|| vec![Box::new(squeeze::uri::URI::default())]),
+            Box::new(|| vec![Box::new(squeeze::email::Email::default())]),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::uri::URI::default()),
+                    Box::new(squeeze::email::Email::default()),
+                ]
+            }),
+            Box::new(|| vec![Box::new(squeeze::uuid::Uuid::default())]),
+            Box::new(|| vec![Box::new(squeeze::env::Env::default())]),
+            Box::new(|| vec![Box::new(squeeze::path::Path::default())]),
+            Box::new(|| {
+                vec![
+                    Box::new(squeeze::ip::Ip::default()),
+                    Box::new(squeeze::email::Email::default()),
+                ]
+            }),
+        ];
+        sets.iter()
+            .map(|make| {
+                let fast = Scanner::new(make());
+                assert_ne!(fast.plan(), "blocks");
+                let mut legacy = Scanner::new(make());
+                legacy.set_strategy(squeeze::scanner::Strategy::Legacy);
+                (fast, legacy)
+            })
+            .collect()
+    })
+}
+
+fn assert_anchored_agree(line: &str) {
+    for (anchored, legacy) in anchored_pairs() {
+        assert_eq!(
+            anchored.scan_line(line),
+            legacy.scan_line(line),
+            "anchor plan for {} disagrees on {line:?}",
+            anchored.finders()[0].id()
+        );
+        assert_eq!(anchored.scan_line_first(line), legacy.scan_line_first(line));
+        let mut buffered = Vec::new();
+        anchored.scan_buffer(line, |s, e, m| {
+            buffered.push((s, e, m.to_vec()));
+            false
+        });
+        let expected: Vec<_> = {
+            let m = legacy.scan_line(line);
+            if m.is_empty() {
+                Vec::new()
+            } else {
+                vec![(0, line.len(), m)]
+            }
+        };
+        assert_eq!(buffered, expected, "anchored scan_buffer on {line:?}");
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(1500))]
+
+    #[test]
+    fn anchors_hold_on_structured_input(
+        s in "( |\\.|:|/|@|-|_|\\[|\\]|v|#|\\(|\\)|rgb|hsl|[a-z]{1,4}|[0-9]{1,4}|[0-9a-f]{1,8}|[0-9a-f]{30,34}|[0-9a-f]{38,42}|[0-9a-f]{62,66}|x[0-9a-f]{32}|[0-9a-f]{16}x[0-9a-f]{16}|[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}(/[0-9]{1,3})?|::ffff:[0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,3})?|\\[[0-9a-f:]{2,12}\\](/[0-9]{1,3})?|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-F]{2}([:-][0-9A-F]{2}){5}|[0-9A-F]{4}(\\.[0-9A-F]{4}){2}|20[0-9]{2}-[01][0-9]-[0-3][0-9](T[0-2][0-9]:[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,3})?Z?)?|v?[0-9]{1,2}\\.[0-9]{1,2}\\.[0-9]{1,2}(-[a-z0-9.]{1,6})?(\\+[a-z0-9.]{1,6})?|#[0-9a-fA-F]{3,8}|rgba?\\([0-9, .%]{5,14}\\)|hsla?\\([0-9, .%]{5,14}\\)|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)){0,12}"
+    ) {
+        assert_anchors_hold(&dispatch_finders(), &s);
+        assert_anchored_agree(&s);
+    }
+
+    #[test]
+    fn anchors_hold_on_arbitrary_input(s in "\\PC{0,50}") {
+        assert_anchors_hold(&dispatch_finders(), &s);
+        assert_anchored_agree(&s);
     }
 }

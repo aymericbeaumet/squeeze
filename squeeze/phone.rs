@@ -17,8 +17,8 @@ pub struct Phone {}
 const MAX_GROUPS: usize = 7;
 
 impl Phone {
-    fn count_digits(s: &str) -> usize {
-        s.bytes().filter(|b| b.is_ascii_digit()).count()
+    fn count_digits(s: &[u8]) -> usize {
+        s.iter().filter(|b| b.is_ascii_digit()).count()
     }
 
     /// `[\s.\-]` at `pos`: byte length of the separator.
@@ -169,9 +169,8 @@ impl Phone {
         })
     }
 
-    fn validate_match(s: &str, start: usize, end: usize) -> Option<Range<usize>> {
-        let input = s.as_bytes();
-        let matched = &s[start..end];
+    fn validate_match(input: &[u8], start: usize, end: usize) -> Option<Range<usize>> {
+        let matched = &input[start..end];
 
         // Boundary before: not preceded by alphanumeric
         if start > 0 && input[start - 1].is_ascii_alphanumeric() {
@@ -192,7 +191,7 @@ impl Phone {
         // country code (1-3 digits before the first separator):
         // `+2024-01-15 ...` is a diff-line date, not a phone number.
         // Compact `+14155551234` (no separators) is unaffected.
-        let bytes = matched.as_bytes();
+        let bytes = matched;
         if bytes[0] == b'+' {
             let first_group = bytes[1..].iter().take_while(|b| b.is_ascii_digit()).count();
             let has_separators = 1 + first_group < bytes.len();
@@ -206,10 +205,7 @@ impl Phone {
 
     fn range_at(input: &[u8], pos: usize) -> Option<Range<usize>> {
         let end = Self::match_at(input, pos)?;
-        // SAFETY of the str view: the scanner only hands out valid UTF-8 and
-        // every match boundary sits on a character boundary.
-        let s = std::str::from_utf8(input).ok()?;
-        Self::validate_match(s, pos, end)
+        Self::validate_match(input, pos, end)
     }
 }
 
@@ -263,7 +259,7 @@ impl Finder for Phone {
         for pos in 0..input.len() {
             if self.could_start_at(input[pos])
                 && let Some(end) = Self::match_at(input, pos)
-                && let Some(range) = Self::validate_match(s, pos, end)
+                && let Some(range) = Self::validate_match(input, pos, end)
             {
                 return Some(range);
             }

@@ -14,14 +14,20 @@ only where a match can actually start.
    (digits, hex letters, `@`, `$`, `:`, ...). Finders whose required classes
    are absent are disabled for the line (`required_classes` in
    `scanner.rs`). A line of prose disables the email, env, URI and CIDR
-   finders in one table lookup per byte.
+   finders in one table lookup per byte. Scanners with a single gated
+   finder, or whose finders start at three bytes or fewer, skip the prescan:
+   their gates filter at least as well without the extra pass.
 2. **Candidate positions.** Dispatch finders declare which byte can start a
    match (`could_start_at`) and, through *context gates*, which previous and
    next bytes rule it out (`could_start_after`, `could_continue_with`). The
    scanner folds these into two lookup tables indexed by a coarse class of
    the neighbouring byte, so a digit inside a number or a hex letter inside
    a word never reaches a finder. Trigger finders (email on `@`, URI on `:`)
-   share the same tables without gates.
+   share the same tables and may declare gates too: the URI finder only
+   fires on a colon preceded by a scheme byte and followed by a byte that
+   can begin a URI body, and rejects in O(1) any colon that is neither
+   followed by `/` nor preceded by the last two bytes of a registered
+   scheme (lax mode needs one or the other).
 3. **Vector stage** (`Strategy::Vector`, the default). Sixteen bytes at a
    time, NEON or SSSE3 nibble lookups classify each byte into a category and
    test the start set; per-category rules on the previous and next byte
@@ -35,26 +41,57 @@ only where a match can actually start.
    the start bytes. Both paths are exact by construction: the block stage
    may only add candidates, never drop one, and property tests compare
    every strategy and backend against the original byte loop.
+   **Anchor plan.** A dispatch finder can also declare an *anchor*: bytes
+   every match contains (`-` for UUIDs, `.` and `:` for IPs, `/` for CIDRs,
+   `-` for datetimes, `.` for semver, the separators for MACs, `#` and `(`
+   for colours) and the bytes that may precede the first of them. When
+   every finder of a scanner is anchored or trigger-based and the anchor
+   bytes number three or fewer, the scanner searches those bytes with
+   `memchr`, walks back to where a match could start and tries the
+   dispatch positions in order, never twice. The result is the dispatch
+   result (a property test pins it), at memchr speed: `squeeze --uuid`
+   never looks at a line without a dash.
 4. **Run rules.** At a candidate, the scanner measures the digit and hex
-   runs once (`Runs::at`) and evaluates each finder's declarative
-   `RunRule`s: a hash needs a hex run of 32 to 128, a UUID a hex run of
-   exactly 8 followed by `-`, a datetime four digits then `-`. Finders
-   sharing a run are gated together without a virtual call.
+   runs once and evaluates each finder's declarative `RunRule`s: a hash
+   needs a hex run of 32 to 128, a UUID a hex run of exactly 8 followed by
+   `-`, a datetime four digits then `-`. Finders sharing a run are gated
+   together without a virtual call. The measurement stops one byte past the
+   longest `max` any rule needs, and the hex run is cached per line so the
+   digit-run starts inside a long hash never measure it again.
 5. **Finder call.** What survives is handed to `try_at_memo` with a
    per-line `Memo`, a small cache a finder may use to remember a run that
    cannot match, so repeated candidates inside one line stay linear
    (modeline option runs, too-deep JSON bracket runs, IPv6-shaped runs).
 
+6. **Whole-buffer scanning.** `Scanner::scan_buffer` runs the candidate
+   search over an entire buffer of lines rather than a line at a time: the
+   block stage processes 64 bytes per step (four independent blocks, one
+   emptiness test, tables loaded once), and only when a candidate appears
+   is its line resolved with `memchr`, the per-line state initialised and
+   the exact gates consulted. Line terminators carry no category, so a
+   candidate sees the same context as it would in a line scan, and the run
+   lengths the rules need come from the block stage's hex and digit lane
+   masks instead of a byte loop. A property test pins `scan_buffer` to
+   per-line `scan_line` results, line offsets included.
+
 Two other strategies remain selectable for comparison: `Legacy` (the
 original per-byte dispatch tables) and `Gated` (the exact tables without
 the vector stage).
 
-The CLI reads input in 256 KiB blocks, splits lines with `memchr`, jumps
-over lines a sparse scanner cannot match, validates UTF-8 once per block
-and writes plain text results with `write_all`. With
-`--jobs N` the input is cut into ~512 KiB chunks at newline boundaries,
-scanned by N scoped threads, and written back in order through a reorder
-buffer, so output is byte-identical to the sequential path.
+The CLI memory-maps regular files (smaller ones are read whole) and scans
+them from memory; streams are read in 256 KiB blocks. Each block of whole
+lines is UTF-8 validated once with `simdutf8` (the standard validator was
+the largest remaining cost of a sparse scan) and handed to `scan_buffer`;
+only an invalid block is scanned line by line with lossy conversion.
+Finders whose walks stop at whitespace (URI, email) are line-agnostic, so
+their scanners probe the buffer with absolute positions and resolve a line
+only around an actual match. Line numbers are counted lazily between emitted lines, and
+plain text results are written with `write_all`. `--jobs` defaults to `auto`: files
+of 8 MiB and more are cut into ~512 KiB chunks at newline boundaries
+(slices of the mapping, nothing copied), scanned on every core by scoped
+threads, and written back in order through a reorder buffer, so output is
+byte-identical to the sequential path. Streams and smaller inputs stay
+sequential unless a thread count is given; `-1` always is.
 
 ## Contracts a finder must follow
 
@@ -126,17 +163,27 @@ invoked on true matches.
 Adversarial single lines that used to be quadratic (a 100 KB `1.1.1.1...`
 run, `[` repeated, `ex:a ` repeated) scan at 85 to 150 MiB/s.
 
-End-to-end, on a 55 MB log corpus (Apple M4 Pro, machine under external
-load, best of five):
+Library throughput per finder alone on the 56 MiB mixed corpus (Apple M4
+Pro, `mise run bench -- --per-finder --only mixed`):
 
-| command | before | after |
+| finder | plan | MiB/s |
 |---|---|---|
-| `squeeze --all` | 1054 ms | 508 ms |
-| `squeeze --all -j 4` | | 133 ms |
-| `squeeze --all -j 10` | | 87 ms |
-| `squeeze --url` | 164 ms | 61 ms |
+| email | anchors (`@`) | 2900 |
+| color | anchors (`#`, `(`) | 2400 |
+| cidr | anchors (`/`) | 2250 |
+| datetime | anchors (`-`) | 1970 |
+| uuid | anchors (`-`) | 1860 |
+| uri | anchors (`:`) | 1670 |
+| semver | anchors (`.`) | 1520 |
+| hash | blocks + minimum run | 895 |
+| ip | anchors (`.`, `:`) | 885 |
+| mac | anchors (`:`, `-`, `.`) | 880 |
 
-See the readme for the comparison with other matchers produced by
+End to end against ripgrep 15 on that corpus, single-threaded, CPU time
+(the stable figure on a loaded machine): url 34 vs 30 ms, email 23 vs 28,
+ipv4 50 vs 96, sha256 54 vs 90, uuid 34 vs 51, the five finders together
+189 vs 199. With the default `--jobs auto` squeeze finishes each task in 10
+to 25 ms of wall time. See the readme for the full table produced by
 `mise run bench-cli`.
 
 ## Known limits and next steps
@@ -147,8 +194,13 @@ See the readme for the comparison with other matchers produced by
   by the token length and rare in practice; a memo can make them linear.
 - `domain` is the last scan-mode finder; its `find` probes forward for an
   email local part and can rescan on `a.b+a.b+...` lines.
-- The vector stage processes 16 bytes per step. An AVX2 backend (32 lanes)
-  and a 64-byte NEON step would halve the per-block overhead.
-- Trigger finders take no gates; the URI finder is called at every colon.
-- `--jobs` defaults to 1. A parallel default for file inputs is a policy
-  decision, not a performance one.
+- The vector stage processes 64 bytes per step as four 16-byte blocks. An
+  AVX2 backend (32 lanes) would halve the instruction count on x86.
+- Hash has no anchor byte, so it stays on the block path, where a
+  minimum-run filter on the hex lane masks (enabled only when every finder
+  that starts at a hex digit needs a run of two or more) drops the short
+  runs before any per-lane work; a 64-lane window instead of the current
+  32 would sharpen it for `--sha512`.
+- Mapped files are read by the kernel on demand; a file truncated by
+  another process while it is being scanned raises SIGBUS, the same
+  trade-off grep tools make.

@@ -47,6 +47,11 @@ impl Finder for Email {
         true
     }
 
+    fn line_agnostic(&self) -> bool {
+        // Every walk stops at whitespace, which includes line terminators.
+        true
+    }
+
     fn could_trigger_at(&self, byte: u8) -> bool {
         byte == b'@'
     }

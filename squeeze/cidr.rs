@@ -1,4 +1,4 @@
-use super::{Finder, Memo, RunClass, RunRule};
+use super::{Anchor, ByteSet, Finder, Memo, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -213,6 +213,16 @@ impl Finder for Cidr {
 
     fn could_continue_with(&self, cur: u8, next: u8) -> bool {
         cur == b'[' || next.is_ascii_hexdigit() || next == b':' || next == b'.'
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor {
+            bytes: ByteSet::from_bytes(b"/"),
+            // The whole address precedes the `/`, brackets included.
+            walk: ByteSet::from_fn(|b| {
+                b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[' | b']')
+            }),
+        })
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

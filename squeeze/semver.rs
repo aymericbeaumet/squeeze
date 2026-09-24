@@ -1,4 +1,4 @@
-use super::{Finder, RunClass, RunRule};
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -82,6 +82,13 @@ impl Finder for Semver {
         } else {
             next.is_ascii_digit()
         }
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor {
+            bytes: ByteSet::from_bytes(b"."),
+            walk: ByteSet::from_fn(|b| b.is_ascii_digit() || b == b'v' || b == b'V'),
+        })
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

@@ -280,3 +280,111 @@ fn sparse_finders_skip_lines_but_keep_numbering() {
         assert_eq!(got, expected, "jobs={jobs}");
     }
 }
+
+/// Files are scanned from memory (mapped when large): the output must be
+/// byte-identical to the streaming path for every thread count, with CRLF
+/// lines, invalid UTF-8, a long line and an unterminated last line.
+#[test]
+fn mapped_files_match_the_streaming_path() {
+    let mut input: Vec<u8> = Vec::new();
+    for line in 1..=60_000usize {
+        match line % 7 {
+            0 => input.extend_from_slice(
+                format!("user{line}@example.com and https://h{line}.example.org/p\r\n").as_bytes(),
+            ),
+            1 => {
+                input.extend_from_slice(b"bad \xff\xfe bytes then ok@example.net\n");
+            }
+            2 => {
+                input.extend_from_slice(format!("{}\n", "x".repeat(3000)).as_bytes());
+            }
+            _ => input.extend_from_slice(b"plain text line without anything interesting\n"),
+        }
+    }
+    input.extend_from_slice(b"tail@example.io");
+    assert!(
+        input.len() > 8 * 1024 * 1024,
+        "input must exceed the auto-parallel threshold"
+    );
+    let path = temp_path("mapped-input.txt");
+    fs::write(&path, &input).unwrap();
+
+    let stream = squeeze()
+        .args([
+            "--email",
+            "--url",
+            "--output",
+            "json",
+            "--with-kind",
+            "--jobs",
+            "1",
+        ])
+        .write_stdin(input.clone())
+        .output()
+        .unwrap();
+    assert!(stream.status.success());
+    assert!(stream.stdout.len() > 1000);
+    // Sources differ between stdin and a file, so compare without them.
+    let strip = |out: &[u8]| {
+        String::from_utf8_lossy(out).replace(
+            &format!("\"source\":\"{}\"", path.display()),
+            "\"source\":null",
+        )
+    };
+    let expected = strip(&stream.stdout);
+
+    for jobs in ["1", "3", "auto"] {
+        let output = squeeze()
+            .args([
+                "--email",
+                "--url",
+                "--output",
+                "json",
+                "--with-kind",
+                "--jobs",
+                jobs,
+            ])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "jobs={jobs}");
+        assert_eq!(strip(&output.stdout), expected, "jobs={jobs}");
+    }
+    // Plain text output through the mapped path, sequential and default.
+    let text_stream = squeeze()
+        .args(["--email", "--jobs", "1"])
+        .write_stdin(input.clone())
+        .output()
+        .unwrap();
+    for jobs in ["1", "auto"] {
+        let output = squeeze()
+            .args(["--email", "--jobs", jobs])
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, text_stream.stdout, "jobs={jobs}");
+    }
+    fs::remove_file(&path).ok();
+}
+
+/// A small file is read whole; `--first` on a file stays sequential and
+/// prints the first match only.
+#[test]
+fn small_files_and_first_match_use_the_buffer_path() {
+    let path = temp_path("small-input.txt");
+    fs::write(&path, "one a@b.co\ntwo c@d.org\n").unwrap();
+    squeeze()
+        .args(["--email"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout("a@b.co\nc@d.org\n");
+    squeeze()
+        .args(["--email", "-1"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout("a@b.co\n");
+    fs::remove_file(&path).ok();
+}

@@ -1,4 +1,4 @@
-use super::{Finder, RunClass, RunRule};
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -208,6 +208,13 @@ impl Finder for Datetime {
 
     fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
         next.is_ascii_digit()
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        Some(Anchor {
+            bytes: ByteSet::from_bytes(b"-"),
+            walk: ByteSet::from_fn(|b| b.is_ascii_digit()),
+        })
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
