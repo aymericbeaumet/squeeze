@@ -354,6 +354,8 @@ trait Probe {
     #[inline(always)]
     fn run_gated(&mut self) {}
     #[inline(always)]
+    fn run_gated_n(&mut self, _n: u32) {}
+    #[inline(always)]
     fn find_call(&mut self, _finder: usize, _hit: bool) {}
     #[inline(always)]
     fn try_at_call(&mut self, _finder: usize, _hit: bool) {}
@@ -392,6 +394,9 @@ impl Probe for ScanStats {
     }
     fn run_gated(&mut self) {
         self.run_gated += 1;
+    }
+    fn run_gated_n(&mut self, n: u32) {
+        self.run_gated += u64::from(n);
     }
     fn find_call(&mut self, finder: usize, hit: bool) {
         let f = &mut self.finders[finder];
@@ -879,6 +884,10 @@ impl Pass {
 /// the block pass.
 const MAX_MEMCHR_PASSES: usize = 3;
 
+/// Longest word run measured for [`RunClass::Word`](crate::RunClass::Word)
+/// rules; longer runs report as capped.
+const WORD_CAP: usize = 16;
+
 pub struct Scanner {
     finders: Vec<Box<dyn Finder>>,
     strategy: Strategy,
@@ -901,11 +910,28 @@ pub struct Scanner {
     dispatch_mask: u32,
     trigger_mask: u32,
     scan_mask: u32,
-    /// Finders with run rules.
+    /// Finders with digit or hex run rules.
     run_mask: u32,
     run_rules: Vec<Vec<RunRule>>,
+    /// Finders with a digit or hex rule applicable at a start byte.
+    rule_cur: Box<[u32; 256]>,
+    /// Finders with a digit-class (resp. hex-class) rule accepting the byte
+    /// after the run; index 256 stands for the end of the input. A finder
+    /// absent from both entries for a candidate's runs cannot accept it,
+    /// so the rules are only evaluated for the others.
+    after_digit: Box<[u32; 257]>,
+    after_hex: Box<[u32; 257]>,
+    /// Finders with digit-class (resp. hex-class) rules: a capped run may
+    /// satisfy any of them.
+    digit_ruled: u32,
+    hex_ruled: u32,
     /// Longest run any rule needs to distinguish, plus one.
     run_cap: usize,
+    /// Finders with a [`RunClass::Word`] rule: the word run is measured
+    /// only for their candidates.
+    word_mask: u32,
+    /// Longest word run any rule needs to distinguish, plus one.
+    word_cap: usize,
     skip_requirements: Vec<&'static [(u16, bool)]>,
 }
 
@@ -940,20 +966,78 @@ impl Scanner {
                 }
             })
             .collect();
+        // A finder's rules are either all on the word run or all on the
+        // digit/hex runs, so each kind is measured only when a candidate
+        // finder needs it.
+        for (i, rules) in run_rules.iter().enumerate() {
+            let words = rules
+                .iter()
+                .filter(|r| r.class == crate::RunClass::Word)
+                .count();
+            assert!(
+                words == 0 || words == rules.len(),
+                "finder {} mixes word rules with digit or hex rules",
+                finders[i].id()
+            );
+        }
         let run_mask = run_rules
             .iter()
             .enumerate()
-            .filter(|(_, rules)| !rules.is_empty())
+            .filter(|(_, rules)| rules.iter().any(|r| r.class != crate::RunClass::Word))
             .fold(0u32, |mask, (i, _)| mask | (1u32 << i));
+        let mut rule_cur = Box::new([0u32; 256]);
+        let mut after_digit = Box::new([0u32; 257]);
+        let mut after_hex = Box::new([0u32; 257]);
+        let mut digit_ruled = 0u32;
+        let mut hex_ruled = 0u32;
+        for (i, rules) in run_rules.iter().enumerate() {
+            let bit = 1u32 << i;
+            for rule in rules {
+                let (after, ruled) = match rule.class {
+                    crate::RunClass::Digit => (&mut after_digit, &mut digit_ruled),
+                    crate::RunClass::Hex => (&mut after_hex, &mut hex_ruled),
+                    crate::RunClass::Word => continue,
+                };
+                *ruled |= bit;
+                for b in 0..=255u8 {
+                    if rule.cur.contains(b) {
+                        rule_cur[b as usize] |= bit;
+                    }
+                    if rule.after.contains(b) {
+                        after[b as usize] |= bit;
+                    }
+                }
+                if rule.after_end {
+                    after[256] |= bit;
+                }
+            }
+        }
         // A run longer than every rule's `max` is rejected whatever follows
         // it, so measuring stops one byte past the longest `max`.
         let run_cap = run_rules
             .iter()
             .flatten()
+            .filter(|rule| rule.class != crate::RunClass::Word)
             .map(|rule| rule.max as usize + 1)
             .max()
             .unwrap_or(1)
             .min(crate::RUN_CAP as usize);
+        let word_mask = run_rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rules)| rules.iter().any(|r| r.class == crate::RunClass::Word))
+            .fold(0u32, |mask, (i, _)| mask | (1u32 << i));
+        // A word run is measured up to 16 bytes: enough to check the length
+        // and the following byte for every mnemonic-sized rule, while a
+        // longer run reports as capped and is accepted whatever the rule's
+        // maximum (a rule's minimum never exceeds the cap).
+        let word_cap = run_rules
+            .iter()
+            .flatten()
+            .filter(|rule| rule.class == crate::RunClass::Word)
+            .map(|rule| (rule.max as usize + 1).min(WORD_CAP).max(rule.min as usize))
+            .max()
+            .unwrap_or(1);
 
         let mut gate_prev = Box::new([[0u32; 256]; CTX_CLASSES]);
         let mut gate_next = Box::new([[0u32; CTX_CLASSES]; 256]);
@@ -1072,8 +1156,9 @@ impl Scanner {
                         covered = true;
                         match rule.class {
                             crate::RunClass::Hex => byte_min = byte_min.min(rule.min as usize),
-                            // A digit rule accepts runs the hex run does not bound.
-                            crate::RunClass::Digit => byte_min = 1,
+                            // A digit or word rule accepts runs the hex run
+                            // does not bound.
+                            crate::RunClass::Digit | crate::RunClass::Word => byte_min = 1,
                         }
                     }
                     if !covered {
@@ -1217,7 +1302,14 @@ impl Scanner {
             scan_mask,
             run_mask,
             run_rules,
+            rule_cur,
+            after_digit,
+            after_hex,
+            digit_ruled,
+            hex_ruled,
             run_cap,
+            word_mask,
+            word_cap,
             skip_requirements,
         })
     }
@@ -1642,9 +1734,18 @@ impl Scanner {
             return false;
         }
         probe.candidate_position();
-        if self.run_mask & bit != 0 {
-            let runs = Runs::at_cached(input, pos, &mut state.runs, self.run_cap);
+        if self.word_mask & bit != 0 {
+            let runs = Runs::only_word(Runs::word_at(input, pos, self.word_cap));
             if !RunRule::allow(&self.run_rules[i], cur, &runs, input, pos) {
+                probe.run_gated();
+                return false;
+            }
+        }
+        if self.run_mask & self.rule_cur[cur as usize] & bit != 0 {
+            let runs = Runs::at_cached(input, pos, &mut state.runs, self.run_cap);
+            if self.may_accept(&runs) & bit == 0
+                || !RunRule::allow(&self.run_rules[i], cur, &runs, input, pos)
+            {
                 probe.run_gated();
                 return false;
             }
@@ -1665,6 +1766,45 @@ impl Scanner {
         }
     }
 
+    /// Finders at least one of whose digit or hex rules may accept `runs`,
+    /// judged by the byte after each run alone.
+    #[inline(always)]
+    fn may_accept(&self, runs: &Runs) -> u32 {
+        let index = |run: &crate::Run| run.after.map_or(256, |b| b as usize);
+        let mut may = self.after_digit[index(&runs.digit)] | self.after_hex[index(&runs.hex)];
+        if runs.digit.capped {
+            may |= self.digit_ruled;
+        }
+        if runs.hex.capped {
+            may |= self.hex_ruled;
+        }
+        may
+    }
+
+    /// Drops the candidates whose word rules reject the word run at `pos`.
+    /// Kept out of line: word rules are rare and the run measurement would
+    /// bloat the candidate loop.
+    #[inline(never)]
+    fn word_gate<P: Probe>(
+        &self,
+        input: &[u8],
+        pos: usize,
+        mut candidates: u32,
+        probe: &mut P,
+    ) -> u32 {
+        let runs = Runs::only_word(Runs::word_at(input, pos, self.word_cap));
+        let mut gated = candidates & self.word_mask;
+        while gated != 0 {
+            let i = gated.trailing_zeros() as usize;
+            gated &= gated - 1;
+            if !RunRule::allow(&self.run_rules[i], input[pos], &runs, input, pos) {
+                candidates &= !(1u32 << i);
+                probe.run_gated();
+            }
+        }
+        candidates
+    }
+
     /// Invokes the finders in `candidates` at `pos`.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
@@ -1678,12 +1818,22 @@ impl Scanner {
         probe: &mut P,
         hint: Option<&RunHint<'_>>,
     ) {
-        if candidates & self.run_mask != 0 {
+        if candidates & self.word_mask != 0 {
+            candidates = self.word_gate(input, pos, candidates, probe);
+        }
+        let ruled = candidates & self.run_mask & self.rule_cur[input[pos] as usize];
+        if ruled != 0 {
             let runs = match hint {
                 Some(hint) => Runs::at_hinted(input, pos, hint, &mut state.runs, self.run_cap),
                 None => Runs::at_cached(input, pos, &mut state.runs, self.run_cap),
             };
-            let mut gated = candidates & self.run_mask;
+            // Finders none of whose rules can accept the byte after the run
+            // are dropped without visiting their rules.
+            let may = self.may_accept(&runs);
+            let rejected = ruled & !may;
+            candidates &= !rejected;
+            probe.run_gated_n(rejected.count_ones());
+            let mut gated = ruled & may;
             while gated != 0 {
                 let i = gated.trailing_zeros() as usize;
                 gated &= gated - 1;
@@ -2150,9 +2300,23 @@ impl Scanner {
                     CTX_NONE
                 };
                 candidates &= self.gate_next[cur as usize][next_class];
-                if candidates & self.run_mask != 0 {
+                if candidates & self.word_mask != 0 {
+                    let runs = Runs::only_word(Runs::word_at(input, pos, self.word_cap));
+                    let mut gated = candidates & self.word_mask;
+                    while gated != 0 {
+                        let i = gated.trailing_zeros() as usize;
+                        gated &= gated - 1;
+                        if !RunRule::allow(&self.run_rules[i], cur, &runs, input, pos) {
+                            candidates &= !(1u32 << i);
+                        }
+                    }
+                }
+                let ruled = candidates & self.run_mask & self.rule_cur[cur as usize];
+                if ruled != 0 {
                     let runs = Runs::at_cached(input, pos, &mut state.runs, self.run_cap);
-                    let mut gated = candidates & self.run_mask;
+                    let may = self.may_accept(&runs);
+                    candidates &= !(ruled & !may);
+                    let mut gated = ruled & may;
                     while gated != 0 {
                         let i = gated.trailing_zeros() as usize;
                         gated &= gated - 1;

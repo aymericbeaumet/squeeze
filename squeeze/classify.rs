@@ -986,6 +986,7 @@ mod tests {
                 "{} digit lanes",
                 B::NAME
             );
+
             // Run lengths read from the masks agree with the bytes.
             let hex_mask = [B::mask(lanes.hex)];
             for lane in 0..BLOCK {

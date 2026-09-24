@@ -893,6 +893,13 @@ proptest! {
     }
 
     #[test]
+    fn dispatch_gates_never_reject_a_match_on_word_tokens(
+        s in "( |:|\\(|\\)|-|_|é|ü|TODO|todo|Todo|FIXME|fixme|BUG|bug|XXX|\\?\\?\\?|!!!|NOTE|REF|STATUS|ſtatus|HAC\u{212A}|hack|FR|fr|vim|VIM|vi|ex|EX|vim700|vim<702|vim=703|set|ts=4|rgb|RGB|hsl|rgba|hsla|#fff|#a1b2c3|255|0\\.5|%|[a-z]{1,5}|[A-Z]{1,4}|[0-9]{1,3}|[a-z]{2,4}\\(|[a-z]{2,4}:){0,12}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
     fn dispatch_gates_never_reject_a_match_on_long_runs(
         s in "( |-|:|\\.|/|x|[0-9a-f]{28,45}|[0-9a-f]{60,70}|[0-9a-f]{125,135}|[0-9]{1,5}|[0-9]{126,132}){1,6}"
     ) {

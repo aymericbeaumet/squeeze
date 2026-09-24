@@ -1,4 +1,4 @@
-use super::{Anchor, ByteSet, Finder};
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -120,6 +120,11 @@ impl Finder for Color {
             b'r' | b'R' => next.eq_ignore_ascii_case(&b'g'),
             _ => next.eq_ignore_ascii_case(&b's'),
         }
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `rgb(`, `rgba(`, `hsl(`, `hsla(`; `#` starts are not word bytes.
+        vec![RunRule::new(RunClass::Word, 3, 4).followed_by(b"(")]
     }
 
     fn anchor(&self) -> Option<Anchor> {

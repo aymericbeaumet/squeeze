@@ -118,11 +118,26 @@ impl ByteSet {
 
 /// The byte class a [`RunRule`] measures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum RunClass {
     /// ASCII digits.
     Digit,
     /// ASCII hexadecimal digits.
     Hex,
+    /// ASCII letters, digits and `_`: the bytes of a `\b`-delimited word.
+    Word,
+}
+
+impl RunClass {
+    /// Whether `b` belongs to the class.
+    #[inline(always)]
+    pub fn contains(self, b: u8) -> bool {
+        match self {
+            RunClass::Digit => b.is_ascii_digit(),
+            RunClass::Hex => b.is_ascii_hexdigit(),
+            RunClass::Word => b.is_ascii_alphanumeric() || b == b'_',
+        }
+    }
 }
 
 /// Longest run length the scanner distinguishes; longer runs are reported
@@ -140,12 +155,14 @@ pub struct Run {
     pub after: Option<u8>,
 }
 
-/// The digit and hex runs at a candidate position, measured once by the
-/// scanner and shared by every finder's [`RunRule`]s.
+/// The digit, hex and word runs at a candidate position, measured once by
+/// the scanner and shared by every finder's [`RunRule`]s. The word run is
+/// only measured when a candidate finder has a [`RunClass::Word`] rule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Runs {
     pub digit: Run,
     pub hex: Run,
+    pub word: Run,
 }
 
 /// The last hex run measured on a line, so candidates inside the same run
@@ -197,7 +214,42 @@ const BLOCK_LANES: usize = 16;
 impl Runs {
     /// Measures the runs starting at `pos`.
     pub fn at(input: &[u8], pos: usize) -> Runs {
-        Self::at_cached(input, pos, &mut RunCache::default(), RUN_CAP as usize)
+        let mut runs = Self::at_cached(input, pos, &mut RunCache::default(), RUN_CAP as usize);
+        runs.measure_word(input, pos, RUN_CAP as usize);
+        runs
+    }
+
+    /// Measures the word run starting at `pos`, reporting runs of `cap`
+    /// bytes or more as capped.
+    #[inline(always)]
+    pub(crate) fn measure_word(&mut self, input: &[u8], pos: usize, cap: usize) {
+        self.word = Self::word_at(input, pos, cap);
+    }
+
+    /// The word run starting at `pos`, capped at `cap` bytes.
+    #[inline(always)]
+    pub(crate) fn word_at(input: &[u8], pos: usize, cap: usize) -> Run {
+        let limit = input.len().min(pos + cap);
+        let mut end = pos;
+        while end < limit && RunClass::Word.contains(input[end]) {
+            end += 1;
+        }
+        Run {
+            len: (end - pos) as u8,
+            capped: end - pos >= cap,
+            after: input.get(end).copied(),
+        }
+    }
+
+    /// Runs holding only a word run; the digit and hex runs count as
+    /// unmeasured.
+    #[inline(always)]
+    pub(crate) fn only_word(word: Run) -> Runs {
+        Runs {
+            digit: UNMEASURED,
+            hex: UNMEASURED,
+            word,
+        }
     }
 
     /// Like [`at_cached`](Self::at_cached), taking the run lengths from the
@@ -249,6 +301,7 @@ impl Runs {
         Runs {
             digit: run(digit_len),
             hex: run(hex_len),
+            word: UNMEASURED,
         }
     }
 
@@ -285,16 +338,24 @@ impl Runs {
         Runs {
             digit: run(digit),
             hex: run(hex_end),
+            word: UNMEASURED,
         }
     }
 
+    #[inline(always)]
     fn get(&self, class: RunClass) -> &Run {
-        match class {
-            RunClass::Digit => &self.digit,
-            RunClass::Hex => &self.hex,
-        }
+        // Indexed rather than matched: this sits in the rule loop.
+        [&self.digit, &self.hex, &self.word][class as usize]
     }
 }
+
+/// A run the scanner did not measure: it counts as capped, which accepts
+/// every rule on it, so an unmeasured word run can never lose a match.
+const UNMEASURED: Run = Run {
+    len: RUN_CAP,
+    capped: true,
+    after: None,
+};
 
 /// A run required right after the byte that ends the previous run of a
 /// [`RunRule`]: `class` bytes numbering `min..=max`, followed by a byte in
@@ -315,18 +376,22 @@ pub const MAX_THEN: usize = 2;
 /// [`Finder::run_rules`].
 ///
 /// A rule applies when the start byte is in `cur`; it accepts when the
-/// `class` run has a length in `min..=max` and the byte after it is in
-/// `after` (or the input ends there and `after_end` is set), and when every
-/// [`Then`] step is met in turn right after that byte (an IPv4 address
-/// starts with `1.2.` whatever follows, a MAC address with `aa:bb:cc:`). A
-/// capped run always satisfies the rest of the rule, since its true end is
-/// unknown.
+/// `class` run has a length in `min..=max` (and in `lengths` when set),
+/// the byte after it is in `after` (or the input ends there and
+/// `after_end` is set), and every [`Then`] step is met in turn right after
+/// that byte (an IPv4 address starts with `1.2.` whatever follows, a MAC
+/// address with `aa:bb:cc:`). A capped run always satisfies the rest of the
+/// rule, since its true end is unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunRule {
     pub cur: ByteSet,
     pub class: RunClass,
     pub min: u8,
     pub max: u8,
+    /// Bit `n` set: a run of `n` bytes is accepted; zero means every
+    /// length in `min..=max`. Lengths of 64 and more are governed by
+    /// `min..=max` alone.
+    pub lengths: u64,
     pub after: ByteSet,
     pub after_end: bool,
     pub then: [Option<Then>; MAX_THEN],
@@ -336,27 +401,36 @@ impl RunRule {
     /// A rule for `class` runs of `min..=max` bytes starting at any byte of
     /// the class and followed by any byte, including the end of the input.
     pub fn new(class: RunClass, min: u8, max: u8) -> RunRule {
-        let cur = match class {
-            RunClass::Digit => ByteSet::from_fn(|b| b.is_ascii_digit()),
-            RunClass::Hex => ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
-        };
+        let cur = ByteSet::from_fn(|b| class.contains(b));
         RunRule {
             cur,
             class,
             min,
             max,
+            lengths: 0,
             after: ByteSet::ALL,
             after_end: true,
             then: [None; MAX_THEN],
         }
     }
 
+    /// Restricts the rule's own run to the lengths whose bit is set in
+    /// `lengths` (bit `n` for `n` bytes), within `min..=max`.
+    pub fn lengths(mut self, lengths: u64) -> RunRule {
+        self.lengths = lengths;
+        self
+    }
+
     /// Requires the byte after the last run described so far (the rule's
     /// own run, or its latest [`then`](Self::then) step) to be one of
     /// `bytes`; the end of the input no longer qualifies unless
     /// [`or_end`](Self::or_end) follows.
-    pub fn followed_by(mut self, bytes: &[u8]) -> RunRule {
-        let set = ByteSet::from_bytes(bytes);
+    pub fn followed_by(self, bytes: &[u8]) -> RunRule {
+        self.followed_by_set(ByteSet::from_bytes(bytes))
+    }
+
+    /// Like [`followed_by`](Self::followed_by) with a byte set.
+    pub fn followed_by_set(mut self, set: ByteSet) -> RunRule {
         match self.then.iter_mut().rev().find_map(Option::as_mut) {
             Some(step) => {
                 step.after = set;
@@ -414,6 +488,9 @@ impl RunRule {
         if run.capped {
             return true;
         }
+        if self.lengths != 0 && run.len < 64 && self.lengths & (1u64 << run.len) == 0 {
+            return false;
+        }
         match run.after {
             Some(b) if self.after.contains(b) => {}
             Some(_) => return false,
@@ -421,13 +498,9 @@ impl RunRule {
         }
         let mut at = pos + run.len as usize + 1;
         for step in self.then.iter().flatten() {
-            let is_class = |b: u8| match step.class {
-                RunClass::Digit => b.is_ascii_digit(),
-                RunClass::Hex => b.is_ascii_hexdigit(),
-            };
             let limit = input.len().min(at + step.max as usize + 1);
             let mut end = at;
-            while end < limit && is_class(input[end]) {
+            while end < limit && step.class.contains(input[end]) {
                 end += 1;
             }
             let len = end - at;

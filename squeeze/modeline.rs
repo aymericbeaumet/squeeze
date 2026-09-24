@@ -7,7 +7,7 @@
 //! least one `option=value` assignment so prose such as "I prefer vim: it is
 //! great" is not misread as a modeline.
 
-use super::{Finder, Memo};
+use super::{Finder, Memo, RunClass, RunRule};
 use crate::word::boundary_before;
 use std::ops::Range;
 
@@ -166,6 +166,12 @@ impl Finder for Modeline {
             b'v' | b'V' => matches!(next, b'i' | b'I'),
             _ => matches!(next, b'x' | b'X'),
         }
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `vi:`, `ex:`, `vim:`, `vim700:` or `vim<702:`: a word run of at
+        // least two bytes followed by `:` or a version comparison.
+        vec![RunRule::new(RunClass::Word, 2, crate::RUN_CAP).followed_by(b":<=>")]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

@@ -18,7 +18,7 @@
 //! }
 //! ```
 
-use super::{ByteSet, Finder};
+use super::{ByteSet, Finder, RunClass, RunRule};
 use crate::word::{boundary_after, boundary_before, char_at};
 use std::collections::HashSet;
 use std::convert::Infallible;
@@ -403,6 +403,51 @@ impl Finder for Codetag {
 
     fn could_continue_with(&self, cur: u8, next: u8) -> bool {
         self.index().next_after[cur as usize].contains(next)
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // A mnemonic starting with an ASCII word byte begins with an ASCII
+        // word run: as long as the mnemonic when it is an ASCII word (then
+        // `:` or `(` follows), or as long as its leading word segment (then
+        // its first non-word byte follows). A non-ASCII byte may cut the
+        // run short anywhere (a folded Kelvin sign for `k`), so a run
+        // followed by one is always allowed.
+        let mut lengths = 0u64;
+        let mut after = ByteSet::from_bytes(b":(");
+        let mut max = 0u8;
+        for m in &self.index().mnemonics {
+            let Some(first) = m.folded.first() else {
+                continue;
+            };
+            if !first.is_ascii() || !RunClass::Word.contains(*first as u8) {
+                continue;
+            }
+            let prefix = m
+                .folded
+                .iter()
+                .take_while(|c| c.is_ascii() && RunClass::Word.contains(**c as u8))
+                .count();
+            if let Some(next) = m.folded.get(prefix) {
+                if next.is_ascii() {
+                    after = after.with(*next as u8);
+                } else {
+                    // The high-byte rule below covers it.
+                    continue;
+                }
+            }
+            if prefix < 64 {
+                lengths |= 1u64 << prefix;
+            }
+            max = max.max(prefix as u8);
+        }
+        vec![
+            RunRule::new(RunClass::Word, 1, max.max(1))
+                .lengths(lengths)
+                .followed_by_set(after),
+            // A high byte inside the first `max` positions.
+            RunRule::new(RunClass::Word, 0, max.saturating_sub(1))
+                .followed_by_set(ByteSet::from_fn(|b| b >= 0x80)),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
