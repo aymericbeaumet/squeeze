@@ -928,9 +928,10 @@ pub struct Scanner {
     trigger_mask: u32,
     /// Trigger finders with a tabulated context gate.
     context_mask: u32,
-    /// Per finder, for each class of the next byte, a bitset over the two
-    /// previous bytes (`prev2 << 8 | prev1`) that may hold a trigger.
-    contexts: Vec<Option<Box<[[u64; 1024]; CTX_CLASSES]>>>,
+    /// Per finder, a bitset over the two previous bytes
+    /// (`prev2 << 8 | prev1`) that may precede a trigger, and the classes
+    /// of the next byte that exempt a trigger from that condition.
+    contexts: Vec<Option<(Box<[u64; 1024]>, u32)>>,
     scan_mask: u32,
     /// Finders with digit or hex run rules.
     run_mask: u32,
@@ -1122,7 +1123,7 @@ impl Scanner {
         }
 
         let mut context_mask = 0u32;
-        let contexts: Vec<Option<Box<[[u64; 1024]; CTX_CLASSES]>>> = finders
+        let contexts: Vec<Option<(Box<[u64; 1024]>, u32)>> = finders
             .iter()
             .enumerate()
             .map(|(i, f)| {
@@ -1130,28 +1131,27 @@ impl Scanner {
                     return None;
                 }
                 context_mask |= 1u32 << i;
-                let mut table = Box::new([[0u64; 1024]; CTX_CLASSES]);
-                // A class admits a pair when any byte of the class does; the
-                // end of the input is class CTX_NONE.
-                let mut nexts: Vec<Vec<Option<u8>>> = vec![Vec::new(); CTX_CLASSES];
-                for b in 0..=255u8 {
-                    nexts[ctx_class(b)].push(Some(b));
-                }
-                nexts[CTX_NONE].push(None);
-                for (class, bytes) in nexts.iter().enumerate() {
-                    for prev2 in 0..=255u8 {
-                        for prev1 in 0..=255u8 {
-                            if bytes
-                                .iter()
-                                .any(|&next| f.trigger_context(prev2, prev1, next))
-                            {
-                                let index = usize::from(prev2) << 8 | usize::from(prev1);
-                                table[class][index >> 6] |= 1 << (index & 63);
-                            }
+                let mut pairs = Box::new([0u64; 1024]);
+                for prev2 in 0..=255u8 {
+                    for prev1 in 0..=255u8 {
+                        if f.trigger_context(prev2, prev1) {
+                            let index = usize::from(prev2) << 8 | usize::from(prev1);
+                            pairs[index >> 6] |= 1 << (index & 63);
                         }
                     }
                 }
-                Some(table)
+                // A class is exempt when any of its bytes is; the end of the
+                // input is class CTX_NONE.
+                let mut exempt = 0u32;
+                for b in 0..=255u8 {
+                    if f.trigger_context_exempt(Some(b)) {
+                        exempt |= 1 << ctx_class(b);
+                    }
+                }
+                if f.trigger_context_exempt(None) {
+                    exempt |= 1 << CTX_NONE;
+                }
+                Some((pairs, exempt))
             })
             .collect();
         let anchors: Vec<Option<Anchor>> = finders
@@ -1750,10 +1750,10 @@ impl Scanner {
             while bits != 0 {
                 let i = bits.trailing_zeros() as usize;
                 bits &= bits - 1;
-                let table = self.contexts[i]
+                let (pairs, exempt) = self.contexts[i]
                     .as_ref()
                     .expect("a context finder has a table");
-                if table[next_class][index >> 6] & (1 << (index & 63)) == 0 {
+                if exempt & (1 << next_class) == 0 && pairs[index >> 6] & (1 << (index & 63)) == 0 {
                     candidates &= !(1u32 << i);
                 }
             }

@@ -814,7 +814,8 @@ fn assert_gates_agree(finders: &[Box<dyn Finder>], line: &str) {
                 let gated = (pos > 0 && !finder.could_start_after(input[pos - 1], cur))
                     || (pos + 1 < input.len() && !finder.could_continue_with(cur, input[pos + 1]))
                     || (finder.has_trigger_context()
-                        && !finder.trigger_context(prev2, prev1, input.get(pos + 1).copied()))
+                        && !finder.trigger_context_exempt(input.get(pos + 1).copied())
+                        && !finder.trigger_context(prev2, prev1))
                     || !squeeze::RunRule::allow(
                         &rules,
                         cur,

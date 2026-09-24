@@ -814,21 +814,33 @@ pub trait Finder: Send + Sync {
         false
     }
 
-    /// Whether [`trigger_context`](Finder::trigger_context) constrains
-    /// anything: the scanner then tabulates it once and consults it before
-    /// calling the finder. Defaults to `false`.
+    /// Whether the trigger context gate constrains anything: the scanner
+    /// then tabulates [`trigger_context`](Finder::trigger_context) over the
+    /// 65536 pairs of previous bytes and
+    /// [`trigger_context_exempt`](Finder::trigger_context_exempt) over the
+    /// next bytes, once, and consults them before calling the finder.
+    /// Defaults to `false`.
     fn has_trigger_context(&self) -> bool {
         false
     }
 
     /// Whether a match may be triggered at a byte preceded by `prev2` and
-    /// `prev1` and followed by `next`: a necessary condition for
-    /// [`try_trigger_at`](Finder::try_trigger_at) to match at that
-    /// position. The scanner passes a space for a missing previous byte
-    /// (the trigger sits in the first two bytes of the input) and `None`
-    /// for the end of the input. Defaults to `true`.
-    fn trigger_context(&self, _prev2: u8, _prev1: u8, _next: Option<u8>) -> bool {
+    /// `prev1`, unless the byte after the trigger is exempt
+    /// ([`trigger_context_exempt`](Finder::trigger_context_exempt)): a
+    /// necessary condition for [`try_trigger_at`](Finder::try_trigger_at)
+    /// to match at that position. The scanner passes a space for a missing
+    /// previous byte (the trigger sits in the first two bytes of the
+    /// input). Defaults to `true`.
+    fn trigger_context(&self, _prev2: u8, _prev1: u8) -> bool {
         true
+    }
+
+    /// Whether a trigger followed by `next` (`None` at the end of the
+    /// input) escapes the previous-bytes condition: the URI finder needs a
+    /// registered scheme before a colon unless `//` follows. Defaults to
+    /// `false`.
+    fn trigger_context_exempt(&self, _next: Option<u8>) -> bool {
+        false
     }
 
     /// Try to find a match triggered by `pos` in the full input.

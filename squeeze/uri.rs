@@ -265,12 +265,13 @@ impl Finder for URI {
         !self.strict && self.schemes.is_empty()
     }
 
-    fn trigger_context(&self, prev2: u8, prev1: u8, next: Option<u8>) -> bool {
-        // Mirrors the first test of `try_at_colon`.
-        self.strict
-            || !self.schemes.is_empty()
-            || next == Some(b'/')
-            || can_end_registered_scheme(prev2, prev1)
+    // Both mirror the first test of `try_at_colon`.
+    fn trigger_context(&self, prev2: u8, prev1: u8) -> bool {
+        self.strict || !self.schemes.is_empty() || can_end_registered_scheme(prev2, prev1)
+    }
+
+    fn trigger_context_exempt(&self, next: Option<u8>) -> bool {
+        next == Some(b'/')
     }
 
     fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

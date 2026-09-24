@@ -100,9 +100,9 @@ Every optimisation above is only correct because finders keep a contract,
 and every contract has a property test in `squeeze/tests/fuzz.rs`:
 
 - If `could_start_after(prev, cur)`, `could_continue_with(cur, next)` or,
-  for a trigger finder, `trigger_context(prev2, prev1, next)` returns
-  `false`, `try_at` (or `try_trigger_at`) must return `None` in that
-  context.
+  for a trigger finder whose next byte is not `trigger_context_exempt`,
+  `trigger_context(prev2, prev1)` returns `false`, `try_at` (or
+  `try_trigger_at`) must return `None` in that context.
 - If `RunRule::allow(rules, cur, runs, input, pos)` returns `false`, the
   attempt must return `None`; chained, word and length-restricted rules are
   checked the same way.
