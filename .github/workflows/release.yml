@@ -64,12 +64,12 @@ jobs:
         run: rustup set default-host "$TARGET"
       - uses: jdx/mise-action@v4
         with:
-          version: 2026.8.4
+          version: 2026.9.12
           cache: false
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v7
         with:
-          python-version: '3.13'
+          python-version: '3.14'
       - name: Verify native Rust target
         env:
           TARGET: ${{ matrix.target }}

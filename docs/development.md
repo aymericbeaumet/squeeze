@@ -2,7 +2,7 @@
 
 ## Tooling
 
-`mise.toml` pins Rust 1.96.0 with rustfmt and Clippy. Run `mise trust`, then
+`mise.toml` pins Rust 1.98.1 with rustfmt and Clippy. Run `mise trust`, then
 `mise install`. The minimum supported Rust version remains 1.95; `mise run msrv`
 installs and tests that toolchain independently of the development pin.
 
@@ -21,7 +21,7 @@ access) and review the diff; the registries change a few times a year.
 `outdated` and `audit` tasks require the corresponding Cargo extensions.
 The Makefile forwards existing commands to mise.
 
-Actions pins mise 2026.8.4, whose release assets cover all six platforms.
+Actions pins mise 2026.9.12, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).

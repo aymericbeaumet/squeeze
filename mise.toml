@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.96.0", profile = "minimal", components = [
+rust = { version = "1.98.1", profile = "minimal", components = [
   "clippy",
   "rustfmt",
 ] }
