@@ -692,8 +692,8 @@ pub(crate) mod ssse3 {
     #[target_feature(enable = "ssse3")]
     #[inline]
     unsafe fn alignr<const N: i32>(a: __m128i, b: __m128i) -> __m128i {
-        // SAFETY: SSSE3 is enabled for this function.
-        unsafe { _mm_alignr_epi8::<N>(b, a) }
+        // SSSE3 is enabled for this function, so the intrinsic is safe to call.
+        _mm_alignr_epi8::<N>(b, a)
     }
 
     #[target_feature(enable = "ssse3")]
