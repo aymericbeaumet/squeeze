@@ -50,6 +50,45 @@ const SUB_DELIMS_LAX: [bool; 256] = {
     table
 };
 
+/// Byte classes of the URI body, one table per mode: `PCHAR` is
+/// unreserved / sub-delims / ":" / "@" (plus ")" in lax mode), `QUERY` adds
+/// "/" and "?", `USERINFO` is unreserved / sub-delims / ":". Percent
+/// encoding is handled separately.
+const PCHAR: u8 = 1 << 0;
+const QUERY: u8 = 1 << 1;
+const USERINFO: u8 = 1 << 2;
+
+const fn body_classes(strict: bool) -> [u8; 256] {
+    let mut table = [0u8; 256];
+    let mut b = 0usize;
+    while b < 256 {
+        let c = b as u8;
+        let unreserved =
+            c.is_ascii_alphanumeric() || c == b'-' || c == b'.' || c == b'_' || c == b'~';
+        let sub_delim = if strict {
+            SUB_DELIMS_STRICT[b]
+        } else {
+            SUB_DELIMS_LAX[b]
+        };
+        let mut flags = 0u8;
+        if unreserved || sub_delim || c == b':' {
+            flags |= USERINFO;
+        }
+        if unreserved || sub_delim || c == b':' || c == b'@' || (!strict && c == b')') {
+            flags |= PCHAR;
+        }
+        if flags & PCHAR != 0 || c == b'/' || c == b'?' {
+            flags |= QUERY;
+        }
+        table[b] = flags;
+        b += 1;
+    }
+    table
+}
+
+static BODY_CLASSES_STRICT: [u8; 256] = body_classes(true);
+static BODY_CLASSES_LAX: [u8; 256] = body_classes(false);
+
 // Covers every IANA-registered scheme (the longest is 36 bytes) so opaque
 // URIs using them are not truncated out of the registry lookup.
 const MAX_SCHEME_LEN: usize = 64;
@@ -342,18 +381,21 @@ impl URI {
     fn trim_lax(input: &[u8], colon_idx: usize, mut end: usize) -> usize {
         let body_start = colon_idx + 1;
 
-        let mut depth = 0usize;
-        for (i, &b) in input[body_start..end].iter().enumerate() {
-            match b {
-                b'(' => depth += 1,
-                b')' => {
-                    if depth == 0 {
-                        end = body_start + i;
-                        break;
+        // Only a body holding ")" needs its parentheses balanced.
+        if memchr::memchr(b')', &input[body_start..end]).is_some() {
+            let mut depth = 0usize;
+            for (i, &b) in input[body_start..end].iter().enumerate() {
+                match b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        if depth == 0 {
+                            end = body_start + i;
+                            break;
+                        }
+                        depth -= 1;
                     }
-                    depth -= 1;
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -484,14 +526,38 @@ impl URI {
 
     // *pchar
     fn look_segment(&self, input: &[u8]) -> usize {
+        self.look_run(input, PCHAR)
+    }
+
+    /// Length of the run of bytes in the body class `class` or
+    /// percent-encoded triples starting `input`.
+    #[inline]
+    fn look_run(&self, input: &[u8], class: u8) -> usize {
+        let table = self.body_classes();
         let mut idx = 0;
         while idx < input.len() {
-            idx += match self.look_pchar(&input[idx..]) {
-                Some(n) => n,
-                None => break,
-            };
+            let b = input[idx];
+            if table[b as usize] & class != 0 {
+                idx += 1;
+            } else if b == b'%' {
+                match self.look_pct_encoded(&input[idx..]) {
+                    Some(n) => idx += n,
+                    None => break,
+                }
+            } else {
+                break;
+            }
         }
         idx
+    }
+
+    #[inline]
+    fn body_classes(&self) -> &'static [u8; 256] {
+        if self.strict {
+            &BODY_CLASSES_STRICT
+        } else {
+            &BODY_CLASSES_LAX
+        }
     }
 
     // 1*pchar
@@ -503,13 +569,26 @@ impl URI {
     }
 
     // userinfo "@"
+    //
+    // Walks the userinfo run instead of searching for "@" first, so a host
+    // without userinfo costs its own length rather than a 256-byte search.
     fn look_userinfo_at(&self, input: &[u8]) -> Option<usize> {
-        let arobase_idx = input.iter().take(256).position(|&b| b == b'@')?;
-        if self.is_userinfo(&input[..arobase_idx]) {
-            Some(arobase_idx + 1)
-        } else {
-            None
+        let table = self.body_classes();
+        let mut idx = 0;
+        while idx < input.len() && idx < 256 {
+            let b = input[idx];
+            if b == b'@' {
+                return Some(idx + 1);
+            }
+            if table[b as usize] & USERINFO != 0 {
+                idx += 1;
+            } else if b == b'%' {
+                idx += self.look_pct_encoded(&input[idx..])?;
+            } else {
+                return None;
+            }
         }
+        None
     }
 
     // IP-literal / IPv4address / reg-name
@@ -744,20 +823,7 @@ impl URI {
 
     // *( pchar / "/" / "?" )
     fn look_query(&self, input: &[u8]) -> usize {
-        let mut idx = 0;
-        while idx < input.len() {
-            let b = input[idx];
-            if b == b'/' || b == b'?' {
-                idx += 1;
-                continue;
-            }
-            if let Some(i) = self.look_pchar(&input[idx..]) {
-                idx += i;
-                continue;
-            }
-            break;
-        }
-        idx
+        self.look_run(input, QUERY)
     }
 
     fn look_sharp_fragment(&self, input: &[u8]) -> Option<usize> {
@@ -769,41 +835,7 @@ impl URI {
 
     // *( pchar / "/" / "?" )
     fn look_fragment(&self, input: &[u8]) -> usize {
-        let mut idx = 0;
-        while idx < input.len() {
-            let b = input[idx];
-            if b == b'/' || b == b'?' {
-                idx += 1;
-                continue;
-            }
-            if let Some(i) = self.look_pchar(&input[idx..]) {
-                idx += i;
-                continue;
-            }
-            break;
-        }
-        idx
-    }
-
-    // unreserved / pct-encoded / sub-delims / ":" / "@"
-    //
-    // In lax mode ")" is additionally accepted at pchar positions (path,
-    // query, fragment) so that balanced parentheses survive; any unmatched
-    // ")" is cut afterwards by `trim_lax`. Userinfo keeps rejecting it.
-    #[inline]
-    fn look_pchar(&self, input: &[u8]) -> Option<usize> {
-        if !input.is_empty() {
-            let b = input[0];
-            if Self::is_unreserved(b)
-                || self.is_sub_delim(b)
-                || b == b':'
-                || b == b'@'
-                || (!self.strict && b == b')')
-            {
-                return Some(1);
-            }
-        }
-        self.look_pct_encoded(input)
+        self.look_run(input, QUERY)
     }
 
     // "%" HEXDIG HEXDIG
@@ -883,38 +915,10 @@ impl URI {
         }
     }
 
-    // *( unreserved / pct-encoded / sub-delims / ":" )
-    fn is_userinfo(&self, input: &[u8]) -> bool {
-        let mut idx = 0;
-        while idx < input.len() {
-            let c = input[idx];
-            if Self::is_unreserved(c) || self.is_sub_delim(c) || c == b':' {
-                idx += 1;
-                continue;
-            }
-            if let Some(i) = self.look_pct_encoded(&input[idx..]) {
-                idx += i;
-                continue;
-            }
-            return false;
-        }
-        true
-    }
-
     // ALPHA / DIGIT / "-" / "." / "_" / "~"
     #[inline]
     fn is_unreserved(c: u8) -> bool {
         c.is_ascii_alphanumeric() || c == b'-' || c == b'.' || c == b'_' || c == b'~'
-    }
-
-    // "!" / "$" / "&" / "'" / "(" / ")" / "*" / "+" / "," / ";" / "="
-    #[inline]
-    fn is_sub_delim(&self, c: u8) -> bool {
-        if self.strict {
-            SUB_DELIMS_STRICT[c as usize]
-        } else {
-            SUB_DELIMS_LAX[c as usize]
-        }
     }
 
     #[inline]

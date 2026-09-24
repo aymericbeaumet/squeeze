@@ -7,9 +7,11 @@
 # Corpora are generated deterministically by the library's `scanner` bench
 # (`--write-corpus`), each concatenated SCALE times (default 16, ~16 MiB per
 # corpus), plus a `mixed` corpus that joins them all. Every tool reads the
-# file directly (no pipes) with LC_ALL=C, output goes to /dev/null, and
-# hyperfine reports wall-clock and CPU time after one warm-up run; on a busy
-# machine the CPU time is the more stable of the two.
+# file directly with LC_ALL=C and hyperfine reports wall-clock and CPU time
+# after one warm-up run; on a busy machine the CPU time is the more stable
+# of the two. Output is piped away rather than sent to /dev/null, which grep
+# and ugrep detect to stop at the first match, and a tool exiting non-zero on
+# a corpus without matches is still timed.
 #
 # Tasks map a squeeze finder to the closest POSIX ERE the other tools accept.
 # The regexes are approximations of the finders' grammars: match counts are
@@ -115,7 +117,7 @@ for corpus in "${BENCH_CORPORA[@]}"; do
     pattern=${rest#*|}
     echo "== $corpus / $name ($bytes bytes)"
     slug=${name// /-}
-    args=(--warmup 1 --runs "$RUNS" -N --export-json "$OUT/results/$corpus-$slug.json")
+    args=(--warmup 1 --runs "$RUNS" -N -i --output=pipe --export-json "$OUT/results/$corpus-$slug.json")
     counts="$OUT/results/$corpus-$slug.counts"
     : > "$counts"
     # Single-threaded first (the like-for-like comparison), then the default
