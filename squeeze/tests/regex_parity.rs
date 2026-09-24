@@ -310,6 +310,23 @@ proptest! {
 }
 
 #[test]
+fn codetag_first_head_decides_like_the_former_regex() {
+    // A hidden head that swallows the line yields nothing, even when a
+    // later head sits inside its parenthesised note (found by the proptest
+    // on one platform's seed).
+    for s in [
+        "TBD(TODO:():",
+        "TBD(fixme:uinſtatusfixme():",
+        "TODO(FIXME:):",
+        "TODO: FIXME: x",
+        "TODO:",
+        "x TODO(a): FIXME(b): y",
+    ] {
+        check_codetag(s);
+    }
+}
+
+#[test]
 fn custom_mnemonics_match_the_former_regex() {
     let mnemonics = ["FIX-ME", "été", "OK", "???", "x"];
     let re = codetag_regex(

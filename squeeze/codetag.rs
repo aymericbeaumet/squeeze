@@ -454,13 +454,14 @@ impl Finder for Codetag {
         self.range_from(input, pos)
     }
 
+    // The first head decides, as the former regex did: when hiding the
+    // mnemonic leaves nothing after it (`TBD(TODO:():`), the line has no
+    // match, even if a later head would.
     fn find(&self, s: &str) -> Option<Range<usize>> {
         let input = s.as_bytes();
         for pos in 0..input.len() {
-            if self.could_start_at(input[pos])
-                && let Some(range) = self.range_from(input, pos)
-            {
-                return Some(range);
+            if self.could_start_at(input[pos]) && self.match_at(input, pos).is_some() {
+                return self.range_from(input, pos);
             }
         }
         None
