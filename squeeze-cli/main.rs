@@ -2183,7 +2183,8 @@ fn main() -> ExitCode {
                         // grep tools do: it avoids copying every byte.
                         match unsafe { memmap2::Mmap::map(&file) } {
                             Ok(map) => {
-                                // Read-ahead for a single forward pass.
+                                // Read-ahead for a single forward pass (Unix only).
+                                #[cfg(unix)]
                                 let _ = map.advise(memmap2::Advice::Sequential);
                                 scan_buffer(
                                     &scanner,
