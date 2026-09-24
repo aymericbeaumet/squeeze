@@ -1467,9 +1467,34 @@ fn scan_block(
     }
     // SAFETY: `validate_block` accepted the whole block.
     let text = unsafe { std::str::from_utf8_unchecked(block) };
-    let mut counter = LineCounter::new(first_line);
     let mut failure: Option<io::Error> = None;
     let mut stop = false;
+    if streaming && !opts.with_location {
+        // Plain values: neither the line nor its number is needed.
+        let flush = state.flush_streaming;
+        let stopped = scanner.scan_buffer_matches(text, |finder, range| {
+            let value = &text[range];
+            if value.is_empty() {
+                return false;
+            }
+            let kind = scanner.finders()[finder].id();
+            match emit_streaming_value(out, opts, flush, None, kind, value) {
+                Ok(()) => {
+                    stop = opts.first;
+                    stop
+                }
+                Err(e) => {
+                    failure = Some(e);
+                    true
+                }
+            }
+        });
+        if let Some(e) = failure {
+            return Err(e);
+        }
+        return Ok(stopped && stop);
+    }
+    let mut counter = LineCounter::new(first_line);
     let stopped = scanner.scan_buffer(text, |start, end, matches| {
         let line_number = counter.number(block, start);
         match emit_line_matches(
@@ -1721,7 +1746,20 @@ fn scan_chunk(
             }
         }
     };
-    if valid {
+    if valid && streaming && !opts.with_location {
+        // Plain values: neither the line nor its number is needed.
+        // SAFETY: `validate_block` accepted the whole chunk.
+        let whole = unsafe { std::str::from_utf8_unchecked(data) };
+        scanner.scan_buffer_matches(whole, |finder, range| {
+            let value = &whole[range];
+            if !value.is_empty() {
+                let kind = scanner.finders()[finder].id();
+                // Writing into a Vec cannot fail.
+                let _ = write_text_line(&mut text, None, opts.with_kind.then_some(kind), value);
+            }
+            false
+        });
+    } else if valid {
         // SAFETY: `validate_block` accepted the whole chunk.
         let text = unsafe { std::str::from_utf8_unchecked(data) };
         let mut counter = LineCounter::new(chunk.first_line);

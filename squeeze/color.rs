@@ -128,10 +128,10 @@ impl Finder for Color {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        Some(Anchor {
-            bytes: ByteSet::from_bytes(b"#("),
-            walk: ByteSet::from_fn(|b| b.is_ascii_alphabetic()),
-        })
+        Some(Anchor::new(
+            ByteSet::from_bytes(b"#("),
+            ByteSet::from_fn(|b| b.is_ascii_alphabetic()),
+        ))
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

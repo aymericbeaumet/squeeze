@@ -241,10 +241,10 @@ impl Finder for Ip {
         if self.ipv6 {
             bytes = bytes.with(b':');
         }
-        Some(Anchor {
+        Some(Anchor::new(
             bytes,
-            walk: ByteSet::from_fn(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[')),
-        })
+            ByteSet::from_fn(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[')),
+        ))
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

@@ -565,6 +565,43 @@ impl Memo {
 pub struct Anchor {
     pub bytes: ByteSet,
     pub walk: ByteSet,
+    /// A byte at a fixed offset that confirms the first anchor byte of a
+    /// match, see [`confirm`](Self::confirm).
+    pub check: Option<AnchorCheck>,
+}
+
+/// When the anchor byte at `pos` is one of `anchors`, the byte at
+/// `pos + offset` must be one of `bytes` (and exist) for `pos` to be the
+/// first anchor byte of a match: a UUID's first `-` has another five bytes
+/// on, a MAC address's first `:` another three bytes on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AnchorCheck {
+    pub anchors: ByteSet,
+    pub offset: u8,
+    pub bytes: ByteSet,
+}
+
+impl Anchor {
+    /// An anchor on `bytes` reached by walking back over `walk` bytes.
+    pub fn new(bytes: ByteSet, walk: ByteSet) -> Anchor {
+        Anchor {
+            bytes,
+            walk,
+            check: None,
+        }
+    }
+
+    /// Requires, when the anchor byte is one of `anchors`, the byte
+    /// `offset` bytes after it to be one of `bytes`; other anchor bytes
+    /// are not checked. Only the first anchor byte of a match has to pass.
+    pub fn confirm(mut self, anchors: &[u8], offset: u8, bytes: &[u8]) -> Anchor {
+        self.check = Some(AnchorCheck {
+            anchors: ByteSet::from_bytes(anchors),
+            offset,
+            bytes: ByteSet::from_bytes(bytes),
+        });
+        self
+    }
 }
 
 /// A trait for finding patterns in text.

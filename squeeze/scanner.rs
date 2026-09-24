@@ -1710,10 +1710,22 @@ impl Scanner {
         while bits != 0 {
             let i = bits.trailing_zeros() as usize;
             bits &= bits - 1;
-            let Some(anchor) = self.anchors[i] else {
+            // By reference: the anchor with its check is over a hundred
+            // bytes, copied on every anchor byte of the input otherwise.
+            let Some(anchor) = &self.anchors[i] else {
                 continue;
             };
             if !anchor.bytes.contains(cur) || pos < state.pos(i) {
+                continue;
+            }
+            // A cheap confirmation before any walk: the first anchor byte
+            // of a match has a known byte at a fixed offset.
+            if let Some(check) = &anchor.check
+                && check.anchors.contains(cur)
+                && !input
+                    .get(pos + check.offset as usize)
+                    .is_some_and(|&b| check.bytes.contains(b))
+            {
                 continue;
             }
             let tried = state.tried(i);
@@ -2245,6 +2257,47 @@ impl Scanner {
             lists.push(matches);
         }
         emit_grouped(data, merge_matches(lists), &mut emit)
+    }
+
+    /// Scans `text` like [`scan_buffer`](Self::scan_buffer) but hands every
+    /// match to `emit(finder_index, range)` with a range into `text`, in the
+    /// same order (by start, then finder), without resolving the lines
+    /// around them; a caller that prints values alone skips that work.
+    /// Returns `true` when `emit` asked to stop.
+    pub fn scan_buffer_matches(
+        &self,
+        text: &str,
+        mut emit: impl FnMut(usize, Range<usize>) -> bool,
+    ) -> bool {
+        let data = text.as_bytes();
+        if self.strategy != Strategy::Vector || self.scan_mask != 0 || self.passes.is_empty() {
+            return self.scan_lines(text, &mut |start, _end, matches: &[Match]| {
+                matches
+                    .iter()
+                    .any(|m| emit(m.finder_index, m.range.start + start..m.range.end + start))
+            });
+        }
+        let mut lists = Vec::with_capacity(self.passes.len());
+        for pass in &self.passes {
+            let mut matches = Vec::new();
+            if pass.whole {
+                let mut sink = WholeSink {
+                    data,
+                    state: LineState::new(self.finders.len()),
+                    matches: &mut matches,
+                };
+                self.walk_pass(pass, data, &mut sink);
+            } else {
+                let mut sink = BufferSink::new(data, self, Collect(&mut matches));
+                self.walk_pass(pass, data, &mut sink);
+                sink.flush();
+            }
+            sort_matches(&mut matches);
+            lists.push(matches);
+        }
+        merge_matches(lists)
+            .into_iter()
+            .any(|m| emit(m.finder_index, m.range))
     }
 
     /// Line-by-line scanning of `text`, for every strategy.

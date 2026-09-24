@@ -91,10 +91,10 @@ impl Finder for Semver {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        Some(Anchor {
-            bytes: ByteSet::from_bytes(b"."),
-            walk: ByteSet::from_fn(|b| b.is_ascii_digit() || b == b'v' || b == b'V'),
-        })
+        Some(Anchor::new(
+            ByteSet::from_bytes(b"."),
+            ByteSet::from_fn(|b| b.is_ascii_digit() || b == b'v' || b == b'V'),
+        ))
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

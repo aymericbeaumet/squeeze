@@ -61,10 +61,14 @@ impl Finder for Uuid {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        Some(Anchor {
-            bytes: ByteSet::from_bytes(b"-"),
-            walk: ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
-        })
+        // The first dash sits at offset 8, the second at 13.
+        Some(
+            Anchor::new(
+                ByteSet::from_bytes(b"-"),
+                ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
+            )
+            .confirm(b"-", 5, b"-"),
+        )
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

@@ -108,10 +108,15 @@ impl Finder for Mac {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        Some(Anchor {
-            bytes: ByteSet::from_bytes(b":-."),
-            walk: ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
-        })
+        // `aa:bb:` / `aa-bb-`: the second separator follows three bytes on;
+        // `aaaa.bbbb.` five bytes on.
+        Some(
+            Anchor::new(
+                ByteSet::from_bytes(b":-."),
+                ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
+            )
+            .confirm(b":-", 3, b":-"),
+        )
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

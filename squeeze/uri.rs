@@ -57,6 +57,8 @@ const SUB_DELIMS_LAX: [bool; 256] = {
 const PCHAR: u8 = 1 << 0;
 const QUERY: u8 = 1 << 1;
 const USERINFO: u8 = 1 << 2;
+/// Hostname label bytes: ASCII alphanumerics, `_` and `-`.
+const LABEL: u8 = 1 << 3;
 
 const fn body_classes(strict: bool) -> [u8; 256] {
     let mut table = [0u8; 256];
@@ -79,6 +81,9 @@ const fn body_classes(strict: bool) -> [u8; 256] {
         }
         if flags & PCHAR != 0 || c == b'/' || c == b'?' {
             flags |= QUERY;
+        }
+        if c.is_ascii_alphanumeric() || c == b'_' || c == b'-' {
+            flags |= LABEL;
         }
         table[b] = flags;
         b += 1;
@@ -803,10 +808,13 @@ impl URI {
         if !starts {
             return 0;
         }
-        input
-            .iter()
-            .take_while(|&&b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            .count()
+        // Both modes share the label class.
+        let table = &BODY_CLASSES_LAX;
+        let mut len = 1;
+        while len < input.len() && table[input[len] as usize] & LABEL != 0 {
+            len += 1;
+        }
+        len
     }
 
     // *DIGIT

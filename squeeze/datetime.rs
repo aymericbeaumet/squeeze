@@ -217,10 +217,14 @@ impl Finder for Datetime {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        Some(Anchor {
-            bytes: ByteSet::from_bytes(b"-"),
-            walk: ByteSet::from_fn(|b| b.is_ascii_digit()),
-        })
+        // `YYYY-MM-DD`: the dash after the month follows three bytes on.
+        Some(
+            Anchor::new(
+                ByteSet::from_bytes(b"-"),
+                ByteSet::from_fn(|b| b.is_ascii_digit()),
+            )
+            .confirm(b"-", 3, b"-"),
+        )
     }
 
     fn run_rules(&self) -> Vec<RunRule> {

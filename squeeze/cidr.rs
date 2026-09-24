@@ -222,13 +222,11 @@ impl Finder for Cidr {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        Some(Anchor {
-            bytes: ByteSet::from_bytes(b"/"),
-            // The whole address precedes the `/`, brackets included.
-            walk: ByteSet::from_fn(|b| {
-                b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[' | b']')
-            }),
-        })
+        // The whole address precedes the `/`, brackets included.
+        Some(Anchor::new(
+            ByteSet::from_bytes(b"/"),
+            ByteSet::from_fn(|b| b.is_ascii_hexdigit() || matches!(b, b'.' | b':' | b'[' | b']')),
+        ))
     }
 
     fn run_rules(&self) -> Vec<RunRule> {
