@@ -926,6 +926,11 @@ pub struct Scanner {
     gate_next: Box<[[u32; CTX_CLASSES]; 256]>,
     dispatch_mask: u32,
     trigger_mask: u32,
+    /// Trigger finders with a tabulated context gate.
+    context_mask: u32,
+    /// Per finder, for each class of the next byte, a bitset over the two
+    /// previous bytes (`prev2 << 8 | prev1`) that may hold a trigger.
+    contexts: Vec<Option<Box<[[u64; 1024]; CTX_CLASSES]>>>,
     scan_mask: u32,
     /// Finders with digit or hex run rules.
     run_mask: u32,
@@ -1116,6 +1121,39 @@ impl Scanner {
             }
         }
 
+        let mut context_mask = 0u32;
+        let contexts: Vec<Option<Box<[[u64; 1024]; CTX_CLASSES]>>> = finders
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                if !f.triggerable() || !f.has_trigger_context() {
+                    return None;
+                }
+                context_mask |= 1u32 << i;
+                let mut table = Box::new([[0u64; 1024]; CTX_CLASSES]);
+                // A class admits a pair when any byte of the class does; the
+                // end of the input is class CTX_NONE.
+                let mut nexts: Vec<Vec<Option<u8>>> = vec![Vec::new(); CTX_CLASSES];
+                for b in 0..=255u8 {
+                    nexts[ctx_class(b)].push(Some(b));
+                }
+                nexts[CTX_NONE].push(None);
+                for (class, bytes) in nexts.iter().enumerate() {
+                    for prev2 in 0..=255u8 {
+                        for prev1 in 0..=255u8 {
+                            if bytes
+                                .iter()
+                                .any(|&next| f.trigger_context(prev2, prev1, next))
+                            {
+                                let index = usize::from(prev2) << 8 | usize::from(prev1);
+                                table[class][index >> 6] |= 1 << (index & 63);
+                            }
+                        }
+                    }
+                }
+                Some(table)
+            })
+            .collect();
         let anchors: Vec<Option<Anchor>> = finders
             .iter()
             .map(|f| if f.dispatchable() { f.anchor() } else { None })
@@ -1341,6 +1379,8 @@ impl Scanner {
             gate_next,
             dispatch_mask,
             trigger_mask,
+            context_mask,
+            contexts,
             scan_mask,
             run_mask,
             run_rules,
@@ -1699,6 +1739,28 @@ impl Scanner {
         if candidates == 0 {
             probe.coarse_rejected(cur);
             return;
+        }
+        if candidates & self.context_mask != 0 {
+            // Trigger finders with a context table: the two previous bytes
+            // and the class of the next one decide before any call.
+            let prev1 = if pos > 0 { input[pos - 1] } else { b' ' };
+            let prev2 = if pos > 1 { input[pos - 2] } else { b' ' };
+            let index = usize::from(prev2) << 8 | usize::from(prev1);
+            let mut bits = candidates & self.context_mask;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let table = self.contexts[i]
+                    .as_ref()
+                    .expect("a context finder has a table");
+                if table[next_class][index >> 6] & (1 << (index & 63)) == 0 {
+                    candidates &= !(1u32 << i);
+                }
+            }
+            if candidates == 0 {
+                probe.coarse_rejected(cur);
+                return;
+            }
         }
         probe.candidate_position();
         self.invoke(input, pos, candidates, state, matches, probe, hint);

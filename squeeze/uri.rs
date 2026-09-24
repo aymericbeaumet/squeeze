@@ -259,6 +259,20 @@ impl Finder for URI {
             )
     }
 
+    fn has_trigger_context(&self) -> bool {
+        // Lax mode without an allowlist rejects most colons from the two
+        // bytes before them; the scanner tabulates that once.
+        !self.strict && self.schemes.is_empty()
+    }
+
+    fn trigger_context(&self, prev2: u8, prev1: u8, next: Option<u8>) -> bool {
+        // Mirrors the first test of `try_at_colon`.
+        self.strict
+            || !self.schemes.is_empty()
+            || next == Some(b'/')
+            || can_end_registered_scheme(prev2, prev1)
+    }
+
     fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         self.try_at_colon(input, pos)
     }

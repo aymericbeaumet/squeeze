@@ -59,7 +59,11 @@ finder, happens only where a match can actually start.
    bytes rule it out (`could_start_after`, `could_continue_with`). The
    scanner folds these into two lookup tables indexed by a class of the
    neighbouring byte, so a digit inside a number or a hex letter inside a
-   word never reaches a finder. Trigger finders share the tables.
+   word never reaches a finder. Trigger finders share the tables and may
+   add a *trigger context* over the two previous bytes and the class of
+   the next one, tabulated once: the URI finder's rule that a colon not
+   followed by `/` must end a registered scheme rejects timestamps and
+   `key:value` pairs before any call (URI calls per KB on logs: 32 to 4).
 5. **Run rules.** At a candidate, the scanner measures the digit and hex
    runs once (`Runs::at`, from the classifier's lanes when they cover the
    run) and evaluates each finder's declarative `RunRule`s. A rule can
@@ -95,9 +99,10 @@ reorder buffer, so output is byte-identical to the sequential path.
 Every optimisation above is only correct because finders keep a contract,
 and every contract has a property test in `squeeze/tests/fuzz.rs`:
 
-- If `could_start_after(prev, cur)` or `could_continue_with(cur, next)`
-  returns `false`, `try_at` (or `try_trigger_at`) must return `None` in
-  that context.
+- If `could_start_after(prev, cur)`, `could_continue_with(cur, next)` or,
+  for a trigger finder, `trigger_context(prev2, prev1, next)` returns
+  `false`, `try_at` (or `try_trigger_at`) must return `None` in that
+  context.
 - If `RunRule::allow(rules, cur, runs, input, pos)` returns `false`, the
   attempt must return `None`; chained, word and length-restricted rules are
   checked the same way.

@@ -814,6 +814,23 @@ pub trait Finder: Send + Sync {
         false
     }
 
+    /// Whether [`trigger_context`](Finder::trigger_context) constrains
+    /// anything: the scanner then tabulates it once and consults it before
+    /// calling the finder. Defaults to `false`.
+    fn has_trigger_context(&self) -> bool {
+        false
+    }
+
+    /// Whether a match may be triggered at a byte preceded by `prev2` and
+    /// `prev1` and followed by `next`: a necessary condition for
+    /// [`try_trigger_at`](Finder::try_trigger_at) to match at that
+    /// position. The scanner passes a space for a missing previous byte
+    /// (the trigger sits in the first two bytes of the input) and `None`
+    /// for the end of the input. Defaults to `true`.
+    fn trigger_context(&self, _prev2: u8, _prev1: u8, _next: Option<u8>) -> bool {
+        true
+    }
+
     /// Try to find a match triggered by `pos` in the full input.
     /// Only called when [`triggerable`](Finder::triggerable) returns true.
     fn try_trigger_at(&self, _input: &[u8], _pos: usize) -> Option<Range<usize>> {
