@@ -660,7 +660,7 @@ impl Measurement {
                 .enumerate()
                 .filter(|(_, n)| *n > 0)
                 .collect();
-            rejected.sort_by(|a, b| b.1.cmp(&a.1));
+            rejected.sort_by_key(|entry| std::cmp::Reverse(entry.1));
             let total: u64 = rejected.iter().map(|(_, n)| n).sum();
             if total > 0 {
                 let _ = write!(s, " coarse_rejected={total} by byte:");
@@ -860,7 +860,7 @@ fn print_finder_breakdown(m: &Measurement, scanner: &Scanner) {
         .enumerate()
         .filter(|(_, n)| *n > 0)
         .collect();
-    rejected.sort_by(|a, b| b.1.cmp(&a.1));
+    rejected.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     let total: u64 = rejected.iter().map(|(_, n)| n).sum();
     if total > 0 {
         let mut line = format!("  coarse rejected: {:.1}/KB, by byte:", total as f64 / kib);
