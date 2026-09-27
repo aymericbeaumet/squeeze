@@ -2229,6 +2229,10 @@ struct TreeShared<'a> {
 /// ones are read into the thread's buffer, which is cheaper per file.
 const TREE_MMAP_MIN_BYTES: u64 = 4 * 1024 * 1024;
 
+/// Size of the first read of a tree file; a file filling it is stat'ed to
+/// choose between mapping it and reading the rest.
+const TREE_FIRST_READ: usize = 256 * 1024;
+
 /// Per-thread state of a tree walk: the output of the file being scanned
 /// and the file's bytes when it is read rather than mapped.
 struct TreeLocal {
@@ -2244,59 +2248,86 @@ fn scan_tree_file(
     scanner: &Scanner,
     opts: &Opts,
     path: &std::path::Path,
-    entry_len: Option<u64>,
     local: &mut TreeLocal,
 ) -> io::Result<bool> {
     let mut file = File::open(path)?;
-    // The walker's directory entry carries the size when the platform
-    // hands it out with the listing, which saves a stat per file.
-    let len = entry_len.map_or_else(|| file.metadata().map(|m| m.len()), Ok)?;
-    if len == 0 {
+    // No stat up front: most files fit the first read, so a file costs an
+    // open, a read, the read seeing its end, and a close. The buffer keeps
+    // its length across files (bytes past `filled` are stale), so it is
+    // never zeroed again.
+    if local.data.len() < TREE_FIRST_READ {
+        local.data.resize(TREE_FIRST_READ, 0);
+    }
+    let mut filled = read_some(&mut file, &mut local.data[..TREE_FIRST_READ])?;
+    if filled == TREE_FIRST_READ {
+        let len = file.metadata()?.len();
+        if len >= TREE_MMAP_MIN_BYTES {
+            // SAFETY: read-only mapping that lives for this scan only; a
+            // file truncated by another process during the scan is
+            // undefined, as for every mapped read.
+            if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+                #[cfg(unix)]
+                let _ = map.advise(memmap2::Advice::Sequential);
+                return scan_tree_data(scanner, opts, path, &map, true, local);
+            }
+        }
+        loop {
+            if filled == local.data.len() {
+                let grown = (local.data.len() * 2).max(len as usize + 1);
+                local.data.resize(grown, 0);
+            }
+            match read_some(&mut file, &mut local.data[filled..])? {
+                0 => break,
+                n => filled += n,
+            }
+        }
+    }
+    // The buffer is borrowed by the scan while its output goes to `text`.
+    let data = std::mem::take(&mut local.data);
+    let result = scan_tree_data(scanner, opts, path, &data[..filled], false, local);
+    local.data = data;
+    result
+}
+
+/// Fills `buf` from `file` until it is full or the file ends; returns the
+/// bytes read.
+fn read_some(file: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(filled)
+}
+
+/// Scans the contents of a tree file, unless empty or binary (a NUL byte
+/// within the first 8 KiB).
+fn scan_tree_data(
+    scanner: &Scanner,
+    opts: &Opts,
+    path: &std::path::Path,
+    data: &[u8],
+    mapped: bool,
+    local: &mut TreeLocal,
+) -> io::Result<bool> {
+    if data.is_empty() || memchr::memchr(0, &data[..data.len().min(BINARY_PROBE_BYTES)]).is_some() {
         return Ok(false);
     }
     let display = path.display().to_string();
     let source = display.strip_prefix("./").unwrap_or(&display);
-    let is_binary =
-        |data: &[u8]| memchr::memchr(0, &data[..data.len().min(BINARY_PROBE_BYTES)]).is_some();
-    if len >= TREE_MMAP_MIN_BYTES {
-        // SAFETY: read-only mapping that lives for this scan only; a file
-        // truncated by another process during the scan is undefined, as
-        // for every mapped read.
-        if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
-            #[cfg(unix)]
-            let _ = map.advise(memmap2::Advice::Sequential);
-            if is_binary(&map) {
-                return Ok(false);
-            }
-            return scan_buffer_sequential(
-                scanner,
-                opts,
-                Some(source),
-                &map,
-                true,
-                &mut local.text,
-                &mut local.state,
-            );
-        }
-    }
-    local.data.clear();
-    file.read_to_end(&mut local.data)?;
-    if is_binary(&local.data) {
-        return Ok(false);
-    }
-    // The buffer is borrowed by the scan while its output goes to `text`.
-    let data = std::mem::take(&mut local.data);
-    let result = scan_buffer_sequential(
+    scan_buffer_sequential(
         scanner,
         opts,
         Some(source),
-        &data,
-        false,
+        data,
+        mapped,
         &mut local.text,
         &mut local.state,
-    );
-    local.data = data;
-    result
+    )
 }
 
 /// Walks `roots` (files and directories) like ripgrep does, hidden entries,
@@ -2422,10 +2453,7 @@ fn tree_visitor<'a, 'b: 'a>(
             return ignore::WalkState::Continue;
         }
         let path = entry.path();
-        // A stat the walker already did (Windows lists sizes with the
-        // directory) is not repeated.
-        let entry_len = entry.metadata().ok().map(|m| m.len());
-        let done = match scan_tree_file(scanner, opts, path, entry_len, &mut local) {
+        let done = match scan_tree_file(scanner, opts, path, &mut local) {
             Ok(done) => done,
             Err(e) => {
                 eprintln!("squeeze: {}: {}", path.display(), e);
