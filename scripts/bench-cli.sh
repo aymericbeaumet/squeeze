@@ -343,10 +343,12 @@ for corpus in corpora + sections:
                 cells.append("n/a")
                 continue
             # The median wall time: on a busy machine a single slow run
-            # moves the mean far more than it moves the median.
-            ms = r["median"] * 1000
+            # moves the mean far more than it moves the median (hyperfine
+            # before 1.6 only reports the mean).
+            wall = r.get("median", r["mean"])
+            ms = wall * 1000
             cpu = (r["user"] + r["system"]) * 1000
-            mbs = size / r["median"] / 1048576
+            mbs = size / wall / 1048576
             count = counts.get(name, "?")
             cells.append(f"{ms:.0f} ms wall, {cpu:.0f} ms cpu ({mbs:.0f} MiB/s, {count} matches)")
         lines.append(f"| {task} | " + " | ".join(cells) + " |")
