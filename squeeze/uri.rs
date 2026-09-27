@@ -350,6 +350,16 @@ impl URI {
         {
             return None;
         }
+        // Lax mode without an allowlist: a scheme not followed by `//` must
+        // be registered. Decided here rather than after the parse, so
+        // `localhost:8080` costs one registry lookup.
+        if !self.strict
+            && self.schemes.is_empty()
+            && !input[colon_idx + 1..].starts_with(b"//")
+            && !is_registered_scheme(scheme)
+        {
+            return None;
+        }
         let scheme_config = SCHEMES_CONFIGS.get_ascii_case_insensitive(scheme);
 
         // "Self::Error", "io::Result", "db8::/32": in lax mode a second colon

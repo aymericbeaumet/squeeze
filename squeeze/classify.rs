@@ -144,6 +144,14 @@ pub(crate) struct Rules {
     pub(crate) cat_next_forbidden_b: [u8; 16],
     /// Exact start membership, for the scalar path and for tests.
     pub(crate) is_start: [bool; 256],
+    /// Row of each high-nibble row `8..=F` (entries `0..8` are 0), for
+    /// the NEON path.
+    pub(crate) rows_high: [u8; 16],
+    /// Exact start membership of high bytes for the NEON path: bit
+    /// `hi - 8` of `high_lo[lo]` is set when byte `hi:lo` starts a match,
+    /// and `high_hi[hi]` holds that bit alone.
+    pub(crate) high_lo: [u8; 16],
+    pub(crate) high_hi: [u8; 16],
 }
 
 /// Rows available to start bytes (row 0 means "no match starts here").
@@ -334,6 +342,9 @@ impl Rules {
             cat_prev_forbidden_b: [0xFF; 16],
             cat_next_forbidden_b: [0xFF; 16],
             is_start: [false; 256],
+            rows_high: [0; 16],
+            high_lo: [0; 16],
+            high_hi: [0; 16],
         };
         for (byte, prev, next) in items {
             let (prev, next) = (widen(prev), widen(next));
@@ -405,6 +416,17 @@ impl Rules {
             }
         }
         debug_assert!(row_allowed.len() <= MAX_ROWS);
+        for nibble in 8..16usize {
+            let bit = 1u8 << (nibble - 8);
+            rules.high_hi[nibble] = bit;
+            for lo in 0..16usize {
+                let row = rules.rows[nibble << 4 | lo];
+                if row != 0 {
+                    rules.rows_high[nibble] = row;
+                    rules.high_lo[lo] |= bit;
+                }
+            }
+        }
         for (i, allowed) in row_allowed.iter().enumerate() {
             rules.prev_forbidden_a[i + 1] = !allowed.prev_a;
             rules.next_forbidden_a[i + 1] = !allowed.next_a;
@@ -735,28 +757,14 @@ pub(crate) mod neon {
                         vld1q_u8(rows.add(at + 48)),
                     )
                 };
-                let mut high = [0u8; 16];
-                let mut high_lo = [0u8; 16];
-                let mut high_hi = [0u8; 16];
-                for (nibble, slot) in high.iter_mut().enumerate().skip(8) {
-                    let bit = 1u8 << (nibble - 8);
-                    high_hi[nibble] = bit;
-                    for (lo, mask) in high_lo.iter_mut().enumerate() {
-                        let row = rules.rows[nibble << 4 | lo];
-                        if row != 0 {
-                            *slot = row;
-                            *mask |= bit;
-                        }
-                    }
-                }
                 Tables {
                     cat_lo: vld1q_u8(CATEGORY_SETS.lo.as_ptr()),
                     cat_hi: vld1q_u8(CATEGORY_SETS.hi.as_ptr()),
                     rows_lo: quad(0),
                     rows_hi: quad(64),
-                    rows_high: vld1q_u8(high.as_ptr()),
-                    high_lo: vld1q_u8(high_lo.as_ptr()),
-                    high_hi: vld1q_u8(high_hi.as_ptr()),
+                    rows_high: vld1q_u8(rules.rows_high.as_ptr()),
+                    high_lo: vld1q_u8(rules.high_lo.as_ptr()),
+                    high_hi: vld1q_u8(rules.high_hi.as_ptr()),
                     prev_a: vld1q_u8(rules.prev_forbidden_a.as_ptr()),
                     next_a: vld1q_u8(rules.next_forbidden_a.as_ptr()),
                     prev_b: vld1q_u8(rules.prev_forbidden_b.as_ptr()),

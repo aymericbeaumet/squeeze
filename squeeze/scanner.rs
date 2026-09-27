@@ -1720,6 +1720,36 @@ impl Scanner {
             return;
         }
         let cur = input[pos];
+        let next_class = if pos + 1 < input.len() {
+            CTX_CLASS[input[pos + 1] as usize] as usize
+        } else {
+            CTX_NONE
+        };
+        let mut plain = plain;
+        let contextual = plain & self.context_mask & self.trigger[cur as usize];
+        if contextual != 0 {
+            // Trigger finders with a context table: the two previous bytes
+            // and the class of the next one reject most positions (every
+            // timestamp colon for the URI finder), so they go first.
+            let prev1 = if pos > 0 { input[pos - 1] } else { b' ' };
+            let prev2 = if pos > 1 { input[pos - 2] } else { b' ' };
+            let index = usize::from(prev2) << 8 | usize::from(prev1);
+            let mut bits = contextual;
+            while bits != 0 {
+                let i = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                let (pairs, exempt) = self.contexts[i]
+                    .as_ref()
+                    .expect("a context finder has a table");
+                if exempt & (1 << next_class) == 0 && pairs[index >> 6] & (1 << (index & 63)) == 0 {
+                    plain &= !(1u32 << i);
+                }
+            }
+            if plain == 0 {
+                probe.coarse_rejected(cur);
+                return;
+            }
+        }
         let prev_class = if pos > 0 {
             CTX_CLASS[input[pos - 1] as usize] as usize
         } else {
@@ -1730,37 +1760,10 @@ impl Scanner {
             probe.coarse_rejected(cur);
             return;
         }
-        let next_class = if pos + 1 < input.len() {
-            CTX_CLASS[input[pos + 1] as usize] as usize
-        } else {
-            CTX_NONE
-        };
         candidates &= self.gate_next[cur as usize][next_class];
         if candidates == 0 {
             probe.coarse_rejected(cur);
             return;
-        }
-        if candidates & self.context_mask != 0 {
-            // Trigger finders with a context table: the two previous bytes
-            // and the class of the next one decide before any call.
-            let prev1 = if pos > 0 { input[pos - 1] } else { b' ' };
-            let prev2 = if pos > 1 { input[pos - 2] } else { b' ' };
-            let index = usize::from(prev2) << 8 | usize::from(prev1);
-            let mut bits = candidates & self.context_mask;
-            while bits != 0 {
-                let i = bits.trailing_zeros() as usize;
-                bits &= bits - 1;
-                let (pairs, exempt) = self.contexts[i]
-                    .as_ref()
-                    .expect("a context finder has a table");
-                if exempt & (1 << next_class) == 0 && pairs[index >> 6] & (1 << (index & 63)) == 0 {
-                    candidates &= !(1u32 << i);
-                }
-            }
-            if candidates == 0 {
-                probe.coarse_rejected(cur);
-                return;
-            }
         }
         probe.candidate_position();
         self.invoke(input, pos, candidates, state, matches, probe, hint);
