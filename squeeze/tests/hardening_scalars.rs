@@ -425,12 +425,20 @@ fn phone_find_recovers_overlapping_number() {
 }
 
 #[test]
-fn phone_is_plain_scan_mode() {
+fn phone_dispatch_is_gated_and_bounded() {
+    // Dispatch mode with anchored attempts: each candidate costs a bounded
+    // amount of work (the longest E.164 form is under 50 bytes), and the
+    // gates keep interior digits from being candidates at all.
     let finder = Phone::default();
-    assert!(!finder.dispatchable(), "phone must be a scan-mode finder");
+    assert!(finder.dispatchable(), "phone runs in dispatch mode");
     assert!(!finder.triggerable());
-    // Default trait impl: try_at is inert.
-    assert!(finder.try_at(b"+14155551234", 0).is_none());
+    assert_eq!(Some(0..12), finder.try_at(b"+14155551234", 0));
+    assert_eq!(None, finder.try_at(b"x+14155551234", 1));
+    assert!(!finder.could_start_after(b'9', b'9'));
+    let rules = finder.run_rules();
+    let input = b"99999";
+    let runs = squeeze::Runs::at(input, 0);
+    assert!(!squeeze::RunRule::allow(&rules, b'9', &runs, input, 0));
 }
 
 #[test]

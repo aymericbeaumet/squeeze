@@ -1,3 +1,7 @@
+/// Longest textual IPv6 address: six 4-digit groups, five colons and an
+/// embedded dotted quad (`0000:0000:0000:0000:0000:ffff:255.255.255.255`).
+pub(crate) const MAX_IPV6_LEN: usize = 45;
+
 /// Validates an IPv6 address per RFC 4291 §2.2, matching the acceptance of
 /// `std::net::Ipv6Addr::from_str` (minus zone IDs, which callers strip):
 /// - at most one `::` compression marker, which must stand for at least one
@@ -6,6 +10,9 @@
 /// - an optional embedded IPv4 dotted quad as the last two groups (e.g.
 ///   `::ffff:192.168.1.1`, `64:ff9b::192.0.2.33`)
 pub(crate) fn is_valid_ipv6(bytes: &[u8]) -> bool {
+    if bytes.len() > MAX_IPV6_LEN {
+        return false;
+    }
     let Ok(s) = std::str::from_utf8(bytes) else {
         return false;
     };

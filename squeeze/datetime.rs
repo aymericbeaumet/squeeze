@@ -1,4 +1,4 @@
-use super::Finder;
+use super::{Anchor, ByteSet, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 #[derive(Default)]
@@ -190,6 +190,12 @@ impl Datetime {
 }
 
 impl Finder for Datetime {
+    fn line_agnostic(&self) -> bool {
+        // Matches never contain a line terminator and `\n`/`\r` end every
+        // walk exactly like the end of the input does.
+        true
+    }
+
     fn id(&self) -> &'static str {
         "datetime"
     }
@@ -200,6 +206,36 @@ impl Finder for Datetime {
 
     fn could_start_at(&self, byte: u8) -> bool {
         byte.is_ascii_digit()
+    }
+
+    fn could_start_after(&self, prev: u8, _cur: u8) -> bool {
+        !prev.is_ascii_digit()
+    }
+
+    fn could_continue_with(&self, _cur: u8, next: u8) -> bool {
+        next.is_ascii_digit()
+    }
+
+    fn anchor(&self) -> Option<Anchor> {
+        // `YYYY-MM-DD`: the dash after the month follows three bytes on.
+        Some(
+            Anchor::new(
+                ByteSet::from_bytes(b"-"),
+                ByteSet::from_fn(|b| b.is_ascii_digit()),
+            )
+            .confirm(b"-", &[3], b"-")
+            .back(4),
+        )
+    }
+
+    fn run_rules(&self) -> Vec<RunRule> {
+        // `YYYY-MM-`.
+        vec![
+            RunRule::new(RunClass::Digit, 4, 4)
+                .followed_by(b"-")
+                .then(RunClass::Digit, 2, 2)
+                .followed_by(b"-"),
+        ]
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {

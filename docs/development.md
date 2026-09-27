@@ -2,7 +2,7 @@
 
 ## Tooling
 
-`mise.toml` pins Rust 1.96.0 with rustfmt and Clippy. Run `mise trust`, then
+`mise.toml` pins Rust 1.98.1 with rustfmt and Clippy. Run `mise trust`, then
 `mise install`. The minimum supported Rust version remains 1.95; `mise run msrv`
 installs and tests that toolchain independently of the development pin.
 
@@ -12,11 +12,16 @@ builds the optimized CLI. Cargo tasks use `--locked` so CI and release builds
 use the committed dependency resolution. After changing crate versions or
 dependencies, refresh `Cargo.lock` with Cargo and review the diff.
 
+`squeeze/iana.rs` embeds the IANA root-zone TLDs and registered URI schemes
+that the domain and URI finders use to reject lookalikes such as `opts.all` or
+`key:value`. Refresh it with `mise run update-iana` (Python 3, network
+access) and review the diff; the registries change a few times a year.
+
 `mise run watch` and `mise run watch-check` use mise's watcher. The optional
 `outdated` and `audit` tasks require the corresponding Cargo extensions.
 The Makefile forwards existing commands to mise.
 
-Actions pins mise 2026.8.4, whose release assets cover all six platforms.
+Actions pins mise 2026.9.12, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).

@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+# Reproducible end-to-end benchmark of the squeeze CLI against other line
+# matchers on the same extraction tasks.
+#
+#   scripts/bench-cli.sh [--scale N] [--runs N] [--out DIR] [--quick]
+#                        [--big GIB] [--tree FILES]
+#
+# Corpora are generated deterministically by the library's `scanner` bench
+# (`--write-corpus`), each concatenated SCALE times (default 16, ~16 MiB per
+# corpus), plus a `mixed` corpus that joins them all. Every tool reads the
+# file directly with LC_ALL=C and hyperfine reports wall-clock and CPU time
+# after one warm-up run (the median wall time, the mean CPU time); on a busy
+# machine the CPU time is the more stable of the two. Output is piped away rather than sent to /dev/null, which grep
+# and ugrep detect to stop at the first match, and a tool exiting non-zero on
+# a corpus without matches is still timed.
+#
+# Tasks map a squeeze finder to the closest POSIX ERE the other tools accept.
+# The regexes are approximations of the finders' grammars: match counts are
+# recorded next to the timings so differences in what each tool extracts stay
+# visible. `five kinds` runs the five squeeze finders together against the
+# union of the five patterns; `everything` runs squeeze with every finder (20
+# kinds), which no regex tool can be asked to do in one pass.
+#
+# Three scale scenarios follow: `big`, the mixed corpus repeated to GIB GiB
+# (default 2, 0 to skip) and read from the file; `stdin`, the same bytes
+# piped through `cat`; and `tree`, a generated source tree of FILES files
+# (default 20000, 0 to skip) in nested directories with a `.gitignore`d
+# build directory as large again, walked by every tool that honours ignore
+# files, with an empty home directory so no global git excludes apply.
+# Scale scenarios time each tool with its default parallelism; `--quick`
+# skips them unless `--big` or `--tree` is given.
+#
+# Requires: cargo, hyperfine, python3. Optional: rg, ugrep, GNU grep (ggrep),
+# BSD grep (/usr/bin/grep). Missing tools are skipped.
+set -euo pipefail
+
+SCALE=16
+RUNS=5
+OUT=${BENCH_DIR:-/tmp/squeeze-bench}
+QUICK=0
+BIG_GIB=
+TREE_FILES=
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scale) SCALE=$2; shift 2 ;;
+    --runs) RUNS=$2; shift 2 ;;
+    --out) OUT=$2; shift 2 ;;
+    --quick) QUICK=1; shift ;;
+    --big) BIG_GIB=$2; shift 2 ;;
+    --tree) TREE_FILES=$2; shift 2 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+if [ "$QUICK" = 1 ]; then
+  BIG_GIB=${BIG_GIB:-0}
+  TREE_FILES=${TREE_FILES:-0}
+else
+  BIG_GIB=${BIG_GIB:-2}
+  TREE_FILES=${TREE_FILES:-20000}
+fi
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+for tool in cargo hyperfine python3; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
+done
+
+mkdir -p "$OUT/corpus" "$OUT/results"
+echo "== building release binary"
+(cd "$ROOT" && cargo build --release --locked -p squeeze-cli >/dev/null 2>&1)
+SQ="$ROOT/target/release/squeeze"
+
+echo "== generating corpora (scale $SCALE)"
+(cd "$ROOT" && cargo bench --locked -p squeeze --bench scanner -- \
+  --write-corpus "$OUT/corpus" --only logs,prose,source,jsonl,markdown,hexdense,unicode >/dev/null 2>&1)
+CORPORA=()
+for f in "$OUT"/corpus/*.txt; do
+  base=$(basename "$f" .txt)
+  big="$OUT/$base.txt"
+  : > "$big"
+  for _ in $(seq 1 "$SCALE"); do cat "$f" >> "$big"; done
+  CORPORA+=("$base")
+done
+cat "$OUT"/logs.txt "$OUT"/prose.txt "$OUT"/source.txt "$OUT"/jsonl.txt \
+  "$OUT"/markdown.txt "$OUT"/hexdense.txt "$OUT"/unicode.txt > "$OUT/mixed.txt"
+if [ "$QUICK" = 1 ]; then
+  BENCH_CORPORA=(mixed)
+else
+  BENCH_CORPORA=(mixed logs prose)
+fi
+
+# --- competitor detection ------------------------------------------------
+declare -a TOOLS=()   # name|command prefix (pattern and file appended)
+if command -v rg >/dev/null 2>&1; then
+  TOOLS+=("ripgrep|rg --no-config -oN --no-filename -e")
+fi
+if command -v ugrep >/dev/null 2>&1; then
+  TOOLS+=("ugrep|ugrep -oE")
+elif grep --version 2>/dev/null | head -1 | grep -q ugrep; then
+  TOOLS+=("ugrep|grep -oE")
+fi
+if command -v ggrep >/dev/null 2>&1; then
+  TOOLS+=("gnu grep|ggrep -oE")
+elif grep --version 2>/dev/null | head -1 | grep -q GNU; then
+  TOOLS+=("gnu grep|grep -oE")
+fi
+if [ -x /usr/bin/grep ] && ! /usr/bin/grep --version 2>/dev/null | head -1 | grep -qE 'GNU|ugrep'; then
+  TOOLS+=("bsd grep|/usr/bin/grep -oE")
+fi
+JOBS=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+
+# --- tasks ---------------------------------------------------------------
+# No quotes inside patterns: hyperfine -N splits commands without a shell.
+URL='https?://[^[:space:]<>)]+'
+EMAIL='[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]][[:alpha:]]+'
+IPV4='([0-9][0-9]?[0-9]?\.)[0-9][0-9]?[0-9]?\.[0-9][0-9]?[0-9]?\.[0-9][0-9]?[0-9]?'
+SHA256='[0-9a-f]{64}'
+UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+declare -a TASKS=(
+  "url|--url|$URL"
+  "email|--email|$EMAIL"
+  "ipv4|--ipv4|$IPV4"
+  "sha256|--sha256|$SHA256"
+  "uuid|--uuid|$UUID"
+  "five kinds|--url --email --ipv4 --sha256 --uuid|$URL|$EMAIL|$IPV4|$SHA256|$UUID"
+  "everything|--all|"
+)
+
+export LC_ALL=C
+echo "== tools: squeeze -j 1, squeeze (auto, $JOBS cores), $(printf '%s\n' "${TOOLS[@]}" | cut -d'|' -f1 | paste -sd, -)"
+
+for corpus in "${BENCH_CORPORA[@]}"; do
+  file="$OUT/$corpus.txt"
+  bytes=$(wc -c < "$file" | tr -d ' ')
+  for task in "${TASKS[@]}"; do
+    name=${task%%|*}
+    rest=${task#*|}
+    flags=${rest%%|*}
+    pattern=${rest#*|}
+    echo "== $corpus / $name ($bytes bytes)"
+    slug=${name// /-}
+    args=(--warmup 1 --runs "$RUNS" -N -i --output=pipe --export-json "$OUT/results/$corpus-$slug.json")
+    counts="$OUT/results/$corpus-$slug.counts"
+    : > "$counts"
+    # Single-threaded first (the like-for-like comparison), then the default
+    # (`--jobs auto`: every core for files of 8 MiB and more).
+    args+=(-n "squeeze -j 1" "$SQ $flags -j 1 $file")
+    "$SQ" $flags -j 1 "$file" | wc -l | tr -d ' ' | sed "s/^/squeeze -j 1 /" >> "$counts"
+    args+=(-n "squeeze" "$SQ $flags $file")
+    "$SQ" $flags "$file" | wc -l | tr -d ' ' | sed "s/^/squeeze /" >> "$counts"
+    if [ -n "$pattern" ]; then
+      for tool in "${TOOLS[@]}"; do
+        tname=${tool%%|*}
+        cmd=${tool#*|}
+        args+=(-n "$tname" "$cmd '$pattern' $file")
+        # shellcheck disable=SC2086
+        $cmd "$pattern" "$file" 2>/dev/null | wc -l | tr -d ' ' | sed "s/^/$tname /" >> "$counts" || true
+      done
+    fi
+    hyperfine "${args[@]}" >/dev/null 2>&1 || echo "   (hyperfine failed for $corpus/$name)"
+  done
+done
+
+# --- scale scenarios -------------------------------------------------------
+# name|squeeze flags|pattern|case-insensitive (1) for the regex tools
+declare -a SCALE_TASKS=(
+  "url|--url|$URL|0"
+  "uuid|--uuid|$UUID|0"
+  "ipv4|--ipv4|$IPV4|0"
+)
+SCALE_TOOLS=()   # name|command prefix, default parallelism
+for tool in "${TOOLS[@]}"; do
+  case "${tool%%|*}" in
+    ripgrep|ugrep|"gnu grep") SCALE_TOOLS+=("$tool") ;;
+  esac
+done
+SCALE_SECTIONS=()
+SCALE_RUNS=$(( RUNS < 5 ? RUNS : 5 ))
+
+# Times one scale task. `$3` is the squeeze command; `$4` a template where
+# `{}` stands for a regex tool and its pattern `$5` (case-insensitive when
+# `$6` is 1); `$7` is 1 when the commands need a shell (pipes).
+time_scale() {
+  local section=$1 name=$2 sq_cmd=$3 template=$4 pattern=$5 ci=$6 shell=$7
+  local slug="$section-${name// /-}"
+  local counts="$OUT/results/$slug.counts"
+  # macOS drops pages read once early: a walk right after other tasks can
+  # read the tree from disk, so the tree gets more warm-up runs.
+  local warmup=1
+  if [ "$section" = tree ]; then warmup=3; fi
+  local args=(--warmup "$warmup" --runs "$SCALE_RUNS" -i --output=pipe --export-json "$OUT/results/$slug.json")
+  if [ "$shell" = 0 ]; then args+=(-N); fi
+  : > "$counts"
+  echo "== $section / $name"
+  # Match counts: through a shell like hyperfine when the command pipes,
+  # else split into words without globbing, as hyperfine -N does.
+  run() { if [ "$shell" = 1 ]; then bash -c "$1"; else (set -f; $1); fi; }
+  args+=(-n "squeeze" "$sq_cmd")
+  run "$sq_cmd" | wc -l | tr -d ' ' | sed "s/^/squeeze /" >> "$counts"
+  local tool tname cmd full
+  for tool in "${SCALE_TOOLS[@]}"; do
+    tname=${tool%%|*}
+    cmd=${tool#*|}
+    if [ "$ci" = 1 ]; then
+      # Before ripgrep's trailing -e, which takes the pattern next.
+      case "$cmd" in
+        *" -e") cmd="${cmd% -e} -i -e" ;;
+        *) cmd="$cmd -i" ;;
+      esac
+    fi
+    full=${template//\{\}/$cmd $pattern}
+    args+=(-n "$tname" "$full")
+    run "$full" 2>/dev/null | wc -l | tr -d ' ' | sed "s/^/$tname /" >> "$counts" || true
+  done
+  hyperfine "${args[@]}" >/dev/null 2>&1 || echo "   (hyperfine failed for $section/$name)"
+}
+
+if [ "$BIG_GIB" != 0 ]; then
+  big="$OUT/big.txt"
+  want=$(( BIG_GIB * 1073741824 ))
+  if [ ! -f "$big" ] || [ "$(wc -c < "$big" | tr -d ' ')" -lt "$want" ]; then
+    echo "== generating a $BIG_GIB GiB file"
+    : > "$big"
+    while [ "$(wc -c < "$big" | tr -d ' ')" -lt "$want" ]; do cat "$OUT/mixed.txt" >> "$big"; done
+  fi
+  for task in "${SCALE_TASKS[@]}"; do
+    IFS='|' read -r name flags pattern ci <<< "$task"
+    time_scale big "$name" "$SQ $flags $big" "{} $big" "$pattern" "$ci" 0
+    time_scale stdin "$name" "cat $big | $SQ $flags" "cat $big | {}" "'$pattern'" "$ci" 1
+  done
+  SCALE_SECTIONS+=(big stdin)
+fi
+
+if [ "$TREE_FILES" != 0 ]; then
+  tree="$OUT/tree"
+  if [ ! -f "$tree/.complete-$TREE_FILES" ]; then
+    echo "== generating a tree of $TREE_FILES files"
+    rm -rf "$tree"
+    python3 - "$OUT" "$tree" "$TREE_FILES" <<'EOF'
+import os, sys
+out, tree, files = sys.argv[1], sys.argv[2], int(sys.argv[3])
+sources = [open(os.path.join(out, "corpus", f"{c}.txt"), "rb").read()
+           for c in ("source", "logs", "markdown", "jsonl", "prose")]
+exts = ["rs", "log", "md", "json", "txt"]
+os.makedirs(os.path.join(tree, ".git"))
+with open(os.path.join(tree, ".gitignore"), "w") as f:
+    f.write("target/\n")
+def write(root, count):
+    for i in range(count):
+        kind = i % len(sources)
+        data = sources[kind]
+        size = 2048 + (i * 7919) % 14336
+        start = data.find(b"\n", (i * 104729) % max(1, len(data) - size)) + 1
+        cut = data.rfind(b"\n", start, start + size) + 1 or start + size
+        d = os.path.join(root, f"d{i % 97:02d}", f"e{(i // 97) % 23:02d}")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"f{i}.{exts[kind]}"), "wb") as f:
+            f.write(data[start:cut])
+write(os.path.join(tree, "src"), files)
+write(os.path.join(tree, "target"), files)
+EOF
+    touch "$tree/.complete-$TREE_FILES"
+  fi
+  declare -a TREE_TASKS=(
+    "url|--url|$URL|0"
+    "todo|--todo|todo|1"
+  )
+  # Global git excludes (a `*.log` in ~/.gitignore, say) would make the
+  # tools that read them skip files the others search.
+  mkdir -p "$OUT/home/.config"
+  saved_home=$HOME
+  saved_xdg=${XDG_CONFIG_HOME-}
+  had_xdg=${XDG_CONFIG_HOME+1}
+  export HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config"
+  saved=("${SCALE_TOOLS[@]}")
+  SCALE_TOOLS=()
+  for tool in "${saved[@]}"; do
+    case "${tool%%|*}" in
+      ripgrep) SCALE_TOOLS+=("$tool") ;;
+      ugrep) SCALE_TOOLS+=("ugrep|${tool#*|} -r --ignore-files") ;;
+    esac
+  done
+  for task in "${TREE_TASKS[@]}"; do
+    IFS='|' read -r name flags pattern ci <<< "$task"
+    time_scale tree "$name" "$SQ $flags $tree" "{} $tree" "$pattern" "$ci" 0
+  done
+  SCALE_TOOLS=("${saved[@]}")
+  export HOME="$saved_home"
+  if [ -n "$had_xdg" ]; then export XDG_CONFIG_HOME="$saved_xdg"; else unset XDG_CONFIG_HOME; fi
+  SCALE_SECTIONS+=(tree)
+fi
+
+echo "== summary"
+python3 - "$OUT" "${BENCH_CORPORA[@]}" -- "${SCALE_SECTIONS[@]}" <<'EOF'
+import json, os, sys
+out = sys.argv[1]
+split = sys.argv.index("--")
+corpora = sys.argv[2:split]
+sections = sys.argv[split + 1:]
+tasks = ["url", "email", "ipv4", "sha256", "uuid", "five kinds", "everything", "todo"]
+def size_of(name):
+    if name in ("big", "stdin"):
+        return os.path.getsize(os.path.join(out, "big.txt"))
+    if name == "tree":
+        total = 0
+        for root, _, files in os.walk(os.path.join(out, "tree", "src")):
+            total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+        return total
+    return os.path.getsize(os.path.join(out, f"{name}.txt"))
+lines = []
+for corpus in corpora + sections:
+    size = size_of(corpus)
+    unit = f"{size / 1073741824:.0f} GiB" if size >= 1073741824 else f"{size / 1048576:.0f} MiB"
+    lines.append(f"\n### {corpus} ({unit})\n")
+    header = None
+    for task in tasks:
+        path = os.path.join(out, "results", f"{corpus}-{task.replace(' ', '-')}.json")
+        if not os.path.exists(path):
+            continue
+        data = json.load(open(path))
+        counts = {}
+        cpath = os.path.join(out, "results", f"{corpus}-{task.replace(' ', '-')}.counts")
+        if os.path.exists(cpath):
+            for line in open(cpath):
+                parts = line.rsplit(" ", 1)
+                if len(parts) == 2:
+                    counts[parts[0]] = parts[1].strip()
+        results = {r["command"]: r for r in data["results"]}
+        if header is None:
+            # Columns: every tool seen in any task of this corpus, in order.
+            header = []
+            for t in tasks:
+                tp = os.path.join(out, "results", f"{corpus}-{t.replace(' ', '-')}.json")
+                if os.path.exists(tp):
+                    for r in json.load(open(tp))["results"]:
+                        if r["command"] not in header:
+                            header.append(r["command"])
+            lines.append("| task | " + " | ".join(header) + " |")
+            lines.append("|---|" + "---|" * len(header))
+        cells = []
+        for name in header:
+            r = results.get(name)
+            if r is None:
+                cells.append("n/a")
+                continue
+            # The median wall time: on a busy machine a single slow run
+            # moves the mean far more than it moves the median (hyperfine
+            # before 1.6 only reports the mean).
+            wall = r.get("median", r["mean"])
+            ms = wall * 1000
+            cpu = (r["user"] + r["system"]) * 1000
+            mbs = size / wall / 1048576
+            count = counts.get(name, "?")
+            cells.append(f"{ms:.0f} ms wall, {cpu:.0f} ms cpu ({mbs:.0f} MiB/s, {count} matches)")
+        lines.append(f"| {task} | " + " | ".join(cells) + " |")
+text = "\n".join(lines) + "\n"
+open(os.path.join(out, "summary.md"), "w").write(text)
+print(text)
+EOF
+echo "written to $OUT/summary.md (raw hyperfine JSON in $OUT/results)"

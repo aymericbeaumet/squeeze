@@ -12,7 +12,7 @@
 //! Documents nested deeper than `MAX_DEPTH` (256 levels) are refused outright:
 //! they yield no match at all rather than an arbitrary inner fragment.
 
-use super::Finder;
+use super::{Finder, Memo};
 use std::ops::Range;
 
 const MAX_DEPTH: usize = 256;
@@ -278,16 +278,43 @@ impl Finder for Json {
     }
 
     fn try_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
+        self.try_at_memo(input, pos, &mut Memo::default())
+    }
+
+    fn try_at_memo(&self, input: &[u8], pos: usize, memo: &mut Memo) -> Option<Range<usize>> {
         if !matches!(input[pos], b'{' | b'[') {
             return None;
         }
-        let end = parse_value(input, pos, 0).ok()?;
-        // Keep parity with `find`: no inner fragments of too-deep
-        // documents.
-        if inside_too_deep_run(input, pos) {
+        // Every bracket of a run whose first bracket is too deep yields
+        // nothing (`find` skips the whole run), so remember the run instead
+        // of re-parsing hundreds of levels from each of its brackets.
+        if memo.covers(pos) {
             return None;
         }
-        Some(pos..end)
+        let too_deep = match parse_value(input, pos, 0) {
+            Ok(end) => {
+                // Keep parity with `find`: no inner fragments of too-deep
+                // documents.
+                if !inside_too_deep_run(input, pos) {
+                    return Some(pos..end);
+                }
+                true
+            }
+            Err(ParseError::TooDeep) => true,
+            Err(ParseError::Syntax) => false,
+        };
+        if too_deep {
+            let mut start = pos;
+            while start > 0 && is_open_or_ws(input[start - 1]) {
+                start -= 1;
+            }
+            *memo = Memo {
+                start,
+                end: skip_open_run(input, pos),
+                aux: 0,
+            };
+        }
+        None
     }
 
     fn find(&self, s: &str) -> Option<Range<usize>> {

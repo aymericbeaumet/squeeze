@@ -117,7 +117,6 @@ fn unmatched_close_paren_still_terminates() {
             "[link](http://ex.com/a_(b)_c) tail",
             "http://ex.com/a_(b)_c",
         ),
-        ("[link](foobar:)", "foobar:"),
     ];
     for (input, expected) in cases {
         assert_eq!(Some(expected), first(&f, input), "{input}");
@@ -345,9 +344,26 @@ fn interior_punctuation_is_untouched() {
 }
 
 #[test]
-fn scheme_colon_survives_trimming() {
+fn bare_scheme_is_prose_in_lax_mode() {
     let f = lax();
-    for input in ["foobar:", " foobar: ", "[link](foobar:)"] {
+    for input in [
+        "foobar:",
+        " foobar: ",
+        "[link](foobar:)",
+        "Currently supported:",
+        "TODO: fix this",
+        "vim: set ts=4 sw=4 et:",
+        "mailto:",
+        "mailto:.",
+    ] {
+        assert_eq!(None, first(&f, input), "{input}");
+    }
+}
+
+#[test]
+fn strict_mode_keeps_bare_schemes() {
+    let f = strict();
+    for input in ["foobar:", " foobar: "] {
         assert_eq!(Some("foobar:"), first(&f, input), "{input}");
     }
 }
@@ -485,6 +501,83 @@ fn common_scheme_forms_still_match() {
 }
 
 // ============================================================================
+// Bug 9: colon constructs from code and config are not URIs (lax mode only)
+// ============================================================================
+
+#[test]
+fn double_colon_paths_are_not_uris() {
+    let f = lax();
+    for input in [
+        "Self::Error",
+        "io::Result<()>",
+        "Box::new(f)",
+        "std::collections::HashMap",
+        "2001:db8::/32",
+        "a::b",
+    ] {
+        assert_eq!(None, first(&f, input), "{input}");
+    }
+}
+
+#[test]
+fn opaque_uris_need_a_registered_scheme() {
+    let f = lax();
+    for input in [
+        "${VAR:-default}",
+        "./src/main.rs:42:10",
+        "key:value",
+        "C:/Users/me",
+        "localhost:8080",
+        "javascript:void(0)",
+    ] {
+        assert_eq!(None, first(&f, input), "{input}");
+    }
+    for input in [
+        "mailto:fred@example.com",
+        "MAILTO:fred@example.com",
+        "tel:+1-816-555-1212",
+        "urn:isbn:0451450523",
+        "data:text/plain;base64,SGVsbG8=",
+        "magnet:?xt=urn:btih:c12fe1c06bba254a9dc9f519b335aa7c1367a88a",
+        "spotify:track:6rqhFgbbKwnb9MLmUQDhG6",
+        "geo:37.786971,-122.399677",
+        "view-source:https://example.com/",
+        "file:/etc/hosts",
+    ] {
+        assert_eq!(Some(input), first(&f, input), "{input}");
+    }
+}
+
+#[test]
+fn hierarchical_uris_accept_any_scheme() {
+    let f = lax();
+    for (input, expected) in [
+        ("foo://bar/baz", "foo://bar/baz"),
+        ("open vscode://file/x.rs now", "vscode://file/x.rs"),
+        ("s3://bucket/key", "s3://bucket/key"),
+        ("jdbc:postgresql://db/app", "postgresql://db/app"),
+    ] {
+        assert_eq!(Some(expected), first(&f, input), "{input}");
+    }
+}
+
+#[test]
+fn scheme_filter_bypasses_the_registry() {
+    let mut f = lax();
+    f.add_scheme("foo");
+    assert_eq!(Some("foo:bar"), first(&f, "see foo:bar"));
+    assert_eq!(None, first(&f, "see foo: bar"));
+}
+
+#[test]
+fn strict_mode_keeps_rfc_opaque_uris() {
+    let f = strict();
+    for input in ["key:value", "Self::Error", "C:/Users/me"] {
+        assert_eq!(Some(input), first(&f, input), "{input}");
+    }
+}
+
+// ============================================================================
 // Scanner-vs-find() parity on the fixed grammars
 // ============================================================================
 
@@ -509,6 +602,9 @@ fn scanner_and_find_loop_agree_on_fixed_grammars() {
         "A:#A:.#",
         "http://x.com:80foo: z",
         "http://[::1]x: z",
+        "Self::Error and ${VAR:-default} key:value mailto:a@b.co",
+        "vim: set ts=4 sw=4 et:",
+        "jdbc:postgresql://db/app 2001:db8::/32",
     ] {
         let mut expected = find_all(&f, input);
         let mut got = scan_all(input);
