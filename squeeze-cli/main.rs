@@ -1099,6 +1099,13 @@ fn byte_column(line: &str, byte_pos: usize) -> usize {
 
 /// Only locations and structured formats print the column, so the char-count
 /// walk over the line prefix in [`byte_column`] is skipped everywhere else.
+/// Whether any output shows line numbers; when none does, newlines are
+/// never counted (a whole pass over the input, serial in the parallel
+/// pipeline).
+fn output_needs_line(opts: &Opts) -> bool {
+    output_needs_column(opts)
+}
+
 fn output_needs_column(opts: &Opts) -> bool {
     let needs = |format| match format {
         Format::Text => opts.with_location,
@@ -1442,20 +1449,23 @@ fn emit_line_matches(
 struct LineCounter {
     counted_upto: usize,
     newlines: usize,
+    /// Whether the output shows line numbers at all.
+    enabled: bool,
 }
 
 impl LineCounter {
-    fn new(first_line: usize) -> Self {
+    fn new(opts: &Opts, first_line: usize) -> Self {
         LineCounter {
             counted_upto: 0,
             newlines: first_line - 1,
+            enabled: output_needs_line(opts),
         }
     }
 
     /// 1-based number of the line starting at `line_start` in `data`.
     #[inline]
     fn number(&mut self, data: &[u8], line_start: usize) -> usize {
-        if line_start > self.counted_upto {
+        if self.enabled && line_start > self.counted_upto {
             self.newlines +=
                 memchr::memchr_iter(b'\n', &data[self.counted_upto..line_start]).count();
             self.counted_upto = line_start;
@@ -1533,7 +1543,7 @@ fn scan_block(
         }
         return Ok(stopped && stop);
     }
-    let mut counter = LineCounter::new(first_line);
+    let mut counter = LineCounter::new(opts, first_line);
     let mut kept = Vec::new();
     let stopped = scanner.scan_buffer(text, |start, end, matches| {
         let line_number = counter.number(block, start);
@@ -1621,7 +1631,11 @@ fn scan_lines_sequential(
         // Every complete line that is buffered, as one block.
         let block = lines.complete_lines();
         if !block.is_empty() {
-            let count = memchr::memchr_iter(b'\n', block).count();
+            let count = if output_needs_line(opts) {
+                memchr::memchr_iter(b'\n', block).count()
+            } else {
+                0
+            };
             let len = block.len();
             if scan_block(
                 scanner,
@@ -1705,7 +1719,9 @@ fn scan_buffer_sequential(
         )? {
             return Ok(true);
         }
-        line_number += memchr::memchr_iter(b'\n', block).count();
+        if output_needs_line(opts) {
+            line_number += memchr::memchr_iter(b'\n', block).count();
+        }
         pos = window_end;
     }
     Ok(false)
@@ -1816,7 +1832,7 @@ fn scan_chunk(
     } else if valid {
         // SAFETY: `validate_block` accepted the whole chunk.
         let text = unsafe { std::str::from_utf8_unchecked(data) };
-        let mut counter = LineCounter::new(chunk.first_line);
+        let mut counter = LineCounter::new(opts, chunk.first_line);
         let mut kept = Vec::new();
         scanner.scan_buffer(text, |start, end, matches| {
             let line_number = counter.number(data, start);
@@ -2016,8 +2032,11 @@ fn scan_lines_parallel(
             };
             carry.extend_from_slice(&buf[cut..len]);
             buf.truncate(cut);
-            let newlines = memchr::memchr_iter(b'\n', &buf).count();
-            let line_count = newlines + usize::from(!buf.ends_with(b"\n"));
+            let line_count = if output_needs_line(opts) {
+                memchr::memchr_iter(b'\n', &buf).count() + usize::from(!buf.ends_with(b"\n"))
+            } else {
+                0
+            };
             let chunk = Chunk {
                 index,
                 first_line,
@@ -2061,8 +2080,11 @@ fn scan_buffer_parallel<'a>(
             }
         };
         let slice = &data[pos..end];
-        let newlines = memchr::memchr_iter(b'\n', slice).count();
-        let line_count = newlines + usize::from(!slice.ends_with(b"\n"));
+        let line_count = if output_needs_line(opts) {
+            memchr::memchr_iter(b'\n', slice).count() + usize::from(!slice.ends_with(b"\n"))
+        } else {
+            0
+        };
         let chunk = Chunk {
             index,
             first_line,
