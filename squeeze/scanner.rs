@@ -1,4 +1,5 @@
 use crate::classify::{self, BLOCK, Backend, CAT_NONE, CATEGORY, Lanes, Rules};
+use crate::search::{self, NibbleSet};
 use crate::{Anchor, ByteSet, Finder, Memo, RunCache, RunHint, RunRule, Runs};
 use std::fmt;
 use std::mem::MaybeUninit;
@@ -861,6 +862,10 @@ struct Pass {
     whole: bool,
     /// Coarse rules of a `Search::Blocks` pass.
     rules: Option<Rules>,
+    /// Bytes that may precede a searched byte where a finder of a `memchr`
+    /// pass without anchors can start (a superset; `\n` always, as a line
+    /// start has no previous byte), or `None` when every byte may.
+    prev: Option<NibbleSet>,
     /// Every dispatch finder of a `Search::Blocks` pass that can start at a
     /// hex digit needs a hex run of at least this many bytes (0 when one
     /// needs less): the block stage drops shorter runs before any per-lane
@@ -1337,9 +1342,58 @@ impl Scanner {
                 .filter(|&i| mask & (1u32 << i) != 0)
                 .all(|i| finders[i].line_agnostic())
         };
+        // Bytes before a searched byte where a finder may start: the
+        // finder's own gate, and the pairs of its context table when no
+        // next byte exempts a trigger from it.
+        let prev_filter = |bytes: &[u8], mask: u32| -> Option<NibbleSet> {
+            let mut members = [false; 256];
+            members[usize::from(b'\n')] = true;
+            for (i, f) in finders.iter().enumerate() {
+                if mask & (1u32 << i) == 0 {
+                    continue;
+                }
+                let context = match &contexts[i] {
+                    Some((pairs, 0)) => {
+                        let mut allowed = [false; 256];
+                        for (word, &bits) in pairs.iter().enumerate() {
+                            for bit in 0..64 {
+                                if bits & (1 << bit) != 0 {
+                                    allowed[(word * 64 + bit) & 255] = true;
+                                }
+                            }
+                        }
+                        Some(allowed)
+                    }
+                    _ => None,
+                };
+                for &cur in bytes {
+                    let starts = if f.dispatchable() {
+                        f.could_start_at(cur)
+                    } else {
+                        f.triggerable() && f.could_trigger_at(cur)
+                    };
+                    if !starts {
+                        continue;
+                    }
+                    for prev in 0..=255u8 {
+                        if f.could_start_after(prev, cur)
+                            && context.is_none_or(|allowed| allowed[usize::from(prev)])
+                        {
+                            members[usize::from(prev)] = true;
+                        }
+                    }
+                }
+            }
+            NibbleSet::new(&members)
+        };
         let mut passes = Vec::new();
         for (mut bytes, mask, anchored) in groups {
             bytes.sort_unstable();
+            let prev = if anchored == 0 {
+                prev_filter(&bytes, mask)
+            } else {
+                None
+            };
             let search = match bytes.as_slice() {
                 [a] => Search::One(*a),
                 [a, b] => Search::Two(*a, *b),
@@ -1352,6 +1406,7 @@ impl Scanner {
                 anchored,
                 whole: whole_for(mask),
                 rules: None,
+                prev,
                 min_hex_run: 0,
             });
         }
@@ -1362,6 +1417,7 @@ impl Scanner {
                 anchored: 0,
                 whole: whole_for(block_mask),
                 rules: Some(build_rules(block_mask)),
+                prev: None,
                 min_hex_run: min_hex_run(block_mask),
             });
         }
@@ -2132,29 +2188,15 @@ impl Scanner {
     #[inline(always)]
     fn walk_pass<S: Sink>(&self, pass: &Pass, input: &[u8], sink: &mut S) {
         match pass.search {
-            Search::One(a) => {
-                for pos in memchr::memchr_iter(a, input) {
-                    sink.candidate(self, pass, pos, None);
-                    if sink.stopped() {
-                        return;
-                    }
-                }
-            }
-            Search::Two(a, b) => {
-                for pos in memchr::memchr2_iter(a, b, input) {
-                    sink.candidate(self, pass, pos, None);
-                    if sink.stopped() {
-                        return;
-                    }
-                }
-            }
-            Search::Three(a, b, c) => {
-                for pos in memchr::memchr3_iter(a, b, c, input) {
-                    sink.candidate(self, pass, pos, None);
-                    if sink.stopped() {
-                        return;
-                    }
-                }
+            Search::One(_) | Search::Two(..) | Search::Three(..) => {
+                // One call site, so the probe inlines once.
+                let (bytes, count) = match pass.search {
+                    Search::One(a) => ([a, a, a], 1),
+                    Search::Two(a, b) => ([a, b, b], 2),
+                    Search::Three(a, b, c) => ([a, b, c], 3),
+                    Search::Blocks => unreachable!("handled below"),
+                };
+                self.search(pass, &bytes[..count], input, sink);
             }
             Search::Blocks => {
                 if input.len() < BLOCK {
@@ -2188,6 +2230,15 @@ impl Scanner {
                 }
             }
         }
+    }
+
+    #[inline(always)]
+    fn search<S: Sink>(&self, pass: &Pass, bytes: &[u8], input: &[u8], sink: &mut S) {
+        let engine = search::Engine::of(self.backend);
+        search::search(engine, bytes, pass.prev.as_ref(), input, |pos| {
+            sink.candidate(self, pass, pos, None);
+            sink.stopped()
+        });
     }
 
     #[cfg(target_arch = "x86_64")]

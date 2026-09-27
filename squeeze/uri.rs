@@ -107,27 +107,15 @@ impl SchemeConfig {
     }
 }
 
-struct SchemeConfigs(phf::Map<&'static str, SchemeConfig>);
-
-impl SchemeConfigs {
-    fn get(&self, key: &str) -> SchemeConfig {
-        if let Some(sc) = self.0.get(key) {
-            *sc
-        } else {
-            SchemeConfig::default()
-        }
-    }
-
-    fn get_ascii_case_insensitive(&self, key: &str) -> SchemeConfig {
-        if key.eq_ignore_ascii_case("ftp") {
-            self.get("ftp")
-        } else if key.eq_ignore_ascii_case("http") {
-            self.get("http")
-        } else if key.eq_ignore_ascii_case("https") {
-            self.get("https")
-        } else {
-            SchemeConfig::default()
-        }
+/// Per-scheme parsing rules, ASCII case ignored.
+fn scheme_config(scheme: &str) -> SchemeConfig {
+    if ["ftp", "http", "https"]
+        .iter()
+        .any(|s| scheme.eq_ignore_ascii_case(s))
+    {
+        SchemeConfig(DISALLOW_EMPTY_HOST)
+    } else {
+        SchemeConfig::default()
     }
 }
 
@@ -164,22 +152,10 @@ fn can_end_registered_scheme(prev2: u8, prev1: u8) -> bool {
 }
 
 fn is_registered_scheme(scheme: &str) -> bool {
-    let mut buf = [0u8; MAX_SCHEME_LEN];
-    let Some(lower) = buf.get_mut(..scheme.len()) else {
-        return false;
-    };
-    lower.copy_from_slice(scheme.as_bytes());
-    lower.make_ascii_lowercase();
-    std::str::from_utf8(lower).is_ok_and(|s| crate::iana::URI_SCHEMES.contains(s))
+    crate::registry::uri_schemes().contains(scheme.as_bytes())
 }
 
 const DISALLOW_EMPTY_HOST: u8 = 1 << 0;
-
-static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
-    "ftp" => SchemeConfig(DISALLOW_EMPTY_HOST),
-    "http" => SchemeConfig(DISALLOW_EMPTY_HOST),
-    "https" => SchemeConfig(DISALLOW_EMPTY_HOST),
-});
 
 /// A finder that extracts URIs from text according to RFC 3986.
 ///
@@ -199,6 +175,8 @@ static SCHEMES_CONFIGS: SchemeConfigs = SchemeConfigs(phf::phf_map! {
 #[derive(Default)]
 pub struct URI {
     schemes: Vec<String>,
+    /// Last bytes of the allowlisted schemes, a 256-bit set.
+    scheme_ends: [u64; 4],
     /// When `true`, strictly follows RFC 3986: any scheme matches and
     /// trailing `'`, `)`, and punctuation are kept.
     /// When `false` (default), applies the text-extraction heuristics above.
@@ -260,18 +238,30 @@ impl Finder for URI {
     }
 
     fn has_trigger_context(&self) -> bool {
-        // Lax mode without an allowlist rejects most colons from the two
-        // bytes before them; the scanner tabulates that once.
-        !self.strict && self.schemes.is_empty()
+        // An allowlisted scheme, or in lax mode a registered one unless `//`
+        // follows, ends right before the colon: the two bytes before it
+        // reject most colons, and the scanner tabulates that once.
+        !self.strict || !self.schemes.is_empty()
     }
 
-    // Both mirror the first test of `try_at_colon`.
+    // Both mirror the first tests of `try_at_colon`.
     fn trigger_context(&self, prev2: u8, prev1: u8) -> bool {
-        self.strict || !self.schemes.is_empty() || can_end_registered_scheme(prev2, prev1)
+        if !self.schemes.is_empty() {
+            let (prev2, prev1) = (prev2.to_ascii_lowercase(), prev1.to_ascii_lowercase());
+            if self.scheme_ends[usize::from(prev1 >> 6)] & (1 << (prev1 & 63)) == 0 {
+                return false;
+            }
+            return self.schemes.iter().any(|s| match s.as_bytes() {
+                [] => false,
+                [only] => *only == prev1,
+                [.., a, b] => *a == prev2 && *b == prev1,
+            });
+        }
+        self.strict || can_end_registered_scheme(prev2, prev1)
     }
 
     fn trigger_context_exempt(&self, next: Option<u8>) -> bool {
-        next == Some(b'/')
+        self.schemes.is_empty() && next == Some(b'/')
     }
 
     fn try_trigger_at(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
@@ -314,6 +304,9 @@ impl URI {
     /// ```
     pub fn add_scheme(&mut self, s: &str) {
         let lower = s.to_lowercase();
+        if let Some(&last) = lower.as_bytes().last() {
+            self.scheme_ends[usize::from(last >> 6)] |= 1 << (last & 63);
+        }
         if let Err(pos) = self.schemes.binary_search(&lower) {
             self.schemes.insert(pos, lower);
         }
@@ -360,7 +353,7 @@ impl URI {
         {
             return None;
         }
-        let scheme_config = SCHEMES_CONFIGS.get_ascii_case_insensitive(scheme);
+        let scheme_config = scheme_config(scheme);
 
         // "Self::Error", "io::Result", "db8::/32": in lax mode a second colon
         // marks a code path or an IPv6 tail, not a URI.

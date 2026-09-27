@@ -29,6 +29,9 @@ fn is_known_tld(s: &[u8]) -> bool {
     if !looks_like_tld(s) {
         return false;
     }
+    if crate::registry::tlds().contains(s) {
+        return true;
+    }
     let mut buf = [0u8; 24];
     let lower = &mut buf[..s.len()];
     lower.copy_from_slice(s);
@@ -36,11 +39,10 @@ fn is_known_tld(s: &[u8]) -> bool {
     let Ok(tld) = std::str::from_utf8(lower) else {
         return false;
     };
-    crate::iana::TLDS.contains(tld)
-        || matches!(
-            tld,
-            "alt" | "example" | "internal" | "invalid" | "local" | "localhost" | "onion" | "test"
-        )
+    matches!(
+        tld,
+        "alt" | "example" | "internal" | "invalid" | "local" | "localhost" | "onion" | "test"
+    )
 }
 
 /// True when the byte immediately before `pos` ends a two-byte UTF-8

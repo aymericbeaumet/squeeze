@@ -791,7 +791,21 @@ fn dispatch_finders() -> Vec<Box<dyn Finder>> {
             strict.strict = true;
             strict
         }),
+        Box::new(allowlisted_uri(false)),
+        Box::new(allowlisted_uri(true)),
     ]
+}
+
+/// The `--url` allowlist plus a one-letter scheme and one ending in a digit.
+fn allowlisted_uri(strict: bool) -> squeeze::uri::URI {
+    let mut uri = squeeze::uri::URI::default();
+    uri.strict = strict;
+    for scheme in [
+        "data", "ftp", "ftps", "http", "https", "mailto", "sftp", "ws", "wss", "x", "s3",
+    ] {
+        uri.add_scheme(scheme);
+    }
+    uri
 }
 
 /// The scanner skips `try_at` wherever a gate says no, so a gate that is
@@ -883,6 +897,10 @@ fn dispatch_gates_hold_on_shaped_tokens() {
         "123-456-٧٨٩٠",
         "123-456-78٩0",
         "550e8400-e29b-41d4-a716-446655440000",
+        "see https://x.example/a and HTTP://Y.example",
+        "mailto:a@b.example, data:text/plain,hi, x:y s3:bucket/key",
+        "wss://h:443 ws://h sftp://u@h ftps://h ftp://h",
+        "at 10:30:00 TODO: localhost:8080 urn:isbn:1 a+b:c 1a:b",
     ] {
         assert_gates_agree(&dispatch_finders(), line);
     }
@@ -908,6 +926,13 @@ proptest! {
     #[test]
     fn dispatch_gates_never_reject_a_match_on_word_tokens(
         s in "( |:|\\(|\\)|-|_|é|ü|TODO|todo|Todo|FIXME|fixme|BUG|bug|XXX|\\?\\?\\?|!!!|NOTE|REF|STATUS|ſtatus|HAC\u{212A}|hack|FR|fr|vim|VIM|vi|ex|EX|vim700|vim<702|vim=703|set|ts=4|rgb|RGB|hsl|rgba|hsla|#fff|#a1b2c3|255|0\\.5|%|[a-z]{1,5}|[A-Z]{1,4}|[0-9]{1,3}|[a-z]{2,4}\\(|[a-z]{2,4}:){0,12}"
+    ) {
+        assert_gates_agree(&dispatch_finders(), &s);
+    }
+
+    #[test]
+    fn dispatch_gates_never_reject_a_match_on_scheme_tokens(
+        s in "( |:|/|//|\\.|-|\\+|\\(|@|\\?|#|[0-9]{1,2}|[a-z]{1,4}|HTTPS?|https?|Https?|ftps?|sftp|mailto|MAILTO|data|wss?|WS|x|X|s3|S3|urn|localhost|TODO|a1|1a|a\\+b|a-b|a\\.b){0,14}"
     ) {
         assert_gates_agree(&dispatch_finders(), &s);
     }
