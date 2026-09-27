@@ -9,8 +9,8 @@
 # (`--write-corpus`), each concatenated SCALE times (default 16, ~16 MiB per
 # corpus), plus a `mixed` corpus that joins them all. Every tool reads the
 # file directly with LC_ALL=C and hyperfine reports wall-clock and CPU time
-# after one warm-up run; on a busy machine the CPU time is the more stable
-# of the two. Output is piped away rather than sent to /dev/null, which grep
+# after one warm-up run (the median wall time, the mean CPU time); on a busy
+# machine the CPU time is the more stable of the two. Output is piped away rather than sent to /dev/null, which grep
 # and ugrep detect to stop at the first match, and a tool exiting non-zero on
 # a corpus without matches is still timed.
 #
@@ -26,7 +26,9 @@
 # piped through `cat`; and `tree`, a generated source tree of FILES files
 # (default 20000, 0 to skip) in nested directories with a `.gitignore`d
 # build directory as large again, walked by every tool that honours ignore
-# files. Scale scenarios time each tool with its default parallelism.
+# files, with an empty home directory so no global git excludes apply.
+# Scale scenarios time each tool with its default parallelism; `--quick`
+# skips them unless `--big` or `--tree` is given.
 #
 # Requires: cargo, hyperfine, python3. Optional: rg, ugrep, GNU grep (ggrep),
 # BSD grep (/usr/bin/grep). Missing tools are skipped.
@@ -36,8 +38,8 @@ SCALE=16
 RUNS=5
 OUT=${BENCH_DIR:-/tmp/squeeze-bench}
 QUICK=0
-BIG_GIB=2
-TREE_FILES=20000
+BIG_GIB=
+TREE_FILES=
 while [ $# -gt 0 ]; do
   case "$1" in
     --scale) SCALE=$2; shift 2 ;;
@@ -49,6 +51,13 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+if [ "$QUICK" = 1 ]; then
+  BIG_GIB=${BIG_GIB:-0}
+  TREE_FILES=${TREE_FILES:-0}
+else
+  BIG_GIB=${BIG_GIB:-2}
+  TREE_FILES=${TREE_FILES:-20000}
+fi
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 for tool in cargo hyperfine python3; do
@@ -165,7 +174,7 @@ for tool in "${TOOLS[@]}"; do
   esac
 done
 SCALE_SECTIONS=()
-SCALE_RUNS=$(( RUNS < 3 ? RUNS : 3 ))
+SCALE_RUNS=$(( RUNS < 5 ? RUNS : 5 ))
 
 # Times one scale task. `$3` is the squeeze command; `$4` a template where
 # `{}` stands for a regex tool and its pattern `$5` (case-insensitive when
@@ -174,7 +183,11 @@ time_scale() {
   local section=$1 name=$2 sq_cmd=$3 template=$4 pattern=$5 ci=$6 shell=$7
   local slug="$section-${name// /-}"
   local counts="$OUT/results/$slug.counts"
-  local args=(--warmup 1 --runs "$SCALE_RUNS" -i --output=pipe --export-json "$OUT/results/$slug.json")
+  # macOS drops pages read once early: a walk right after other tasks can
+  # read the tree from disk, so the tree gets more warm-up runs.
+  local warmup=1
+  if [ "$section" = tree ]; then warmup=3; fi
+  local args=(--warmup "$warmup" --runs "$SCALE_RUNS" -i --output=pipe --export-json "$OUT/results/$slug.json")
   if [ "$shell" = 0 ]; then args+=(-N); fi
   : > "$counts"
   echo "== $section / $name"
@@ -251,6 +264,13 @@ EOF
     "url|--url|$URL|0"
     "todo|--todo|todo|1"
   )
+  # Global git excludes (a `*.log` in ~/.gitignore, say) would make the
+  # tools that read them skip files the others search.
+  mkdir -p "$OUT/home/.config"
+  saved_home=$HOME
+  saved_xdg=${XDG_CONFIG_HOME-}
+  had_xdg=${XDG_CONFIG_HOME+1}
+  export HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config"
   saved=("${SCALE_TOOLS[@]}")
   SCALE_TOOLS=()
   for tool in "${saved[@]}"; do
@@ -264,6 +284,8 @@ EOF
     time_scale tree "$name" "$SQ $flags $tree" "{} $tree" "$pattern" "$ci" 0
   done
   SCALE_TOOLS=("${saved[@]}")
+  export HOME="$saved_home"
+  if [ -n "$had_xdg" ]; then export XDG_CONFIG_HOME="$saved_xdg"; else unset XDG_CONFIG_HOME; fi
   SCALE_SECTIONS+=(tree)
 fi
 
@@ -320,9 +342,11 @@ for corpus in corpora + sections:
             if r is None:
                 cells.append("n/a")
                 continue
-            ms = r["mean"] * 1000
+            # The median wall time: on a busy machine a single slow run
+            # moves the mean far more than it moves the median.
+            ms = r["median"] * 1000
             cpu = (r["user"] + r["system"]) * 1000
-            mbs = size / r["mean"] / 1048576
+            mbs = size / r["median"] / 1048576
             count = counts.get(name, "?")
             cells.append(f"{ms:.0f} ms wall, {cpu:.0f} ms cpu ({mbs:.0f} MiB/s, {count} matches)")
         lines.append(f"| {task} | " + " | ".join(cells) + " |")
