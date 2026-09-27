@@ -26,6 +26,7 @@ memmap2 = "0.9"
 simdutf8 = "0.1"
 open = "5"
 squeeze = { path = "../squeeze" }
+ignore = "0.4"
 
 [dev-dependencies]
 assert_cmd = "2"

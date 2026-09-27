@@ -27,13 +27,16 @@ https://status.example.com
   format's spec (RFC 3986 URIs, IPv6, semver, JWTs, …), and it copes with the
   Markdown, JSON, HTML, and prose around a match: trailing punctuation,
   balanced parentheses, and quotes.
-- **Plays well with pipes.** It reads stdin, files, or globs, streams
-  results as it finds them, and stops at the first one with `-1`.
+- **Plays well with pipes and repositories.** It reads stdin, files, globs,
+  or whole directory trees (skipping what `.gitignore` ignores, like
+  ripgrep), streams results as it finds them, and stops at the first one
+  with `-1`.
 - **Structured when you need it.** JSON, YAML, or CSV output with the kind,
   line, and column of each match, or `path:line:column:` prefixes your editor
   can jump to.
-- **Fast.** A single pass over each line dispatches only the finders that
-  can match there, so enabling many finders stays cheap.
+- **Fast.** SIMD byte classification finds the few positions where a match
+  can start, so enabling many finders stays cheap, and big files, streams
+  and directory trees are scanned on every core.
 - **Also a Rust library.** Every finder is available as a
   [crate](#use-as-a-rust-library).
 
@@ -59,8 +62,12 @@ cargo install --locked --git https://github.com/aymericbeaumet/squeeze squeeze-c
 
 ## Usage
 
-Pick one or more finders. `squeeze` scans standard input, or the files and
-quoted glob patterns you pass after the options:
+Pick one or more finders. `squeeze` scans the files, directories, and quoted
+glob patterns you pass after the options. Without a path it reads standard
+input, or searches the current directory when standard input is a terminal.
+Directories are walked recursively on every core, the way ripgrep walks
+them: hidden entries, `.gitignore` and `.ignore` rules, and binary files are
+skipped.
 
 ```shell
 # Every link on a web page
@@ -72,7 +79,10 @@ git log --format='%an <%ae>' | squeeze --email --sort --uniq
 # IPs, request IDs, and timestamps in logs, labeled by kind
 kubectl logs deploy/api | squeeze --ip --uuid --datetime --with-kind
 
-# TODOs and FIXMEs, with locations your editor understands
+# TODOs and FIXMEs across a repository, with locations your editor understands
+squeeze --todo --fixme --with-location
+
+# Rust sources only
 squeeze --todo --fixme --with-location 'src/**/*.rs'
 
 # Everything squeeze can find, as JSON
@@ -133,7 +143,15 @@ RFC 3986 to the letter.
 | `--no-overlap` | drop matches that overlap an earlier one (`--precedence longest` keeps the longest instead) |
 | `--copy` | copy the results to the clipboard |
 | `--open` | open each result with the default application |
-| `-j`, `--jobs <N>` | scanning threads; `auto` (default) uses every core for files of 8 MiB and more, output kept in order |
+| `-j`, `--jobs <N>` | scanning threads; `auto` (default) uses every core for directories, stdin, and files of 8 MiB and more, output of a single input kept in order |
+
+Walking a directory:
+
+| Flag | Description |
+|------|-------------|
+| `--hidden` | also search hidden files and directories (`.git` is always skipped) |
+| `--no-ignore` | do not respect `.gitignore`, `.ignore`, and git exclude rules |
+| `--follow` | follow symbolic links |
 
 In the structured formats, `--with-kind` and `--with-location` both switch
 each result to an object with its kind, value, line, column, byte offsets, and

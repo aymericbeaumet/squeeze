@@ -30,6 +30,7 @@ use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, sync_channel};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
@@ -111,7 +112,7 @@ struct Opts {
         short = 'j',
         default_value = "auto",
         value_parser = parse_jobs,
-        help = "scanning threads; auto uses every core for files of 8 MiB and more and one thread otherwise (-1 always scans sequentially)"
+        help = "scanning threads; auto uses every core for directories, stdin and files of 8 MiB and more (-1, --last and --open always scan sequentially)"
     )]
     jobs: Jobs,
     #[arg(
@@ -135,8 +136,24 @@ struct Opts {
     precedence: Precedence,
 
     #[arg(
-        value_name = "INPUT",
-        help = "files or glob patterns to scan; omit for stdin"
+        long = "hidden",
+        help = "search hidden files and directories when walking a directory"
+    )]
+    hidden: bool,
+    #[arg(
+        long = "no-ignore",
+        help = "do not respect .gitignore, .ignore and git exclude rules when walking a directory"
+    )]
+    no_ignore: bool,
+    #[arg(
+        long = "follow",
+        help = "follow symbolic links when walking a directory"
+    )]
+    follow: bool,
+
+    #[arg(
+        value_name = "PATH",
+        help = "files, directories or glob patterns to scan; a directory is walked recursively like ripgrep does (hidden entries, .gitignore rules and binary files skipped); omit to read stdin, or the current directory when stdin is a terminal"
     )]
     inputs: Vec<String>,
 
@@ -693,11 +710,30 @@ fn effective_jobs(opts: &Opts, input_len: Option<u64>) -> usize {
     match opts.jobs {
         Jobs::Count(n) => n,
         Jobs::Auto => match input_len {
-            Some(len) if len >= AUTO_PARALLEL_MIN_BYTES => std::thread::available_parallelism()
+            // A small regular file is not worth the threads; a stream of
+            // unknown length may be terabytes.
+            Some(len) if len < AUTO_PARALLEL_MIN_BYTES => 1,
+            _ => std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(1),
-            _ => 1,
         },
+    }
+}
+
+/// Threads walking a directory tree: one per core, or one when the output
+/// order matters (`--first`, `--last`) or results are acted on as they come
+/// (`--open`).
+fn tree_threads(opts: &Opts) -> usize {
+    if opts.first || opts.last || opts.open {
+        return 1;
+    }
+    match opts.jobs {
+        Jobs::Count(n) => n,
+        // Beyond a dozen threads the kernel's file system locks, not the
+        // scan, set the pace (ripgrep caps at the same count).
+        Jobs::Auto => std::thread::available_parallelism()
+            .map(|n| n.get().min(12))
+            .unwrap_or(1),
     }
 }
 
@@ -722,6 +758,9 @@ struct ResultItem {
 enum InputTarget {
     Stdin,
     File(PathBuf),
+    Dir(PathBuf),
+    /// Files and directories walked together, one file per thread.
+    Tree(Vec<PathBuf>),
 }
 
 struct OutputState {
@@ -1165,7 +1204,7 @@ fn make_result_item(
 }
 
 fn emit_streaming_value(
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     opts: &Opts,
     flush: bool,
     location: Option<&Location>,
@@ -1183,7 +1222,7 @@ fn emit_streaming_value(
 }
 
 fn handle_result(
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     opts: &Opts,
     state: &mut OutputState,
     result: ResultItem,
@@ -1362,7 +1401,7 @@ fn emit_line_matches(
     line_number: usize,
     line: &str,
     matches: &[Match],
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     streaming: bool,
 ) -> io::Result<bool> {
@@ -1436,7 +1475,7 @@ fn scan_block(
     source: Option<&str>,
     first_line: usize,
     block: &[u8],
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     scratch: &mut LineScratch,
     streaming: bool,
@@ -1469,7 +1508,7 @@ fn scan_block(
     let text = unsafe { std::str::from_utf8_unchecked(block) };
     let mut failure: Option<io::Error> = None;
     let mut stop = false;
-    if streaming && !opts.with_location {
+    if streaming && !opts.with_location && !opts.no_overlap {
         // Plain values: neither the line nor its number is needed.
         let flush = state.flush_streaming;
         let stopped = scanner.scan_buffer_matches(text, |finder, range| {
@@ -1495,8 +1534,17 @@ fn scan_block(
         return Ok(stopped && stop);
     }
     let mut counter = LineCounter::new(first_line);
+    let mut kept = Vec::new();
     let stopped = scanner.scan_buffer(text, |start, end, matches| {
         let line_number = counter.number(block, start);
+        let matches = if opts.no_overlap {
+            kept.clear();
+            kept.extend_from_slice(matches);
+            apply_overlap_policy(&mut kept, opts.precedence);
+            &kept[..]
+        } else {
+            matches
+        };
         match emit_line_matches(
             scanner,
             opts,
@@ -1534,7 +1582,7 @@ fn scan_raw_line(
     line_number: usize,
     raw: &[u8],
     valid: bool,
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     scratch: &mut LineScratch,
     streaming: bool,
@@ -1559,7 +1607,7 @@ fn scan_lines_sequential(
     opts: &Opts,
     source: Option<&str>,
     reader: &mut dyn Read,
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
 ) -> io::Result<bool> {
     let mut lines = LineBuffer::with_capacity(READ_BLOCK);
@@ -1624,7 +1672,7 @@ fn scan_buffer_sequential(
     opts: &Opts,
     source: Option<&str>,
     data: &[u8],
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
 ) -> io::Result<bool> {
     let mut scratch = LineScratch::new();
@@ -1666,6 +1714,12 @@ fn scan_buffer_sequential(
 /// Target size of a parallel chunk; a chunk always holds whole lines, so a
 /// longer line makes a longer chunk.
 const CHUNK_SIZE: usize = 512 * 1024;
+
+/// A read returning fewer bytes than this comes from a producer that is
+/// not keeping up: the pipeline scans what it has instead of waiting for a
+/// full chunk. Pipes hand out 64 KiB at a time on most systems, so a fast
+/// producer still fills whole chunks.
+const SHORT_READ_BYTES: usize = 16 * 1024;
 
 /// A run of whole lines handed to a worker: copied out of a stream, or a
 /// slice of a mapped file.
@@ -1746,7 +1800,7 @@ fn scan_chunk(
             }
         }
     };
-    if valid && streaming && !opts.with_location {
+    if valid && streaming && !opts.with_location && !opts.no_overlap {
         // Plain values: neither the line nor its number is needed.
         // SAFETY: `validate_block` accepted the whole chunk.
         let whole = unsafe { std::str::from_utf8_unchecked(data) };
@@ -1763,8 +1817,17 @@ fn scan_chunk(
         // SAFETY: `validate_block` accepted the whole chunk.
         let text = unsafe { std::str::from_utf8_unchecked(data) };
         let mut counter = LineCounter::new(chunk.first_line);
+        let mut kept = Vec::new();
         scanner.scan_buffer(text, |start, end, matches| {
             let line_number = counter.number(data, start);
+            let matches = if opts.no_overlap {
+                kept.clear();
+                kept.extend_from_slice(matches);
+                apply_overlap_policy(&mut kept, opts.precedence);
+                &kept[..]
+            } else {
+                matches
+            };
             emit(&text[start..end], line_number, matches);
             false
         });
@@ -1794,7 +1857,7 @@ fn parallel_pipeline<'s, 'a>(
     scanner: &'s Scanner,
     opts: &'s Opts,
     source: Option<&'s str>,
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
     mut next_chunk: impl FnMut() -> io::Result<Option<Chunk<'a>>>,
@@ -1832,63 +1895,56 @@ fn parallel_pipeline<'s, 'a>(
         }
         drop(result_tx);
 
-        let mut pending: BTreeMap<usize, ChunkOutput> = BTreeMap::new();
-        let mut next_index = 0;
-        let write_ready = |pending: &mut BTreeMap<usize, ChunkOutput>,
-                           next_index: &mut usize,
-                           out: &mut dyn Write,
-                           state: &mut OutputState|
-         -> io::Result<bool> {
-            while let Some(output) = pending.remove(next_index) {
-                *next_index += 1;
-                match output {
-                    ChunkOutput::Text(text) => {
-                        out.write_all(&text)?;
-                        if state.flush_streaming {
-                            out.flush()?;
+        // The writer runs on its own thread so a result never waits for the
+        // reader, which may sit in a blocking read on a slow stream.
+        let writer = scope.spawn(move || -> io::Result<bool> {
+            let mut pending: BTreeMap<usize, ChunkOutput> = BTreeMap::new();
+            let mut next_index = 0;
+            while let Ok(result) = result_rx.recv() {
+                pending.insert(result.index, result.output);
+                while let Some(output) = pending.remove(&next_index) {
+                    next_index += 1;
+                    match output {
+                        ChunkOutput::Text(text) => {
+                            out.write_all(&text)?;
+                            if state.flush_streaming {
+                                out.flush()?;
+                            }
                         }
-                    }
-                    ChunkOutput::Items(items) => {
-                        for item in items {
-                            if handle_result(out, opts, state, item)? {
-                                return Ok(true);
+                        ChunkOutput::Items(items) => {
+                            for item in items {
+                                if handle_result(out, opts, state, item)? {
+                                    return Ok(true);
+                                }
                             }
                         }
                     }
                 }
             }
             Ok(false)
-        };
+        });
 
-        let mut produced = 0;
-        while let Some(chunk) = next_chunk()? {
-            produced = chunk.index + 1;
+        let mut read_error = None;
+        loop {
+            let chunk = match next_chunk() {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(e) => {
+                    read_error = Some(e);
+                    break;
+                }
+            };
+            // Every worker has gone (the writer stopped): nothing to do.
             if work_tx.send(chunk).is_err() {
                 break;
             }
-            // Drain finished chunks while producing further ones.
-            while let Ok(result) = result_rx.try_recv() {
-                pending.insert(result.index, result.output);
-            }
-            if write_ready(&mut pending, &mut next_index, out, state)? {
-                drop(work_tx);
-                return Ok(true);
-            }
         }
         drop(work_tx);
-
-        while next_index < produced {
-            match result_rx.recv() {
-                Ok(result) => {
-                    pending.insert(result.index, result.output);
-                }
-                Err(_) => break,
-            }
-            if write_ready(&mut pending, &mut next_index, out, state)? {
-                return Ok(true);
-            }
+        let written = writer.join().unwrap_or(Ok(false));
+        match read_error {
+            Some(e) => Err(e),
+            None => written,
         }
-        Ok(false)
     })
 }
 
@@ -1897,51 +1953,75 @@ fn scan_lines_parallel(
     opts: &Opts,
     source: Option<&str>,
     reader: &mut dyn Read,
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
 ) -> io::Result<bool> {
-    let mut lines = LineBuffer::with_capacity(CHUNK_SIZE * 2);
+    // Each chunk owns the buffer the stream was read into: the only copy
+    // is the kernel's. The incomplete last line carries over to the next.
+    let mut carry: Vec<u8> = Vec::new();
     let mut index = 0;
     let mut first_line = 1;
     let mut eof = false;
     let next_chunk = || -> io::Result<Option<Chunk<'static>>> {
+        if eof && carry.is_empty() {
+            return Ok(None);
+        }
+        let mut buf = std::mem::take(&mut carry);
+        let mut len = buf.len();
         loop {
-            if eof && lines.pending().is_empty() {
-                return Ok(None);
-            }
-            // Fill up to a chunk's worth of whole lines.
-            while lines.pending().len() < CHUNK_SIZE && !eof {
-                if lines.fill(reader)? == 0 {
+            // Fill up to a chunk's worth of whole lines, except when the
+            // producer is slower than the scan (a short read): what is
+            // complete now goes out at once, so a live stream (`tail -f`,
+            // `kubectl logs -f`) is scanned as it arrives.
+            while len < CHUNK_SIZE && !eof {
+                if buf.len() < len + READ_BLOCK {
+                    buf.resize(len + READ_BLOCK, 0);
+                }
+                let read = loop {
+                    match reader.read(&mut buf[len..]) {
+                        Ok(n) => break n,
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Err(e),
+                    }
+                };
+                len += read;
+                if read == 0 {
                     eof = true;
+                } else if read < SHORT_READ_BYTES && len > 0 {
+                    break;
                 }
             }
-            let data = lines.pending();
+            if len == 0 {
+                return Ok(None);
+            }
             let cut = if eof {
-                data.len()
+                len
             } else {
-                match memchr::memrchr(b'\n', data) {
+                match memchr::memrchr(b'\n', &buf[..len]) {
                     Some(nl) => nl + 1,
                     // One line longer than a chunk: keep reading it.
                     None => {
-                        if lines.fill(reader)? == 0 {
+                        if buf.len() < len + READ_BLOCK {
+                            buf.resize(len + READ_BLOCK, 0);
+                        }
+                        let read = reader.read(&mut buf[len..])?;
+                        len += read;
+                        if read == 0 {
                             eof = true;
                         }
                         continue;
                     }
                 }
             };
-            if cut == 0 {
-                return Ok(None);
-            }
-            let chunk_data = data[..cut].to_vec();
-            let newlines = memchr::memchr_iter(b'\n', &chunk_data).count();
-            let line_count = newlines + usize::from(!chunk_data.ends_with(b"\n"));
-            lines.consume(cut);
+            carry.extend_from_slice(&buf[cut..len]);
+            buf.truncate(cut);
+            let newlines = memchr::memchr_iter(b'\n', &buf).count();
+            let line_count = newlines + usize::from(!buf.ends_with(b"\n"));
             let chunk = Chunk {
                 index,
                 first_line,
-                data: ChunkData::Owned(chunk_data),
+                data: ChunkData::Owned(buf),
             };
             index += 1;
             first_line += line_count;
@@ -1958,7 +2038,7 @@ fn scan_buffer_parallel<'a>(
     opts: &Opts,
     source: Option<&str>,
     data: &'a [u8],
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
 ) -> io::Result<bool> {
@@ -2002,7 +2082,12 @@ fn has_glob_magic(input: &str) -> bool {
 
 fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
     if inputs.is_empty() {
-        return Ok(vec![InputTarget::Stdin]);
+        // Like ripgrep: a terminal on stdin means "search here".
+        return Ok(if io::stdin().is_terminal() {
+            vec![InputTarget::Dir(PathBuf::from("."))]
+        } else {
+            vec![InputTarget::Stdin]
+        });
     }
 
     let mut targets = Vec::new();
@@ -2016,7 +2101,10 @@ fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
             let mut matched = false;
             for entry in glob::glob(input).map_err(|e| e.to_string())? {
                 let path = entry.map_err(|e| e.to_string())?;
-                if path.is_file() {
+                if path.is_dir() {
+                    matched = true;
+                    targets.push(InputTarget::Dir(path));
+                } else if path.is_file() {
                     matched = true;
                     targets.push(InputTarget::File(path));
                 }
@@ -2025,11 +2113,252 @@ fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
                 return Err(format!("no files matched pattern '{}'", input));
             }
         } else {
-            targets.push(InputTarget::File(PathBuf::from(input)));
+            let path = PathBuf::from(input);
+            if path.is_dir() {
+                targets.push(InputTarget::Dir(path));
+            } else {
+                targets.push(InputTarget::File(path));
+            }
         }
     }
 
     Ok(targets)
+}
+
+/// Bytes of a file inspected for a NUL byte, which marks it as binary.
+const BINARY_PROBE_BYTES: usize = 8 * 1024;
+
+/// The writer and buffered results shared by the threads of a tree walk.
+struct TreeShared<'a> {
+    out: &'a mut (dyn Write + Send),
+    state: &'a mut OutputState,
+    failure: Option<io::Error>,
+}
+
+/// Regular files at least this large are mapped during a tree walk; smaller
+/// ones are read into the thread's buffer, which is cheaper per file.
+const TREE_MMAP_MIN_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Per-thread state of a tree walk: the output of the file being scanned
+/// and the file's bytes when it is read rather than mapped.
+struct TreeLocal {
+    text: Vec<u8>,
+    state: OutputState,
+    data: Vec<u8>,
+}
+
+/// Scans one regular file of a tree into `local`, sequentially. Binary files
+/// (a NUL byte within the first 8 KiB) are skipped. Returns `Ok(true)` when
+/// scanning must stop (`--first` found its match).
+fn scan_tree_file(
+    scanner: &Scanner,
+    opts: &Opts,
+    path: &std::path::Path,
+    entry_len: Option<u64>,
+    local: &mut TreeLocal,
+) -> io::Result<bool> {
+    let mut file = File::open(path)?;
+    // The walker's directory entry carries the size when the platform
+    // hands it out with the listing, which saves a stat per file.
+    let len = entry_len.map_or_else(|| file.metadata().map(|m| m.len()), Ok)?;
+    if len == 0 {
+        return Ok(false);
+    }
+    let display = path.display().to_string();
+    let source = display.strip_prefix("./").unwrap_or(&display);
+    let is_binary =
+        |data: &[u8]| memchr::memchr(0, &data[..data.len().min(BINARY_PROBE_BYTES)]).is_some();
+    if len >= TREE_MMAP_MIN_BYTES {
+        // SAFETY: read-only mapping that lives for this scan only; a file
+        // truncated by another process during the scan is undefined, as
+        // for every mapped read.
+        if let Ok(map) = unsafe { memmap2::Mmap::map(&file) } {
+            #[cfg(unix)]
+            let _ = map.advise(memmap2::Advice::Sequential);
+            if is_binary(&map) {
+                return Ok(false);
+            }
+            return scan_buffer_sequential(
+                scanner,
+                opts,
+                Some(source),
+                &map,
+                &mut local.text,
+                &mut local.state,
+            );
+        }
+    }
+    local.data.clear();
+    file.read_to_end(&mut local.data)?;
+    if is_binary(&local.data) {
+        return Ok(false);
+    }
+    // The buffer is borrowed by the scan while its output goes to `text`.
+    let data = std::mem::take(&mut local.data);
+    let result = scan_buffer_sequential(
+        scanner,
+        opts,
+        Some(source),
+        &data,
+        &mut local.text,
+        &mut local.state,
+    );
+    local.data = data;
+    result
+}
+
+/// Walks `roots` (files and directories) like ripgrep does, hidden entries,
+/// ignore rules and binary files skipped, scanning files on every core and
+/// writing each file's results in one piece. With one thread the walk is
+/// sorted by name and the output deterministic. Returns `Ok(true)` when
+/// scanning must stop.
+fn scan_tree(
+    scanner: &Scanner,
+    opts: &Opts,
+    roots: &[PathBuf],
+    out: &mut (dyn Write + Send),
+    state: &mut OutputState,
+) -> io::Result<bool> {
+    let threads = tree_threads(opts);
+    let mut builder = ignore::WalkBuilder::new(&roots[0]);
+    for root in &roots[1..] {
+        builder.add(root);
+    }
+    builder
+        .hidden(!opts.hidden)
+        .git_ignore(!opts.no_ignore)
+        .git_global(!opts.no_ignore)
+        .git_exclude(!opts.no_ignore)
+        .ignore(!opts.no_ignore)
+        .parents(!opts.no_ignore)
+        .follow_links(opts.follow)
+        .threads(threads);
+    // Version control internals are never text to extract from.
+    builder.filter_entry(|entry| {
+        !(entry.file_type().is_some_and(|t| t.is_dir()) && entry.file_name() == ".git")
+    });
+
+    let shared = Mutex::new(TreeShared {
+        out,
+        state,
+        failure: None,
+    });
+    let stop = AtomicBool::new(false);
+    let flush_streaming = shared
+        .lock()
+        .map(|s| s.state.flush_streaming)
+        .unwrap_or(false);
+
+    let stop = &stop;
+    let shared_ref = &shared;
+    let local = || TreeLocal {
+        text: Vec::new(),
+        state: OutputState::new(opts),
+        data: Vec::new(),
+    };
+    if threads == 1 {
+        // Sequential and sorted: the output order is reproducible.
+        builder.sort_by_file_name(|a, b| a.cmp(b));
+        let mut visit = tree_visitor(scanner, opts, flush_streaming, stop, shared_ref, local());
+        for entry in builder.build() {
+            if visit(entry) == ignore::WalkState::Quit {
+                break;
+            }
+        }
+    } else {
+        builder.build_parallel().run(|| {
+            Box::new(tree_visitor(
+                scanner,
+                opts,
+                flush_streaming,
+                stop,
+                shared_ref,
+                local(),
+            ))
+        });
+    }
+
+    let mut shared = shared
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(e) = shared.failure.take() {
+        return Err(e);
+    }
+    Ok(stop.load(Ordering::Relaxed) && opts.first)
+}
+
+/// The per-entry work of a tree walk: scan a regular file into `local`
+/// and hand its output to the shared writer.
+fn tree_visitor<'a, 'b: 'a>(
+    scanner: &'a Scanner,
+    opts: &'a Opts,
+    flush_streaming: bool,
+    stop: &'a AtomicBool,
+    shared: &'a Mutex<TreeShared<'b>>,
+    mut local: TreeLocal,
+) -> impl FnMut(Result<ignore::DirEntry, ignore::Error>) -> ignore::WalkState + 'a {
+    move |entry| {
+        if stop.load(Ordering::Relaxed) {
+            return ignore::WalkState::Quit;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                eprintln!("squeeze: {err}");
+                return ignore::WalkState::Continue;
+            }
+        };
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            return ignore::WalkState::Continue;
+        }
+        let path = entry.path();
+        // A stat the walker already did (Windows lists sizes with the
+        // directory) is not repeated.
+        let entry_len = entry.metadata().ok().map(|m| m.len());
+        let done = match scan_tree_file(scanner, opts, path, entry_len, &mut local) {
+            Ok(done) => done,
+            Err(e) => {
+                eprintln!("squeeze: {}: {}", path.display(), e);
+                false
+            }
+        };
+        let has_output = !local.text.is_empty()
+            || local.state.buffer.as_ref().is_some_and(|b| !b.is_empty())
+            || local.state.last_match.is_some();
+        if has_output {
+            let Ok(mut shared) = shared.lock() else {
+                return ignore::WalkState::Quit;
+            };
+            if !local.text.is_empty() {
+                let written = shared.out.write_all(&local.text).and_then(|()| {
+                    if flush_streaming {
+                        shared.out.flush()
+                    } else {
+                        Ok(())
+                    }
+                });
+                local.text.clear();
+                if let Err(e) = written {
+                    shared.failure = Some(e);
+                    stop.store(true, Ordering::Relaxed);
+                    return ignore::WalkState::Quit;
+                }
+            }
+            if let Some(items) = local.state.buffer.as_mut()
+                && let Some(all) = shared.state.buffer.as_mut()
+            {
+                all.append(items);
+            }
+            if let Some(last) = local.state.last_match.take() {
+                shared.state.last_match = Some(last);
+            }
+        }
+        if done {
+            stop.store(true, Ordering::Relaxed);
+            return ignore::WalkState::Quit;
+        }
+        ignore::WalkState::Continue
+    }
 }
 
 fn scan_reader(
@@ -2037,7 +2366,7 @@ fn scan_reader(
     opts: &Opts,
     source: Option<&str>,
     reader: &mut dyn Read,
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
 ) -> io::Result<bool> {
@@ -2053,7 +2382,7 @@ fn scan_buffer(
     opts: &Opts,
     source: Option<&str>,
     data: &[u8],
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
 ) -> io::Result<bool> {
@@ -2069,7 +2398,7 @@ fn scan_buffer(
 const MMAP_MIN_BYTES: u64 = 64 * 1024;
 
 fn finalize_results(
-    out: &mut dyn Write,
+    out: &mut (dyn Write + Send),
     opts: &Opts,
     mut results: Vec<ResultItem>,
 ) -> io::Result<()> {
@@ -2177,12 +2506,36 @@ fn main() -> ExitCode {
         }
     };
 
-    let stdout = io::stdout().lock();
-    let mut out = BufWriter::new(stdout);
+    // Unlocked: the tree walker writes from several threads, each file's
+    // results in one piece; the buffer keeps the per-write locking rare.
+    let mut out = BufWriter::new(io::stdout());
     let mut state = OutputState::new(&opts);
+
+    // Directories, and several files, go through the tree walker (every
+    // core, one file per thread); a single file keeps the chunked scan that
+    // spreads one big file over every core.
+    let tree_roots: Vec<PathBuf> = targets
+        .iter()
+        .filter_map(|target| match target {
+            InputTarget::Dir(path) => Some(path.clone()),
+            InputTarget::File(path) => Some(path.clone()),
+            InputTarget::Stdin | InputTarget::Tree(_) => None,
+        })
+        .collect();
+    let walk_tree = tree_roots.len() > 1
+        || targets
+            .iter()
+            .any(|target| matches!(target, InputTarget::Dir(_)));
+    let mut targets = targets;
+    if walk_tree {
+        targets.retain(|target| matches!(target, InputTarget::Stdin));
+        targets.push(InputTarget::Tree(tree_roots));
+    }
 
     for target in targets {
         let result = match target {
+            InputTarget::Tree(roots) => scan_tree(&scanner, &opts, &roots, &mut out, &mut state),
+            InputTarget::Dir(path) => scan_tree(&scanner, &opts, &[path], &mut out, &mut state),
             InputTarget::Stdin => {
                 let stdin = io::stdin();
                 let mut reader = stdin.lock();
@@ -2364,11 +2717,16 @@ mod tests {
         assert_eq!(effective_jobs(&opts, None), 4);
         assert_eq!(effective_jobs(&opts, Some(10)), 4);
 
-        // `auto`: streams and small files stay sequential, large files use
+        // `auto`: small files stay sequential; streams and large files use
         // every core.
         let opts = Opts::try_parse_from(["squeeze", "--url"]).unwrap();
         assert_eq!(opts.jobs, Jobs::Auto);
-        assert_eq!(effective_jobs(&opts, None), 1);
+        assert_eq!(
+            effective_jobs(&opts, None),
+            std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1)
+        );
         assert_eq!(effective_jobs(&opts, Some(AUTO_PARALLEL_MIN_BYTES - 1)), 1);
         assert_eq!(
             effective_jobs(&opts, Some(AUTO_PARALLEL_MIN_BYTES)),

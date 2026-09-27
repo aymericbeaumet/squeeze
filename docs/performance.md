@@ -89,10 +89,20 @@ the vector stage).
 The CLI memory-maps regular files of 64 KiB and more and reads everything
 else in 256 KiB blocks, validates UTF-8 once per block or 1 MiB window with
 `simdutf8`, scans it with `scan_buffer` and writes plain text results with
-`write_all`. Files of 8 MiB and more are scanned on every core by default
-(`--jobs auto`): the input is cut into ~512 KiB chunks at newline
-boundaries, scanned by scoped threads, and written back in order through a
-reorder buffer, so output is byte-identical to the sequential path.
+`write_all`. Files of 8 MiB and more and standard input are scanned on every
+core by default (`--jobs auto`): the input is cut into ~512 KiB chunks at
+newline boundaries, scanned by scoped threads, and written back in order by
+a writer thread through a reorder buffer, so output is byte-identical to the
+sequential path. Stream chunks are read straight into their own buffers,
+and a short read (a live stream that paused) cuts the chunk early so
+results are not held back waiting for a full block.
+
+Directories are walked by the `ignore` crate, ripgrep's walker: hidden
+entries, `.gitignore`, `.ignore` and git exclude rules are honoured, and a
+file whose first 8 KiB contain a NUL byte is skipped as binary. Every walker
+thread (at most twelve; beyond that file system locks, not the scan, set the
+pace) scans whole files, reading small ones into a reused buffer and mapping
+those of 4 MiB and more, and writes each file's results in one piece.
 
 ## Contracts a finder must follow
 
