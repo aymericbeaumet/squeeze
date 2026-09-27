@@ -16,7 +16,6 @@ name = "squeeze"
 path = "main.rs"
 
 [dependencies]
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 clap = { version = "4.6", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
@@ -30,6 +29,10 @@ ignore = "0.4"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# macOS copies with pbcopy: linking AppKit would slow down every start.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 
 [dev-dependencies]
 assert_cmd = "2"

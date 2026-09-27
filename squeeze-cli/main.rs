@@ -1019,11 +1019,35 @@ fn write_csv_field<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// `pbcopy` rather than a clipboard crate: linking AppKit costs every run a
+// millisecond and a half of startup, and `--copy` is the only user.
+#[cfg(target_os = "macos")]
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to start pbcopy: {e}"))?;
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(text.as_bytes())
+        .map_err(|e| format!("failed to send clipboard contents to pbcopy: {e}"))?;
+    let status = child
+        .wait()
+        .map_err(|e| format!("failed to wait for pbcopy: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("pbcopy failed: {status}"))
+    }
 }
 
 // X11 and Wayland have no clipboard storage of their own: the contents live inside whichever
