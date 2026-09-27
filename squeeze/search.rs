@@ -286,6 +286,144 @@ pub(crate) fn search(
 /// positions whose previous byte is in the set (position 0 included).
 type GroupMasks = ([u64; 3], u64);
 
+/// Most literals a literal search takes.
+pub(crate) const MAX_LITERALS: usize = 8;
+/// Longest literal.
+const MAX_LITERAL_LEN: usize = 32;
+
+/// Literals searched with ASCII case ignored. Each literal is probed by
+/// two of its bytes, the first and the rarest of the others (by `RANK`),
+/// compared in two vectors loaded that far apart; the rare positions where
+/// both hold are verified in full.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Literals {
+    /// Literals, ASCII letters lowercase, none starting with another.
+    literals: Vec<Vec<u8>>,
+    /// Per literal: its first byte, and a rare byte with its offset.
+    probes: Vec<Probe>,
+    /// Largest probe offset: the vector loop needs that many bytes ahead.
+    reach: usize,
+}
+
+/// Two bytes of a literal compared per position, letters lowercase (the
+/// input is compared with bit 5 set for them).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Probe {
+    first: u8,
+    second: u8,
+    offset: usize,
+}
+
+impl Literals {
+    /// `None` when there are too many literals, or one is empty or too
+    /// long.
+    pub(crate) fn new(literals: &[Vec<u8>]) -> Option<Self> {
+        if literals.is_empty() || literals.len() > MAX_LITERALS {
+            return None;
+        }
+        if literals
+            .iter()
+            .any(|l| l.is_empty() || l.len() > MAX_LITERAL_LEN)
+        {
+            return None;
+        }
+        let folded: Vec<Vec<u8>> = literals.iter().map(|l| l.to_ascii_lowercase()).collect();
+        // A literal starting with another adds no position.
+        let mut kept: Vec<Vec<u8>> = Vec::new();
+        for (i, literal) in folded.iter().enumerate() {
+            let redundant = folded.iter().enumerate().any(|(j, other)| {
+                j != i && literal.starts_with(other) && (literal.len() > other.len() || j < i)
+            });
+            if !redundant {
+                kept.push(literal.clone());
+            }
+        }
+        let rank = |b: u8| RANK[usize::from(b)].max(RANK[usize::from(b.to_ascii_uppercase())]);
+        let probes = kept
+            .iter()
+            .map(|literal| {
+                let (offset, &second) = literal
+                    .iter()
+                    .enumerate()
+                    .skip(1)
+                    .min_by_key(|&(i, &b)| (rank(b), i))
+                    .unwrap_or((0, &literal[0]));
+                Probe {
+                    first: literal[0],
+                    second,
+                    offset,
+                }
+            })
+            .collect::<Vec<_>>();
+        let reach = probes.iter().map(|p| p.offset).max().unwrap_or(0);
+        Some(Literals {
+            literals: kept,
+            probes,
+            reach,
+        })
+    }
+
+    /// Whether a literal starts at `pos`, scalar.
+    #[inline]
+    fn starts_at(&self, input: &[u8], pos: usize) -> bool {
+        self.literals.iter().any(|literal| {
+            literal.len() <= input.len() - pos
+                && input[pos..pos + literal.len()]
+                    .iter()
+                    .zip(literal)
+                    .all(|(&b, &l)| b.to_ascii_lowercase() == l)
+        })
+    }
+}
+
+/// Positions of the 64 bytes at an offset of the input where a probe holds.
+type Candidates = dyn Fn(&[u8], usize, &[Probe]) -> u64;
+
+/// Calls `hit` with every position of `input` where one of `literals`
+/// starts, in order; stops when `hit` returns `true`.
+#[inline(always)]
+pub(crate) fn search_literals(
+    engine: Engine,
+    literals: &Literals,
+    input: &[u8],
+    mut hit: impl FnMut(usize) -> bool,
+) {
+    let len = input.len();
+    let mut base = 0;
+    let mut groups = |candidates: &Candidates| -> bool {
+        while base + 64 + literals.reach <= len {
+            let mut mask = candidates(input, base, &literals.probes);
+            while mask != 0 {
+                let pos = base + mask.trailing_zeros() as usize;
+                if literals.starts_at(input, pos) && hit(pos) {
+                    return true;
+                }
+                mask &= mask - 1;
+            }
+            base += 64;
+        }
+        false
+    };
+    let stopped = match engine {
+        Engine::Memchr => false,
+        #[cfg(target_arch = "aarch64")]
+        Engine::Neon => groups(&neon::literal_candidates),
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: `Engine::Ssse3` is only selected after the CPU check.
+        Engine::Ssse3 => {
+            groups(&|input, base, probes| unsafe { ssse3::literal_candidates(input, base, probes) })
+        }
+    };
+    if stopped {
+        return;
+    }
+    for pos in base..len {
+        if literals.starts_at(input, pos) && hit(pos) {
+            return;
+        }
+    }
+}
+
 /// The search with checks: each group's masks are kept until the next
 /// group's are known, since a check looks up to 63 bytes ahead.
 #[inline(always)]
@@ -437,6 +575,45 @@ mod neon {
         }
     }
 
+    /// Positions of the 64 bytes at `base` where both bytes of a probe
+    /// hold, ASCII case ignored; `input` holds the bytes the probes reach.
+    #[inline(always)]
+    pub(super) fn literal_candidates(input: &[u8], base: usize, probes: &[super::Probe]) -> u64 {
+        let ptr = input.as_ptr();
+        // SAFETY: baseline NEON; the loads read `input[base..base + 64 +
+        // offset]` for probe offsets the caller checked.
+        unsafe {
+            let case = vdupq_n_u8(0x20);
+            let load = |at: usize, byte: u8| -> [uint8x16_t; 4] {
+                let v = [
+                    vld1q_u8(ptr.add(at)),
+                    vld1q_u8(ptr.add(at + 16)),
+                    vld1q_u8(ptr.add(at + 32)),
+                    vld1q_u8(ptr.add(at + 48)),
+                ];
+                if byte.is_ascii_lowercase() {
+                    v.map(|v| vorrq_u8(v, case))
+                } else {
+                    v
+                }
+            };
+            let mut any = [vdupq_n_u8(0); 4];
+            for probe in probes {
+                let first = load(base, probe.first);
+                let second = load(base + probe.offset, probe.second);
+                let (f, s) = (vdupq_n_u8(probe.first), vdupq_n_u8(probe.second));
+                for i in 0..4 {
+                    let both = vandq_u8(vceqq_u8(first[i], f), vceqq_u8(second[i], s));
+                    any[i] = vorrq_u8(any[i], both);
+                }
+            }
+            if vmaxvq_u8(vorrq_u8(vorrq_u8(any[0], any[1]), vorrq_u8(any[2], any[3]))) == 0 {
+                return 0;
+            }
+            movemask(any)
+        }
+    }
+
     /// The masks of the 64 bytes at `base`, which must lie in `input`.
     #[inline(always)]
     pub(super) fn masks(input: &[u8], base: usize, bytes: &[u8], set: &NibbleSet) -> GroupMasks {
@@ -565,6 +742,47 @@ mod neon {
 mod ssse3 {
     use super::{GroupMasks, NibbleSet, tail};
     use core::arch::x86_64::*;
+
+    /// Positions of the 64 bytes at `base` where both bytes of a probe
+    /// hold, ASCII case ignored; `input` holds the bytes the probes reach.
+    #[target_feature(enable = "ssse3")]
+    pub(super) fn literal_candidates(input: &[u8], base: usize, probes: &[super::Probe]) -> u64 {
+        let ptr = input.as_ptr();
+        // SAFETY: SSSE3 is enabled for this function; the loads read
+        // `input[base..base + 64 + offset]` for probe offsets the caller
+        // checked.
+        unsafe {
+            let case = _mm_set1_epi8(0x20);
+            let load = |at: usize, byte: u8| -> [__m128i; 4] {
+                let v = [
+                    _mm_loadu_si128(ptr.add(at).cast()),
+                    _mm_loadu_si128(ptr.add(at + 16).cast()),
+                    _mm_loadu_si128(ptr.add(at + 32).cast()),
+                    _mm_loadu_si128(ptr.add(at + 48).cast()),
+                ];
+                if byte.is_ascii_lowercase() {
+                    v.map(|v| _mm_or_si128(v, case))
+                } else {
+                    v
+                }
+            };
+            let mut any = [_mm_setzero_si128(); 4];
+            for probe in probes {
+                let first = load(base, probe.first);
+                let second = load(base + probe.offset, probe.second);
+                let f = _mm_set1_epi8(probe.first as i8);
+                let s = _mm_set1_epi8(probe.second as i8);
+                for i in 0..4 {
+                    let both =
+                        _mm_and_si128(_mm_cmpeq_epi8(first[i], f), _mm_cmpeq_epi8(second[i], s));
+                    any[i] = _mm_or_si128(any[i], both);
+                }
+            }
+            any.iter().enumerate().fold(0u64, |mask, (i, &v)| {
+                mask | u64::from(_mm_movemask_epi8(v) as u16) << (16 * i)
+            })
+        }
+    }
 
     /// The masks of the 64 bytes at `base`, which must lie in `input`.
     #[target_feature(enable = "ssse3")]
@@ -878,6 +1096,57 @@ mod tests {
         input[0] = b':';
         input[64] = b':';
         check(b":", Some(&set), &input);
+    }
+
+    #[test]
+    fn literal_search_agrees_with_a_scalar_reference() {
+        let sets: [&[&[u8]]; 4] = [
+            &[b"todo"],
+            &[b"todo", b"fixme"],
+            &[b"eyJ", b"???", b"a"],
+            &[b"todo", b"todoc", b"TODO"],
+        ];
+        let mut input = Vec::new();
+        for i in 0..300u32 {
+            input.extend_from_slice(match i % 8 {
+                0 => b"// TODO: x ".as_slice(),
+                1 => b"FixMe(me) ",
+                2 => b"mastodon todo",
+                3 => b"eyJhbG.",
+                4 => b"???!",
+                5 => b"t",
+                6 => b"\xC3\xA9todo",
+                _ => b"odotodo",
+            });
+        }
+        for set in sets {
+            let owned: Vec<Vec<u8>> = set.iter().map(|l| l.to_vec()).collect();
+            let literals = Literals::new(&owned).expect("a small set");
+            for len in [0, 3, 63, 64, 65, 127, 128, 130, 200, input.len()] {
+                let input = &input[..len.min(input.len())];
+                for start in [0, 1, 6] {
+                    let input = &input[start.min(input.len())..];
+                    let expected: Vec<usize> = (0..input.len())
+                        .filter(|&pos| {
+                            set.iter().any(|l| {
+                                input.len() - pos >= l.len()
+                                    && input[pos..pos + l.len()].eq_ignore_ascii_case(l)
+                            })
+                        })
+                        .collect();
+                    for engine in engines() {
+                        let mut got = Vec::new();
+                        search_literals(engine, &literals, input, |pos| {
+                            got.push(pos);
+                            false
+                        });
+                        assert_eq!(got, expected, "{engine:?} {set:?}");
+                    }
+                }
+            }
+        }
+        assert!(Literals::new(&[]).is_none());
+        assert!(Literals::new(&[Vec::new()]).is_none());
     }
 
     #[test]

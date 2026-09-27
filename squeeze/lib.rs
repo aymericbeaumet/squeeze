@@ -826,6 +826,17 @@ pub trait Finder: Send + Sync {
         None
     }
 
+    /// Byte strings, ASCII case ignored, one of which starts the input at
+    /// every position where [`try_at`](Finder::try_at) can match (`todo`
+    /// for `--todo` codetags). A finder that would otherwise need the block
+    /// classifier is then found by searching for them. Empty when unknown.
+    ///
+    /// Contract: `try_at(input, pos)` returns `None` unless `input[pos..]`
+    /// starts with one of the prefixes, ASCII case ignored.
+    fn prefixes(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+
     /// Rules on the digit or hex run starting at a candidate position,
     /// evaluated with [`RunRule::allow`] before [`try_at`](Finder::try_at)
     /// is called. Same contract as

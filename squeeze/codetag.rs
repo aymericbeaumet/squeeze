@@ -454,6 +454,26 @@ impl Finder for Codetag {
         self.range_from(input, pos)
     }
 
+    fn prefixes(&self) -> Vec<Vec<u8>> {
+        let mut prefixes = Vec::new();
+        for m in &self.index().mnemonics {
+            // Up to the first character that is not ASCII or that another
+            // character folds onto (the Kelvin sign onto `k`, the long s
+            // onto `s`).
+            let prefix: Vec<u8> = m
+                .folded
+                .iter()
+                .take_while(|c| c.is_ascii() && !matches!(c, 'k' | 's'))
+                .map(|&c| c as u8)
+                .collect();
+            if prefix.is_empty() {
+                return Vec::new();
+            }
+            prefixes.push(prefix);
+        }
+        prefixes
+    }
+
     // The first head decides, as the former regex did: when hiding the
     // mnemonic leaves nothing after it (`TBD(TODO:():`), the line has no
     // match, even if a later head would.

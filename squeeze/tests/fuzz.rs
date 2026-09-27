@@ -906,6 +906,70 @@ fn dispatch_gates_hold_on_shaped_tokens() {
     }
 }
 
+/// Codetag finders with a few mnemonics, which name their prefixes.
+fn prefix_finders() -> Vec<Box<dyn Finder>> {
+    let mut finders: Vec<Box<dyn Finder>> = Vec::new();
+    for mnemonics in [&["todo"][..], &["fixme", "todo"], &["HACK", "???"], &[]] {
+        for hide in [false, true] {
+            let mut codetag = squeeze::codetag::Codetag::default();
+            codetag.hide_mnemonic = hide;
+            for m in mnemonics {
+                codetag.add_mnemonic(m);
+            }
+            codetag.build_mnemonics_regex().unwrap();
+            finders.push(Box::new(codetag));
+        }
+    }
+    finders.push(Box::new(squeeze::jwt::Jwt::default()));
+    finders
+}
+
+/// The scanner only tries a finder with prefixes where one starts.
+fn assert_prefixes_hold(finders: &[Box<dyn Finder>], line: &str) {
+    let input = line.as_bytes();
+    for finder in finders {
+        let prefixes = finder.prefixes();
+        if prefixes.is_empty() {
+            continue;
+        }
+        for pos in 0..input.len() {
+            if !finder.could_start_at(input[pos]) || finder.try_at(input, pos).is_none() {
+                continue;
+            }
+            assert!(
+                prefixes.iter().any(|p| {
+                    input.len() - pos >= p.len()
+                        && input[pos..pos + p.len()].eq_ignore_ascii_case(p)
+                }),
+                "{} matched {line:?} at {pos} without one of its prefixes {prefixes:?}",
+                finder.id()
+            );
+        }
+    }
+}
+
+#[test]
+fn prefixes_start_every_candidate_on_shaped_tokens() {
+    assert!(!prefix_finders()[0].prefixes().is_empty());
+    for line in [
+        "// TODO: x todo(me): y ToDo:z",
+        "FIXME: a fixme(b) FixMe: c",
+        "HACK: h HAC\u{212A}: k hac\u{212a}(x) ???: q",
+        "stodo: TODO:: TODO",
+    ] {
+        assert_prefixes_hold(&prefix_finders(), line);
+    }
+}
+
+proptest! {
+    #[test]
+    fn prefixes_start_every_candidate(
+        s in "( |:|\\(|\\)|/|-|_|TODO|todo|ToDo|FIXME|fixme|HACK|HAC\u{212A}|hac\u{212a}|\\?\\?\\?|[a-z]{1,4}|\u{17f}|é){0,12}"
+    ) {
+        assert_prefixes_hold(&prefix_finders(), &s);
+    }
+}
+
 #[test]
 fn chained_runs_past_the_cap_are_unbounded() {
     // Shrunk from a proptest failure: a minor version longer than RUN_CAP.
@@ -1139,7 +1203,7 @@ proptest! {
     #[test]
     fn sparse_scan_buffer_agrees_on_structured_lines(
         lines in proptest::collection::vec(
-            "( |:|/|@|\\.|-|\r|[a-z]{1,4}|[0-9]{1,4}|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|mailto:[a-z]{2,5}@[a-z]{2,5}\\.com|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\$\\{?[A-Z_]{1,6}\\}?|~/[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|[0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}){0,10}",
+            "( |:|/|@|\\.|-|\r|[a-z]{1,4}|[0-9]{1,4}|https?://[a-z]{2,6}\\.[a-z]{2,3}(/[a-z0-9]{1,5})*|mailto:[a-z]{2,5}@[a-z]{2,5}\\.com|[a-z]{2,5}@[a-z]{2,5}\\.(com|org)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\\$\\{?[A-Z_]{1,6}\\}?|~/[a-z]{1,4}|/[a-z]{1,4}(/[a-z]{1,4})*|[0-9]{1,3}(\\.[0-9]{1,3}){3}|[0-9a-f]{1,4}(:[0-9a-f]{0,4}){2,7}|TODO: |todo\\(me\\): |FixMe |stodo:|10:30:00){0,10}",
             0..8
         ),
         crlf in proptest::bool::ANY,
@@ -1423,6 +1487,21 @@ fn buffer_scanners() -> &'static [(Scanner, Scanner)] {
                     Box::new(squeeze::email::Email::default()),
                 ]
             }),
+            // Literal prefix passes (`--todo`, `--todo --fixme`).
+            Box::new(|| {
+                let mut codetag = squeeze::codetag::Codetag::default();
+                codetag.add_mnemonic("todo");
+                vec![Box::new(codetag)]
+            }),
+            Box::new(|| {
+                let mut codetag = squeeze::codetag::Codetag::default();
+                codetag.add_mnemonic("todo");
+                codetag.add_mnemonic("fixme");
+                codetag.hide_mnemonic = true;
+                vec![Box::new(codetag)]
+            }),
+            // A scheme allowlist (`--url`) and its trigger context.
+            Box::new(|| vec![Box::new(allowlisted_uri(false))]),
         ]);
         sets.iter()
             .map(|make| {

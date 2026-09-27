@@ -844,12 +844,20 @@ enum Search {
     One(u8),
     Two(u8, u8),
     Three(u8, u8, u8),
+    /// The pass's `literals`, ASCII case ignored.
+    Prefixes,
     Blocks,
 }
 
+/// Frequency rank (see `search::rank`) from which searching a finder's
+/// literal prefixes beats searching its start or anchor bytes: every
+/// letter ranks above, `J` below.
+const PREFIX_RANK: u8 = 160;
+
 /// One search over the input serving a subset of the finders: `memchr` for
-/// up to three bytes (trigger bytes, start bytes or anchor bytes) or the
-/// block classifier. Passes have disjoint finder sets.
+/// up to three bytes (trigger bytes, start bytes or anchor bytes), a few
+/// literals starting every candidate, or the block classifier. Passes have
+/// disjoint finder sets.
 struct Pass {
     search: Search,
     /// Finders served by this pass.
@@ -871,6 +879,8 @@ struct Pass {
     /// searched byte whose every finder is an anchored one with a check
     /// over searched bytes only needs one of those checks to pass.
     checks: search::Checks,
+    /// Literals of a `Search::Prefixes` pass.
+    literals: Option<search::Literals>,
     /// Every dispatch finder of a `Search::Blocks` pass that can start at a
     /// hex digit needs a hex run of at least this many bytes (0 when one
     /// needs less): the block stage drops shorter runs before any per-lane
@@ -902,6 +912,7 @@ impl Pass {
             Search::One(a) => format!("{what}({})", show(&[a])),
             Search::Two(a, b) => format!("{what}({})", show(&[a, b])),
             Search::Three(a, b, c) => format!("{what}({})", show(&[a, b, c])),
+            Search::Prefixes => "prefixes".to_string(),
             Search::Blocks => "blocks".to_string(),
         }
     }
@@ -1301,16 +1312,43 @@ impl Scanner {
         };
         let mut cheap: Vec<(usize, Vec<u8>, bool)> = Vec::new();
         let mut block_mask = 0u32;
-        for i in 0..finders.len() {
+        // Finders the block classifier would serve, found by a literal
+        // search instead when they name their candidates' prefixes.
+        let mut prefix_mask = 0u32;
+        let mut prefixes: Vec<Vec<u8>> = Vec::new();
+        for (i, finder) in finders.iter().enumerate() {
             let bit = 1u32 << i;
             if ctx_mask & bit == 0 {
                 continue;
             }
-            match search_bytes(i) {
+            let bytes = search_bytes(i);
+            // Prefixes beat the block classifier, and bytes as frequent as
+            // letters (`t` for `todo`).
+            let own = match &bytes {
+                Some((bytes, _)) if search::rank(bytes) < PREFIX_RANK => Vec::new(),
+                _ if dispatch_mask & bit != 0 => finder.prefixes(),
+                _ => Vec::new(),
+            };
+            let mut joined = prefixes.clone();
+            joined.extend(own.iter().cloned());
+            if !own.is_empty() && search::Literals::new(&joined).is_some() {
+                prefix_mask |= bit;
+                prefixes = joined;
+                continue;
+            }
+            match bytes {
                 Some((bytes, anchored)) => cheap.push((i, bytes, anchored)),
                 None => block_mask |= bit,
             }
         }
+        // A block pass running anyway classifies their start bytes for free.
+        let literals = if block_mask != 0 {
+            block_mask |= prefix_mask;
+            prefix_mask = 0;
+            None
+        } else {
+            search::Literals::new(&prefixes)
+        };
         if block_mask != 0 {
             let base = min_hex_run(block_mask);
             let mut joined = block_mask;
@@ -1506,6 +1544,20 @@ impl Scanner {
                 rules: None,
                 prev,
                 checks,
+                literals: None,
+                min_hex_run: 0,
+            });
+        }
+        if prefix_mask != 0 {
+            passes.push(Pass {
+                search: Search::Prefixes,
+                finders: prefix_mask,
+                anchored: 0,
+                whole: whole_for(prefix_mask),
+                rules: None,
+                prev: None,
+                checks: search::Checks::default(),
+                literals,
                 min_hex_run: 0,
             });
         }
@@ -1518,6 +1570,7 @@ impl Scanner {
                 rules: Some(build_rules(block_mask)),
                 prev: None,
                 checks: search::Checks::default(),
+                literals: None,
                 min_hex_run: min_hex_run(block_mask),
             });
         }
@@ -1637,7 +1690,7 @@ impl Scanner {
             Search::One(a) => memchr::memchr(a, hay),
             Search::Two(a, b) => memchr::memchr2(a, b, hay),
             Search::Three(a, b, c) => memchr::memchr3(a, b, c, hay),
-            Search::Blocks => return Some(from),
+            Search::Prefixes | Search::Blocks => return Some(from),
         }?;
         let hit = from + hit;
         Some(
@@ -2289,9 +2342,17 @@ impl Scanner {
                     Search::One(a) => ([a, a, a], 1),
                     Search::Two(a, b) => ([a, b, b], 2),
                     Search::Three(a, b, c) => ([a, b, c], 3),
-                    Search::Blocks => unreachable!("handled below"),
+                    Search::Prefixes | Search::Blocks => unreachable!("handled below"),
                 };
                 self.search(pass, &bytes[..count], input, sink);
+            }
+            Search::Prefixes => {
+                let literals = pass.literals.as_ref().expect("a prefix pass has literals");
+                let engine = search::Engine::of(self.backend);
+                search::search_literals(engine, literals, input, |pos| {
+                    sink.candidate(self, pass, pos, None);
+                    sink.stopped()
+                });
             }
             Search::Blocks => {
                 if input.len() < BLOCK {
