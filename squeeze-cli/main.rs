@@ -729,13 +729,21 @@ fn tree_threads(opts: &Opts) -> usize {
     }
     match opts.jobs {
         Jobs::Count(n) => n,
-        // Beyond a dozen threads the kernel's file system locks, not the
-        // scan, set the pace (ripgrep caps at the same count).
         Jobs::Auto => std::thread::available_parallelism()
-            .map(|n| n.get().min(12))
+            .map(|n| n.get().min(TREE_MAX_THREADS))
             .unwrap_or(1),
     }
 }
+
+/// Walker threads by default. Past this, the kernel's file system locks,
+/// not the scan, set the pace: on macOS, opening and reading files from
+/// more than four threads mostly adds system time (a walk of 89,000 files
+/// spends 3.4 s in the kernel on 4 threads and 7.3 s on 12, for no gain in
+/// wall time); elsewhere ripgrep's cap of a dozen holds.
+#[cfg(target_os = "macos")]
+const TREE_MAX_THREADS: usize = 4;
+#[cfg(not(target_os = "macos"))]
+const TREE_MAX_THREADS: usize = 12;
 
 /// A closed downstream reader (`squeeze ... | head -1`) is a normal way for a
 /// pipeline to end: finish silently and successfully, like grep does.
