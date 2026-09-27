@@ -28,6 +28,9 @@ open = "5"
 squeeze = { path = "../squeeze" }
 ignore = "0.4"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"

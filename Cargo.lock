@@ -1101,6 +1101,7 @@ dependencies = [
  "env_logger",
  "glob",
  "ignore",
+ "libc",
  "log",
  "memchr",
  "memmap2",

@@ -1681,11 +1681,13 @@ const BUFFER_WINDOW: usize = 1024 * 1024;
 
 /// Sequential scan of an input held entirely in memory (a mapped file):
 /// windows of whole lines, each scanned as one block.
+#[allow(clippy::too_many_arguments)]
 fn scan_buffer_sequential(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
     data: &[u8],
+    mapped: bool,
     out: &mut (dyn Write + Send),
     state: &mut OutputState,
 ) -> io::Result<bool> {
@@ -1693,7 +1695,9 @@ fn scan_buffer_sequential(
     let streaming = !must_buffer(opts);
     let mut line_number = 1;
     let mut pos = 0;
+    let mut prefetch = Prefetch::new(data, mapped);
     while pos < data.len() {
+        prefetch.ahead_of(pos);
         let window_end = if pos + BUFFER_WINDOW >= data.len() {
             data.len()
         } else {
@@ -2052,11 +2056,13 @@ fn scan_lines_parallel(
 
 /// Parallel scan of an input held entirely in memory: chunks are slices,
 /// nothing is copied.
+#[allow(clippy::too_many_arguments)]
 fn scan_buffer_parallel<'a>(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
     data: &'a [u8],
+    mapped: bool,
     out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
@@ -2064,10 +2070,12 @@ fn scan_buffer_parallel<'a>(
     let mut pos = 0;
     let mut index = 0;
     let mut first_line = 1;
+    let mut prefetch = Prefetch::new(data, mapped);
     let next_chunk = || -> io::Result<Option<Chunk<'a>>> {
         if pos >= data.len() {
             return Ok(None);
         }
+        prefetch.ahead_of(pos);
         let end = if pos + CHUNK_SIZE >= data.len() {
             data.len()
         } else {
@@ -2205,6 +2213,7 @@ fn scan_tree_file(
                 opts,
                 Some(source),
                 &map,
+                true,
                 &mut local.text,
                 &mut local.state,
             );
@@ -2222,6 +2231,7 @@ fn scan_tree_file(
         opts,
         Some(source),
         &data,
+        false,
         &mut local.text,
         &mut local.state,
     );
@@ -2399,21 +2409,78 @@ fn scan_reader(
     }
 }
 
+/// Scans an input held in memory; `mapped` says it is a file mapping.
+#[allow(clippy::too_many_arguments)]
 fn scan_buffer(
     scanner: &Scanner,
     opts: &Opts,
     source: Option<&str>,
     data: &[u8],
+    mapped: bool,
     out: &mut (dyn Write + Send),
     state: &mut OutputState,
     jobs: usize,
 ) -> io::Result<bool> {
     if jobs > 1 {
-        scan_buffer_parallel(scanner, opts, source, data, out, state, jobs)
+        scan_buffer_parallel(scanner, opts, source, data, mapped, out, state, jobs)
     } else {
-        scan_buffer_sequential(scanner, opts, source, data, out, state)
+        scan_buffer_sequential(scanner, opts, source, data, mapped, out, state)
     }
 }
+
+/// Bytes of a mapped input the kernel is asked to map ahead of the scan.
+const PREFETCH_AHEAD: usize = 8 * 1024 * 1024;
+
+/// Asks the kernel to map the pages of a memory-mapped input ahead of the
+/// scan (`MADV_WILLNEED`): faulting them in one at a time from the
+/// scanning threads costs far more than the kernel's batched mapping (half
+/// the user time of a sparse scan). The window is bounded, so an input
+/// larger than memory is never requested at once.
+struct Prefetch<'a> {
+    data: &'a [u8],
+    /// Bytes advised so far; the whole input when nothing is to be done.
+    done: usize,
+}
+
+impl<'a> Prefetch<'a> {
+    fn new(data: &'a [u8], mapped: bool) -> Self {
+        let done = if mapped && cfg!(unix) { 0 } else { data.len() };
+        Prefetch { data, done }
+    }
+
+    /// Advises the next window once the scan at `pos` gets within half a
+    /// window of the advised bytes.
+    fn ahead_of(&mut self, pos: usize) {
+        if self.done >= self.data.len() || self.done >= pos + PREFETCH_AHEAD / 2 {
+            return;
+        }
+        let end = (pos + PREFETCH_AHEAD).min(self.data.len());
+        advise_will_need(&self.data[self.done..end]);
+        self.done = end;
+    }
+}
+
+#[cfg(unix)]
+fn advise_will_need(range: &[u8]) {
+    // SAFETY: `sysconf` has no preconditions.
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap_or(4096);
+    let start = range.as_ptr() as usize;
+    // madvise wants a page-aligned start; the page holding `start` belongs
+    // to the same mapping.
+    let aligned = start & !(page - 1);
+    // SAFETY: the advice only affects how the pages of a mapping we borrow
+    // are paged in, never their contents; failure is harmless.
+    unsafe {
+        libc::madvise(
+            aligned as *mut libc::c_void,
+            range.len() + (start - aligned),
+            libc::MADV_WILLNEED,
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn advise_will_need(_range: &[u8]) {}
 
 /// Regular files at least this large are memory-mapped; smaller ones are
 /// read whole. Either way the file is scanned from memory without copies.
@@ -2604,6 +2671,7 @@ fn main() -> ExitCode {
                                     &opts,
                                     Some(&source),
                                     &map,
+                                    true,
                                     &mut out,
                                     &mut state,
                                     jobs,
@@ -2628,6 +2696,7 @@ fn main() -> ExitCode {
                                 &opts,
                                 Some(&source),
                                 &data,
+                                false,
                                 &mut out,
                                 &mut state,
                                 jobs,
