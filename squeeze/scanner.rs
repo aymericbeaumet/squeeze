@@ -863,9 +863,14 @@ struct Pass {
     /// Coarse rules of a `Search::Blocks` pass.
     rules: Option<Rules>,
     /// Bytes that may precede a searched byte where a finder of a `memchr`
-    /// pass without anchors can start (a superset; `\n` always, as a line
-    /// start has no previous byte), or `None` when every byte may.
+    /// pass can start or have its first anchor byte (a superset; `\n`
+    /// always, as a line start has no previous byte), or `None` when every
+    /// byte may.
     prev: Option<NibbleSet>,
+    /// Anchor checks of a `memchr` pass the search tests on its masks: a
+    /// searched byte whose every finder is an anchored one with a check
+    /// over searched bytes only needs one of those checks to pass.
+    checks: search::Checks,
     /// Every dispatch finder of a `Search::Blocks` pass that can start at a
     /// hex digit needs a hex run of at least this many bytes (0 when one
     /// needs less): the block stage drops shorter runs before any per-lane
@@ -1281,13 +1286,18 @@ impl Scanner {
             if dispatch_mask & bit == 0 {
                 return None;
             }
+            // Start bytes or anchor bytes, whichever are rarer (`J`
+            // rather than `e` for a JWT).
             let bytes = bytes_of(&|b| starts[i].contains(b));
-            if few(&bytes) {
-                return Some((bytes, false));
+            let anchored = anchors[i]
+                .map(|anchor| bytes_of(&|b| anchor.bytes.contains(b)))
+                .filter(|bytes| few(bytes));
+            match anchored {
+                Some(anchor) if !few(&bytes) || search::rank(&anchor) < search::rank(&bytes) => {
+                    Some((anchor, true))
+                }
+                _ => few(&bytes).then_some((bytes, false)),
             }
-            let anchor = anchors[i]?;
-            let bytes = bytes_of(&|b| anchor.bytes.contains(b));
-            few(&bytes).then_some((bytes, true))
         };
         let mut cheap: Vec<(usize, Vec<u8>, bool)> = Vec::new();
         let mut block_mask = 0u32;
@@ -1344,12 +1354,28 @@ impl Scanner {
         };
         // Bytes before a searched byte where a finder may start: the
         // finder's own gate, and the pairs of its context table when no
-        // next byte exempts a trigger from it.
-        let prev_filter = |bytes: &[u8], mask: u32| -> Option<NibbleSet> {
+        // next byte exempts a trigger from it. An anchor whose matches
+        // start a fixed number of bytes before their first anchor byte has
+        // a walk byte right before that one.
+        let prev_filter = |bytes: &[u8], mask: u32, anchored: u32| -> Option<NibbleSet> {
             let mut members = [false; 256];
             members[usize::from(b'\n')] = true;
             for (i, f) in finders.iter().enumerate() {
                 if mask & (1u32 << i) == 0 {
+                    continue;
+                }
+                if anchored & (1u32 << i) != 0 {
+                    let anchor = anchors[i]
+                        .as_ref()
+                        .expect("an anchored finder has an anchor");
+                    if !anchor.back.is_some_and(|back| back >= 1) {
+                        return None;
+                    }
+                    for prev in 0..=255u8 {
+                        if anchor.walk.contains(prev) {
+                            members[usize::from(prev)] = true;
+                        }
+                    }
                     continue;
                 }
                 let context = match &contexts[i] {
@@ -1386,14 +1412,86 @@ impl Scanner {
             }
             NibbleSet::new(&members)
         };
+        let search_checks = |bytes: &[u8], mask: u32, anchored: u32| -> search::Checks {
+            let mut checks = search::Checks::default();
+            // The searched bytes of a set, or `None` when it holds others.
+            let indices = |set: &crate::ByteSet| -> Option<u8> {
+                if (0..=255u8).any(|b| set.contains(b) && !bytes.contains(&b)) {
+                    return None;
+                }
+                Some(
+                    (0..bytes.len())
+                        .filter(|&j| set.contains(bytes[j]))
+                        .fold(0u8, |m, j| m | 1 << j),
+                )
+            };
+            for (k, &b) in bytes.iter().enumerate() {
+                let (mut used, mut conditional) = (false, true);
+                for (i, f) in finders.iter().enumerate() {
+                    let bit = 1u32 << i;
+                    if mask & bit == 0 {
+                        continue;
+                    }
+                    if anchored & bit == 0 {
+                        let starts = if f.dispatchable() {
+                            f.could_start_at(b)
+                        } else {
+                            f.triggerable() && f.could_trigger_at(b)
+                        };
+                        if starts {
+                            used = true;
+                            conditional = false;
+                        }
+                        continue;
+                    }
+                    let anchor = anchors[i]
+                        .as_ref()
+                        .expect("an anchored finder has an anchor");
+                    if !anchor.bytes.contains(b) {
+                        continue;
+                    }
+                    used = true;
+                    let Some((check, bytes_mask)) = anchor
+                        .checks
+                        .iter()
+                        .flatten()
+                        .find(|check| check.anchors.contains(b))
+                        .and_then(|check| Some((check, indices(&check.bytes)?)))
+                        .filter(|(check, _)| check.offsets().iter().all(|&o| o < 64))
+                    else {
+                        conditional = false;
+                        continue;
+                    };
+                    let entry = search::Check {
+                        hits: 1 << k,
+                        bytes: bytes_mask,
+                        offsets: check.offsets,
+                        count: check.offset_count,
+                        all: check.all,
+                    };
+                    let same = |e: &&mut search::Check| {
+                        (e.bytes, e.offsets, e.count, e.all)
+                            == (entry.bytes, entry.offsets, entry.count, entry.all)
+                    };
+                    if let Some(existing) = checks.list.iter_mut().flatten().find(same) {
+                        existing.hits |= 1 << k;
+                    } else if let Some(slot) = checks.list.iter_mut().find(|e| e.is_none()) {
+                        *slot = Some(entry);
+                    } else {
+                        conditional = false;
+                    }
+                }
+                if used && conditional {
+                    checks.conditional |= 1 << k;
+                }
+            }
+            checks
+        };
         let mut passes = Vec::new();
         for (mut bytes, mask, anchored) in groups {
             bytes.sort_unstable();
-            let prev = if anchored == 0 {
-                prev_filter(&bytes, mask)
-            } else {
-                None
-            };
+            let prev = prev_filter(&bytes, mask, anchored);
+            let checks = search_checks(&bytes, mask, anchored);
             let search = match bytes.as_slice() {
                 [a] => Search::One(*a),
                 [a, b] => Search::Two(*a, *b),
@@ -1407,6 +1505,7 @@ impl Scanner {
                 whole: whole_for(mask),
                 rules: None,
                 prev,
+                checks,
                 min_hex_run: 0,
             });
         }
@@ -1418,6 +1517,7 @@ impl Scanner {
                 whole: whole_for(block_mask),
                 rules: Some(build_rules(block_mask)),
                 prev: None,
+                checks: search::Checks::default(),
                 min_hex_run: min_hex_run(block_mask),
             });
         }
@@ -1862,12 +1962,7 @@ impl Scanner {
                 .flatten()
                 .find(|check| check.anchors.contains(cur))
             {
-                let seen = check.offsets().iter().any(|&offset| {
-                    input
-                        .get(pos + offset as usize)
-                        .is_some_and(|&b| check.bytes.contains(b))
-                });
-                if !seen {
+                if !check.passes(input, pos) {
                     continue;
                 }
                 confirmed = true;
@@ -2235,10 +2330,17 @@ impl Scanner {
     #[inline(always)]
     fn search<S: Sink>(&self, pass: &Pass, bytes: &[u8], input: &[u8], sink: &mut S) {
         let engine = search::Engine::of(self.backend);
-        search::search(engine, bytes, pass.prev.as_ref(), input, |pos| {
-            sink.candidate(self, pass, pos, None);
-            sink.stopped()
-        });
+        search::search(
+            engine,
+            bytes,
+            pass.prev.as_ref(),
+            &pass.checks,
+            input,
+            |pos| {
+                sink.candidate(self, pass, pos, None);
+                sink.stopped()
+            },
+        );
     }
 
     #[cfg(target_arch = "x86_64")]

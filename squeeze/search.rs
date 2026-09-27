@@ -7,6 +7,38 @@
 //! byte of every hit in the same vectors, so a colon after a digit never
 //! reaches the scanner when no finder of the pass can start there.
 
+/// Heuristic frequency rank of each byte in typical text, higher is more
+/// frequent: the table of the `memchr` crate's substring search.
+#[rustfmt::skip]
+const RANK: [u8; 256] = [
+     55,  52,  51,  50,  49,  48,  47,  46,  45, 103, 242,  66,  67, 229,  44,  43,
+     42,  41,  40,  39,  38,  37,  36,  35,  34,  33,  56,  32,  31,  30,  29,  28,
+    255, 148, 164, 149, 136, 160, 155, 173, 221, 222, 134, 122, 232, 202, 215, 224,
+    208, 220, 204, 187, 183, 179, 177, 168, 178, 200, 226, 195, 154, 184, 174, 126,
+    120, 191, 157, 194, 170, 189, 162, 161, 150, 193, 142, 137, 171, 176, 185, 167,
+    186, 112, 175, 192, 188, 156, 140, 143, 123, 133, 128, 147, 138, 146, 114, 223,
+    151, 249, 216, 238, 236, 253, 227, 218, 230, 247, 135, 180, 241, 233, 246, 244,
+    231, 139, 245, 243, 251, 235, 201, 196, 240, 214, 152, 182, 205, 181, 127,  27,
+    212, 211, 210, 213, 228, 197, 169, 159, 131, 172, 105,  80,  98,  96,  97,  81,
+    207, 145, 116, 115, 144, 130, 153, 121, 107, 132, 109, 110, 124, 111,  82, 108,
+    118, 141, 113, 129, 119, 125, 165, 117,  92, 106,  83,  72,  99,  93,  65,  79,
+    166, 237, 163, 199, 190, 225, 209, 203, 198, 217, 219, 206, 234, 248, 158, 239,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
+
+/// How frequent the most frequent of `bytes` is expected to be: of two
+/// searches, the one with the lower rank finds fewer hits.
+pub(crate) fn rank(bytes: &[u8]) -> u8 {
+    bytes
+        .iter()
+        .map(|&b| RANK[usize::from(b)])
+        .max()
+        .unwrap_or(0)
+}
+
 /// A byte set as two nibble tables (the "shufti" technique): byte `b` is a
 /// member when `lo[b & 15] & hi[b >> 4] != 0`. Eight buckets distinguish up
 /// to eight distinct low-nibble patterns; beyond that buckets are merged,
@@ -97,18 +129,149 @@ pub(crate) enum Engine {
     Ssse3,
 }
 
+/// Most checks a search tests.
+pub(crate) const MAX_CHECKS: usize = 4;
+
+/// A condition on the hits of some searched bytes, tested on the search's
+/// bit masks: the bytes `offsets` after a hit must be searched bytes listed
+/// in `bytes`, at every offset with `all` and at one of them otherwise.
+/// `hits` and `bytes` are bit sets over the indices of the searched bytes;
+/// offsets are below 64.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Check {
+    pub(crate) hits: u8,
+    pub(crate) bytes: u8,
+    pub(crate) offsets: [u8; crate::MAX_CHECK_OFFSETS],
+    pub(crate) count: u8,
+    pub(crate) all: bool,
+}
+
+impl Check {
+    fn offsets(&self) -> &[u8] {
+        &self.offsets[..usize::from(self.count)]
+    }
+
+    /// Hits of the group whose masks are `cur` passing the check, `next`
+    /// holding the masks of the following 64 bytes.
+    #[inline(always)]
+    fn pass(&self, cur: &[u64; 3], next: &[u64; 3]) -> u64 {
+        let (mut now, mut then) = (0u64, 0u64);
+        for j in 0..3 {
+            if self.bytes & (1 << j) != 0 {
+                now |= cur[j];
+                then |= next[j];
+            }
+        }
+        let window = u128::from(now) | u128::from(then) << 64;
+        let mut pass = if self.all { u64::MAX } else { 0 };
+        for &offset in self.offsets() {
+            let shifted = (window >> offset) as u64;
+            pass = if self.all {
+                pass & shifted
+            } else {
+                pass | shifted
+            };
+        }
+        pass
+    }
+}
+
+/// The checks of a search: a hit of a searched byte whose index is set in
+/// `conditional` must pass one of the checks listing it in `hits`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Checks {
+    pub(crate) conditional: u8,
+    pub(crate) list: [Option<Check>; MAX_CHECKS],
+}
+
+impl Checks {
+    /// Hits among `cur` (masks per searched byte) that pass.
+    #[inline(always)]
+    fn keep(&self, cur: &[u64; 3], next: &[u64; 3]) -> u64 {
+        let mut keep = 0u64;
+        for k in 0..3 {
+            if cur[k] == 0 {
+                continue;
+            }
+            if self.conditional & (1 << k) == 0 {
+                keep |= cur[k];
+                continue;
+            }
+            let mut pass = 0u64;
+            for check in self.list.iter().flatten() {
+                if check.hits & (1 << k) != 0 {
+                    pass |= check.pass(cur, next);
+                }
+            }
+            keep |= cur[k] & pass;
+        }
+        keep
+    }
+
+    /// Whether the hit at `pos` passes, scalar.
+    fn survives(&self, bytes: &[u8], input: &[u8], pos: usize) -> bool {
+        let Some(k) = bytes.iter().position(|&b| b == input[pos]) else {
+            return false;
+        };
+        if self.conditional & (1 << k) == 0 {
+            return true;
+        }
+        self.list.iter().flatten().any(|check| {
+            if check.hits & (1 << k) == 0 {
+                return false;
+            }
+            let listed = |offset: &u8| {
+                input.get(pos + usize::from(*offset)).is_some_and(|&b| {
+                    bytes
+                        .iter()
+                        .enumerate()
+                        .any(|(j, &searched)| check.bytes & (1 << j) != 0 && searched == b)
+                })
+            };
+            if check.all {
+                check.offsets().iter().all(listed)
+            } else {
+                check.offsets().iter().any(listed)
+            }
+        })
+    }
+}
+
 /// Calls `hit` with every position of `input` holding one of `bytes` (one
-/// to three) whose previous byte is in `prev`, when given; position 0 has
-/// no previous byte and always qualifies. Stops when `hit` returns `true`.
+/// to three) whose previous byte is in `prev`, when given, and that passes
+/// `checks`; position 0 has no previous byte and always qualifies. Stops
+/// when `hit` returns `true`.
 #[inline(always)]
 pub(crate) fn search(
     engine: Engine,
     bytes: &[u8],
     prev: Option<&NibbleSet>,
+    checks: &Checks,
     input: &[u8],
-    hit: impl FnMut(usize) -> bool,
+    mut hit: impl FnMut(usize) -> bool,
 ) {
     debug_assert!((1..=3).contains(&bytes.len()));
+    if checks.conditional != 0 {
+        match engine {
+            Engine::Memchr => memchr_search(bytes, prev, input, |pos| {
+                checks.survives(bytes, input, pos) && hit(pos)
+            }),
+            #[cfg(target_arch = "aarch64")]
+            Engine::Neon => checked(bytes, prev, checks, input, neon::masks, hit),
+            #[cfg(target_arch = "x86_64")]
+            Engine::Ssse3 => checked(
+                bytes,
+                prev,
+                checks,
+                input,
+                // SAFETY: `Engine::Ssse3` is only selected after the CPU
+                // check.
+                |input, base, bytes, set| unsafe { ssse3::masks(input, base, bytes, set) },
+                hit,
+            ),
+        }
+        return;
+    }
     match engine {
         Engine::Memchr => memchr_search(bytes, prev, input, hit),
         #[cfg(target_arch = "aarch64")]
@@ -116,6 +279,70 @@ pub(crate) fn search(
         #[cfg(target_arch = "x86_64")]
         // SAFETY: `Engine::Ssse3` is only selected after the CPU check.
         Engine::Ssse3 => unsafe { ssse3::search(bytes, prev, input, hit) },
+    }
+}
+
+/// Masks of one group of 64 bytes at `base`: per searched byte, and of the
+/// positions whose previous byte is in the set (position 0 included).
+type GroupMasks = ([u64; 3], u64);
+
+/// The search with checks: each group's masks are kept until the next
+/// group's are known, since a check looks up to 63 bytes ahead.
+#[inline(always)]
+fn checked(
+    bytes: &[u8],
+    prev: Option<&NibbleSet>,
+    checks: &Checks,
+    input: &[u8],
+    masks: impl Fn(&[u8], usize, &[u8], &NibbleSet) -> GroupMasks,
+    mut hit: impl FnMut(usize) -> bool,
+) {
+    let set = prev.unwrap_or(&NibbleSet::ALL);
+    let len = input.len();
+    let mut emit = |base: usize, cur: &GroupMasks, next: &[u64; 3]| -> bool {
+        let mut mask = checks.keep(&cur.0, next) & cur.1;
+        while mask != 0 {
+            if hit(base + mask.trailing_zeros() as usize) {
+                return true;
+            }
+            mask &= mask - 1;
+        }
+        false
+    };
+    let mut pending: Option<(usize, GroupMasks)> = None;
+    let mut base = 0;
+    while base + 64 <= len {
+        let group = masks(input, base, bytes, set);
+        if let Some((at, cur)) = pending
+            && emit(at, &cur, &group.0)
+        {
+            return;
+        }
+        pending = Some((base, group));
+        base += 64;
+    }
+    // The partial group's masks, for the checks of the last whole one.
+    let mut rest = [0u64; 3];
+    for (i, &b) in input[base..].iter().enumerate() {
+        for (k, &searched) in bytes.iter().enumerate() {
+            if b == searched {
+                rest[k] |= 1 << i;
+            }
+        }
+    }
+    if let Some((at, cur)) = pending
+        && emit(at, &cur, &rest)
+    {
+        return;
+    }
+    for pos in base..len {
+        if bytes.contains(&input[pos])
+            && qualifies(prev, input, pos)
+            && checks.survives(bytes, input, pos)
+            && hit(pos)
+        {
+            return;
+        }
     }
 }
 
@@ -190,8 +417,71 @@ fn tail(
 
 #[cfg(target_arch = "aarch64")]
 mod neon {
-    use super::{NibbleSet, tail};
+    use super::{GroupMasks, NibbleSet, tail};
     use core::arch::aarch64::*;
+
+    const WEIGHTS: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
+
+    /// One bit per byte of four 0x00/0xFF vectors: weigh each lane by its
+    /// bit and add neighbours pairwise until each byte holds eight lanes.
+    #[inline(always)]
+    fn movemask(e: [uint8x16_t; 4]) -> u64 {
+        // SAFETY: baseline NEON.
+        unsafe {
+            let weights = vld1q_u8(WEIGHTS.as_ptr());
+            let s01 = vpaddq_u8(vandq_u8(e[0], weights), vandq_u8(e[1], weights));
+            let s23 = vpaddq_u8(vandq_u8(e[2], weights), vandq_u8(e[3], weights));
+            let s = vpaddq_u8(s01, s23);
+            let s = vpaddq_u8(s, s);
+            vgetq_lane_u64::<0>(vreinterpretq_u64_u8(s))
+        }
+    }
+
+    /// The masks of the 64 bytes at `base`, which must lie in `input`.
+    #[inline(always)]
+    pub(super) fn masks(input: &[u8], base: usize, bytes: &[u8], set: &NibbleSet) -> GroupMasks {
+        debug_assert!(base + 64 <= input.len());
+        let ptr = input.as_ptr();
+        // SAFETY: baseline NEON; the loads read `input[base - 1..base + 64]`
+        // (from `base` on at the start of the input).
+        unsafe {
+            let v = [
+                vld1q_u8(ptr.add(base)),
+                vld1q_u8(ptr.add(base + 16)),
+                vld1q_u8(ptr.add(base + 32)),
+                vld1q_u8(ptr.add(base + 48)),
+            ];
+            let mut eq = [0u64; 3];
+            for (k, &b) in bytes.iter().enumerate() {
+                let splat = vdupq_n_u8(b);
+                eq[k] = movemask(v.map(|v| vceqq_u8(v, splat)));
+            }
+            let lo = vld1q_u8(set.lo.as_ptr());
+            let hi = vld1q_u8(set.hi.as_ptr());
+            let low_nibble = vdupq_n_u8(0x0F);
+            let member = |p: uint8x16_t| -> uint8x16_t {
+                let l = vqtbl1q_u8(lo, vandq_u8(p, low_nibble));
+                let h = vqtbl1q_u8(hi, vshrq_n_u8::<4>(p));
+                vtstq_u8(l, h)
+            };
+            let first = if base == 0 {
+                vextq_u8::<15>(vdupq_n_u8(0), v[0])
+            } else {
+                vld1q_u8(ptr.add(base - 1))
+            };
+            let prev = [
+                first,
+                vld1q_u8(ptr.add(base + 15)),
+                vld1q_u8(ptr.add(base + 31)),
+                vld1q_u8(ptr.add(base + 47)),
+            ];
+            let mut after = movemask(prev.map(member));
+            if base == 0 {
+                after |= 1;
+            }
+            (eq, after)
+        }
+    }
 
     /// One instantiation per caller: the byte count and the filter are
     /// runtime values (a missing byte repeats the first, a missing filter
@@ -204,7 +494,6 @@ mod neon {
         mut hit: impl FnMut(usize) -> bool,
     ) {
         let hit = &mut hit;
-        const WEIGHTS: [u8; 16] = [1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128];
         let len = input.len();
         let ptr = input.as_ptr();
         let set = prev.unwrap_or(&NibbleSet::ALL);
@@ -274,8 +563,62 @@ mod neon {
 
 #[cfg(target_arch = "x86_64")]
 mod ssse3 {
-    use super::{NibbleSet, tail};
+    use super::{GroupMasks, NibbleSet, tail};
     use core::arch::x86_64::*;
+
+    /// The masks of the 64 bytes at `base`, which must lie in `input`.
+    #[target_feature(enable = "ssse3")]
+    pub(super) fn masks(input: &[u8], base: usize, bytes: &[u8], set: &NibbleSet) -> GroupMasks {
+        debug_assert!(base + 64 <= input.len());
+        let ptr = input.as_ptr();
+        let movemask = |e: [__m128i; 4]| -> u64 {
+            e.iter().enumerate().fold(0u64, |mask, (i, &v)| {
+                mask | u64::from(_mm_movemask_epi8(v) as u16) << (16 * i)
+            })
+        };
+        // SAFETY: SSSE3 is enabled for this function; the loads read
+        // `input[base - 1..base + 64]` (from `base` on at the start of the
+        // input).
+        unsafe {
+            let v = [
+                _mm_loadu_si128(ptr.add(base).cast()),
+                _mm_loadu_si128(ptr.add(base + 16).cast()),
+                _mm_loadu_si128(ptr.add(base + 32).cast()),
+                _mm_loadu_si128(ptr.add(base + 48).cast()),
+            ];
+            let mut eq = [0u64; 3];
+            for (k, &b) in bytes.iter().enumerate() {
+                let splat = _mm_set1_epi8(b as i8);
+                eq[k] = movemask(v.map(|v| _mm_cmpeq_epi8(v, splat)));
+            }
+            let lo = _mm_loadu_si128(set.lo.as_ptr().cast());
+            let hi = _mm_loadu_si128(set.hi.as_ptr().cast());
+            let low_nibble = _mm_set1_epi8(0x0F);
+            let zero = _mm_setzero_si128();
+            // Lanes whose byte is in the set.
+            let member = |p: __m128i| -> __m128i {
+                let l = _mm_shuffle_epi8(lo, _mm_and_si128(p, low_nibble));
+                let h = _mm_shuffle_epi8(hi, _mm_and_si128(_mm_srli_epi16::<4>(p), low_nibble));
+                _mm_andnot_si128(_mm_cmpeq_epi8(_mm_and_si128(l, h), zero), _mm_set1_epi8(-1))
+            };
+            let first = if base == 0 {
+                _mm_slli_si128::<1>(v[0])
+            } else {
+                _mm_loadu_si128(ptr.add(base - 1).cast())
+            };
+            let prev = [
+                first,
+                _mm_loadu_si128(ptr.add(base + 15).cast()),
+                _mm_loadu_si128(ptr.add(base + 31).cast()),
+                _mm_loadu_si128(ptr.add(base + 47).cast()),
+            ];
+            let mut after = movemask(prev.map(member));
+            if base == 0 {
+                after |= 1;
+            }
+            (eq, after)
+        }
+    }
 
     /// As the NEON search: one instantiation per caller.
     #[target_feature(enable = "ssse3")]
@@ -360,9 +703,18 @@ mod ssse3 {
 mod tests {
     use super::*;
 
-    fn reference(bytes: &[u8], prev: Option<&NibbleSet>, input: &[u8]) -> Vec<usize> {
+    fn reference(
+        bytes: &[u8],
+        prev: Option<&NibbleSet>,
+        checks: &Checks,
+        input: &[u8],
+    ) -> Vec<usize> {
         (0..input.len())
-            .filter(|&pos| bytes.contains(&input[pos]) && qualifies(prev, input, pos))
+            .filter(|&pos| {
+                bytes.contains(&input[pos])
+                    && qualifies(prev, input, pos)
+                    && checks.survives(bytes, input, pos)
+            })
             .collect()
     }
 
@@ -376,14 +728,98 @@ mod tests {
     }
 
     fn check(bytes: &[u8], prev: Option<&NibbleSet>, input: &[u8]) {
-        let expected = reference(bytes, prev, input);
+        check_with(bytes, prev, &Checks::default(), input);
+    }
+
+    fn check_with(bytes: &[u8], prev: Option<&NibbleSet>, checks: &Checks, input: &[u8]) {
+        let expected = reference(bytes, prev, checks, input);
         for engine in engines() {
             let mut got = Vec::new();
-            search(engine, bytes, prev, input, |pos| {
+            search(engine, bytes, prev, checks, input, |pos| {
                 got.push(pos);
                 false
             });
-            assert_eq!(got, expected, "{engine:?} {bytes:?} {input:?}");
+            assert_eq!(got, expected, "{engine:?} {bytes:?} {checks:?} {input:?}");
+        }
+    }
+
+    fn periodic(hits: u8, bytes: u8, offsets: &[u8], all: bool) -> Check {
+        let mut list = [0u8; crate::MAX_CHECK_OFFSETS];
+        list[..offsets.len()].copy_from_slice(offsets);
+        Check {
+            hits,
+            bytes,
+            offsets: list,
+            count: offsets.len() as u8,
+            all,
+        }
+    }
+
+    #[test]
+    fn checked_search_agrees_with_a_scalar_reference() {
+        // Searched bytes `-`, `.`, `:` (indices 0, 1, 2), as for MAC
+        // addresses: `:` and `-` need separators 3, 6, 9 and 12 bytes on,
+        // `.` a dot 5 bytes on or (any of) 2 to 4 bytes on.
+        let mac = Checks {
+            conditional: 0b111,
+            list: [
+                Some(periodic(0b101, 0b101, &[3, 6, 9, 12], true)),
+                Some(periodic(0b010, 0b010, &[5], true)),
+                Some(periodic(0b010, 0b010, &[2, 3, 4], false)),
+                None,
+            ],
+        };
+        // Only `-` conditional, UUID dashes.
+        let uuid = Checks {
+            conditional: 0b001,
+            list: [
+                Some(periodic(0b001, 0b001, &[5, 10, 15], true)),
+                None,
+                None,
+                None,
+            ],
+        };
+        let set = set_of(b"0123456789abcdef\n");
+        let mut input = Vec::new();
+        for i in 0..400u32 {
+            input.extend_from_slice(match i % 9 {
+                0 => b"00:1a:2b:3c:4d:5e ".as_slice(),
+                1 => b"10:30:00Z ",
+                2 => b"2024-09-24 ",
+                3 => b"550e8400-e29b-41d4-a716-446655440000 ",
+                4 => b"001a.2b3c.4d5e ",
+                5 => b"1.2.3.4 ",
+                6 => b"a-b-c-d-e-f-g-h ",
+                7 => b"\n-:.",
+                _ => b"x",
+            });
+        }
+        for len in [
+            0,
+            1,
+            13,
+            63,
+            64,
+            65,
+            100,
+            127,
+            128,
+            129,
+            191,
+            192,
+            193,
+            input.len(),
+        ] {
+            let input = &input[..len.min(input.len())];
+            for start in [0, 1, 7, 33] {
+                let input = &input[start.min(input.len())..];
+                for checks in [&mac, &uuid] {
+                    check_with(b"-.:", None, checks, input);
+                    check_with(b"-.:", Some(&set), checks, input);
+                }
+                check_with(b"-", None, &uuid, input);
+                check_with(b"-", Some(&set), &uuid, input);
+            }
         }
     }
 
@@ -449,7 +885,7 @@ mod tests {
         let input = vec![b':'; 300];
         for engine in engines() {
             let mut seen = 0;
-            search(engine, b":", None, &input, |_| {
+            search(engine, b":", None, &Checks::default(), &input, |_| {
                 seen += 1;
                 seen == 70
             });

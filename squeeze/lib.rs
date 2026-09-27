@@ -583,22 +583,40 @@ pub const MAX_CHECK_OFFSETS: usize = 5;
 pub const MAX_CHECKS: usize = 2;
 
 /// When the anchor byte at `pos` is one of `anchors`, the byte at one of
-/// the `offsets` after `pos` must be one of `bytes` (and exist) for `pos`
-/// to be the first anchor byte of a match: a UUID's first `-` has another
-/// five bytes on, a MAC address's first `:` another three bytes on, an
-/// IPv4 address's first `.` another two to four bytes on.
+/// the `offsets` after `pos` (or at every offset, with `all`) must be one
+/// of `bytes` (and exist) for `pos` to be the first anchor byte of a
+/// match: an IPv4 address's first `.` has another two to four bytes on, a
+/// UUID's first `-` others 5, 10 and 15 bytes on, a MAC address's first
+/// `:` others 3, 6, 9 and 12 bytes on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AnchorCheck {
     pub anchors: ByteSet,
     pub offsets: [u8; MAX_CHECK_OFFSETS],
     pub offset_count: u8,
     pub bytes: ByteSet,
+    /// Every offset must hold one of `bytes`, not just one of them.
+    pub all: bool,
 }
 
 impl AnchorCheck {
     /// The offsets to test.
     pub fn offsets(&self) -> &[u8] {
         &self.offsets[..self.offset_count as usize]
+    }
+
+    /// Whether the anchor byte at `pos` of `input` passes the check.
+    #[inline]
+    pub fn passes(&self, input: &[u8], pos: usize) -> bool {
+        let seen = |&offset: &u8| {
+            input
+                .get(pos + offset as usize)
+                .is_some_and(|&b| self.bytes.contains(b))
+        };
+        if self.all {
+            self.offsets().iter().all(seen)
+        } else {
+            self.offsets().iter().any(seen)
+        }
     }
 }
 
@@ -628,7 +646,18 @@ impl Anchor {
     /// of `bytes`; anchor bytes outside every check's `anchors` are not
     /// checked, and at most [`MAX_CHECKS`] checks can be added. Only the
     /// first anchor byte of a match has to pass.
-    pub fn confirm(mut self, anchors: &[u8], offsets: &[u8], bytes: &[u8]) -> Anchor {
+    pub fn confirm(self, anchors: &[u8], offsets: &[u8], bytes: &[u8]) -> Anchor {
+        self.check(anchors, offsets, bytes, false)
+    }
+
+    /// Like [`confirm`](Self::confirm), but the byte at every one of the
+    /// `offsets` must be one of `bytes`: the separators of a UUID or a MAC
+    /// address, which dates and timestamps do not repeat that far.
+    pub fn confirm_all(self, anchors: &[u8], offsets: &[u8], bytes: &[u8]) -> Anchor {
+        self.check(anchors, offsets, bytes, true)
+    }
+
+    fn check(mut self, anchors: &[u8], offsets: &[u8], bytes: &[u8], all: bool) -> Anchor {
         assert!(
             !offsets.is_empty() && offsets.len() <= MAX_CHECK_OFFSETS,
             "an anchor check lists one to {MAX_CHECK_OFFSETS} offsets"
@@ -645,6 +674,7 @@ impl Anchor {
             offsets: list,
             offset_count: offsets.len() as u8,
             bytes: ByteSet::from_bytes(bytes),
+            all,
         });
         self
     }

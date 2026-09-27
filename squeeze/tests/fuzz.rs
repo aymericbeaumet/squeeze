@@ -1205,13 +1205,8 @@ fn assert_anchors_hold(finders: &[Box<dyn Finder>], line: &str) {
                     .flatten()
                     .find(|check| check.anchors.contains(input[first]))
                 {
-                    let seen = check.offsets().iter().any(|&offset| {
-                        input
-                            .get(first + offset as usize)
-                            .is_some_and(|&b| check.bytes.contains(b))
-                    });
                     assert!(
-                        seen,
+                        check.passes(input, first),
                         "{} match {:?} in {line:?}: no confirming byte at {:?} after the first anchor",
                         finder.id(),
                         range,

@@ -108,14 +108,16 @@ impl Finder for Mac {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        // `aa:bb:` / `aa-bb-`: the second separator follows three bytes on;
-        // `aaaa.bbbb.` five bytes on.
+        // `aa:bb:cc:dd:ee:ff` / dashes: the other separators follow 3, 6, 9
+        // and 12 bytes on (a timestamp stops at 3); `aaaa.bbbb.cccc`: the
+        // second dot five bytes on.
         Some(
             Anchor::new(
                 ByteSet::from_bytes(b":-."),
                 ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
             )
-            .confirm(b":-", &[3], b":-"),
+            .confirm_all(b":-", &[3, 6, 9, 12], b":-")
+            .confirm_all(b".", &[5], b"."),
         )
     }
 

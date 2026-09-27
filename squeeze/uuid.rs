@@ -93,13 +93,13 @@ impl Finder for Uuid {
     }
 
     fn anchor(&self) -> Option<Anchor> {
-        // The first dash sits at offset 8, the second at 13.
+        // The dashes sit at offsets 8, 13, 18 and 23.
         Some(
             Anchor::new(
                 ByteSet::from_bytes(b"-"),
                 ByteSet::from_fn(|b| b.is_ascii_hexdigit()),
             )
-            .confirm(b"-", &[5], b"-")
+            .confirm_all(b"-", &[5, 10, 15], b"-")
             .back(8),
         )
     }
