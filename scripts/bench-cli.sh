@@ -3,6 +3,7 @@
 # matchers on the same extraction tasks.
 #
 #   scripts/bench-cli.sh [--scale N] [--runs N] [--out DIR] [--quick]
+#                        [--big GIB] [--tree FILES]
 #
 # Corpora are generated deterministically by the library's `scanner` bench
 # (`--write-corpus`), each concatenated SCALE times (default 16, ~16 MiB per
@@ -20,6 +21,13 @@
 # union of the five patterns; `everything` runs squeeze with every finder (20
 # kinds), which no regex tool can be asked to do in one pass.
 #
+# Three scale scenarios follow: `big`, the mixed corpus repeated to GIB GiB
+# (default 2, 0 to skip) and read from the file; `stdin`, the same bytes
+# piped through `cat`; and `tree`, a generated source tree of FILES files
+# (default 20000, 0 to skip) in nested directories with a `.gitignore`d
+# build directory as large again, walked by every tool that honours ignore
+# files. Scale scenarios time each tool with its default parallelism.
+#
 # Requires: cargo, hyperfine, python3. Optional: rg, ugrep, GNU grep (ggrep),
 # BSD grep (/usr/bin/grep). Missing tools are skipped.
 set -euo pipefail
@@ -28,12 +36,16 @@ SCALE=16
 RUNS=5
 OUT=${BENCH_DIR:-/tmp/squeeze-bench}
 QUICK=0
+BIG_GIB=2
+TREE_FILES=20000
 while [ $# -gt 0 ]; do
   case "$1" in
     --scale) SCALE=$2; shift 2 ;;
     --runs) RUNS=$2; shift 2 ;;
     --out) OUT=$2; shift 2 ;;
     --quick) QUICK=1; shift ;;
+    --big) BIG_GIB=$2; shift 2 ;;
+    --tree) TREE_FILES=$2; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -139,16 +151,144 @@ for corpus in "${BENCH_CORPORA[@]}"; do
   done
 done
 
+# --- scale scenarios -------------------------------------------------------
+# name|squeeze flags|pattern|case-insensitive (1) for the regex tools
+declare -a SCALE_TASKS=(
+  "url|--url|$URL|0"
+  "uuid|--uuid|$UUID|0"
+  "ipv4|--ipv4|$IPV4|0"
+)
+SCALE_TOOLS=()   # name|command prefix, default parallelism
+for tool in "${TOOLS[@]}"; do
+  case "${tool%%|*}" in
+    ripgrep|ugrep|"gnu grep") SCALE_TOOLS+=("$tool") ;;
+  esac
+done
+SCALE_SECTIONS=()
+SCALE_RUNS=$(( RUNS < 3 ? RUNS : 3 ))
+
+# Times one scale task. `$3` is the squeeze command; `$4` a template where
+# `{}` stands for a regex tool and its pattern `$5` (case-insensitive when
+# `$6` is 1); `$7` is 1 when the commands need a shell (pipes).
+time_scale() {
+  local section=$1 name=$2 sq_cmd=$3 template=$4 pattern=$5 ci=$6 shell=$7
+  local slug="$section-${name// /-}"
+  local counts="$OUT/results/$slug.counts"
+  local args=(--warmup 1 --runs "$SCALE_RUNS" -i --output=pipe --export-json "$OUT/results/$slug.json")
+  if [ "$shell" = 0 ]; then args+=(-N); fi
+  : > "$counts"
+  echo "== $section / $name"
+  # Match counts: through a shell like hyperfine when the command pipes,
+  # else split into words without globbing, as hyperfine -N does.
+  run() { if [ "$shell" = 1 ]; then bash -c "$1"; else (set -f; $1); fi; }
+  args+=(-n "squeeze" "$sq_cmd")
+  run "$sq_cmd" | wc -l | tr -d ' ' | sed "s/^/squeeze /" >> "$counts"
+  local tool tname cmd full
+  for tool in "${SCALE_TOOLS[@]}"; do
+    tname=${tool%%|*}
+    cmd=${tool#*|}
+    if [ "$ci" = 1 ]; then
+      # Before ripgrep's trailing -e, which takes the pattern next.
+      case "$cmd" in
+        *" -e") cmd="${cmd% -e} -i -e" ;;
+        *) cmd="$cmd -i" ;;
+      esac
+    fi
+    full=${template//\{\}/$cmd $pattern}
+    args+=(-n "$tname" "$full")
+    run "$full" 2>/dev/null | wc -l | tr -d ' ' | sed "s/^/$tname /" >> "$counts" || true
+  done
+  hyperfine "${args[@]}" >/dev/null 2>&1 || echo "   (hyperfine failed for $section/$name)"
+}
+
+if [ "$BIG_GIB" != 0 ]; then
+  big="$OUT/big.txt"
+  want=$(( BIG_GIB * 1073741824 ))
+  if [ ! -f "$big" ] || [ "$(wc -c < "$big" | tr -d ' ')" -lt "$want" ]; then
+    echo "== generating a $BIG_GIB GiB file"
+    : > "$big"
+    while [ "$(wc -c < "$big" | tr -d ' ')" -lt "$want" ]; do cat "$OUT/mixed.txt" >> "$big"; done
+  fi
+  for task in "${SCALE_TASKS[@]}"; do
+    IFS='|' read -r name flags pattern ci <<< "$task"
+    time_scale big "$name" "$SQ $flags $big" "{} $big" "$pattern" "$ci" 0
+    time_scale stdin "$name" "cat $big | $SQ $flags" "cat $big | {}" "'$pattern'" "$ci" 1
+  done
+  SCALE_SECTIONS+=(big stdin)
+fi
+
+if [ "$TREE_FILES" != 0 ]; then
+  tree="$OUT/tree"
+  if [ ! -f "$tree/.complete-$TREE_FILES" ]; then
+    echo "== generating a tree of $TREE_FILES files"
+    rm -rf "$tree"
+    python3 - "$OUT" "$tree" "$TREE_FILES" <<'EOF'
+import os, sys
+out, tree, files = sys.argv[1], sys.argv[2], int(sys.argv[3])
+sources = [open(os.path.join(out, "corpus", f"{c}.txt"), "rb").read()
+           for c in ("source", "logs", "markdown", "jsonl", "prose")]
+exts = ["rs", "log", "md", "json", "txt"]
+os.makedirs(os.path.join(tree, ".git"))
+with open(os.path.join(tree, ".gitignore"), "w") as f:
+    f.write("target/\n")
+def write(root, count):
+    for i in range(count):
+        kind = i % len(sources)
+        data = sources[kind]
+        size = 2048 + (i * 7919) % 14336
+        start = data.find(b"\n", (i * 104729) % max(1, len(data) - size)) + 1
+        cut = data.rfind(b"\n", start, start + size) + 1 or start + size
+        d = os.path.join(root, f"d{i % 97:02d}", f"e{(i // 97) % 23:02d}")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, f"f{i}.{exts[kind]}"), "wb") as f:
+            f.write(data[start:cut])
+write(os.path.join(tree, "src"), files)
+write(os.path.join(tree, "target"), files)
+EOF
+    touch "$tree/.complete-$TREE_FILES"
+  fi
+  declare -a TREE_TASKS=(
+    "url|--url|$URL|0"
+    "todo|--todo|todo|1"
+  )
+  saved=("${SCALE_TOOLS[@]}")
+  SCALE_TOOLS=()
+  for tool in "${saved[@]}"; do
+    case "${tool%%|*}" in
+      ripgrep) SCALE_TOOLS+=("$tool") ;;
+      ugrep) SCALE_TOOLS+=("ugrep|${tool#*|} -r --ignore-files") ;;
+    esac
+  done
+  for task in "${TREE_TASKS[@]}"; do
+    IFS='|' read -r name flags pattern ci <<< "$task"
+    time_scale tree "$name" "$SQ $flags $tree" "{} $tree" "$pattern" "$ci" 0
+  done
+  SCALE_TOOLS=("${saved[@]}")
+  SCALE_SECTIONS+=(tree)
+fi
+
 echo "== summary"
-python3 - "$OUT" "${BENCH_CORPORA[@]}" <<'EOF'
+python3 - "$OUT" "${BENCH_CORPORA[@]}" -- "${SCALE_SECTIONS[@]}" <<'EOF'
 import json, os, sys
 out = sys.argv[1]
-corpora = sys.argv[2:]
-tasks = ["url", "email", "ipv4", "sha256", "uuid", "five kinds", "everything"]
+split = sys.argv.index("--")
+corpora = sys.argv[2:split]
+sections = sys.argv[split + 1:]
+tasks = ["url", "email", "ipv4", "sha256", "uuid", "five kinds", "everything", "todo"]
+def size_of(name):
+    if name in ("big", "stdin"):
+        return os.path.getsize(os.path.join(out, "big.txt"))
+    if name == "tree":
+        total = 0
+        for root, _, files in os.walk(os.path.join(out, "tree", "src")):
+            total += sum(os.path.getsize(os.path.join(root, f)) for f in files)
+        return total
+    return os.path.getsize(os.path.join(out, f"{name}.txt"))
 lines = []
-for corpus in corpora:
-    size = os.path.getsize(os.path.join(out, f"{corpus}.txt"))
-    lines.append(f"\n### {corpus} ({size / 1048576:.0f} MiB)\n")
+for corpus in corpora + sections:
+    size = size_of(corpus)
+    unit = f"{size / 1073741824:.0f} GiB" if size >= 1073741824 else f"{size / 1048576:.0f} MiB"
+    lines.append(f"\n### {corpus} ({unit})\n")
     header = None
     for task in tasks:
         path = os.path.join(out, "results", f"{corpus}-{task.replace(' ', '-')}.json")
