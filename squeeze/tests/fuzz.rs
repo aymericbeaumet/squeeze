@@ -906,6 +906,15 @@ fn dispatch_gates_hold_on_shaped_tokens() {
     }
 }
 
+#[test]
+fn chained_runs_past_the_cap_are_unbounded() {
+    // Shrunk from a proptest failure: a minor version longer than RUN_CAP.
+    let zeros = "0".repeat(130);
+    for line in [format!("0.{zeros}.0"), format!("{zeros}.{zeros}.0")] {
+        assert_gates_agree(&dispatch_finders(), &line);
+    }
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(2000))]
 

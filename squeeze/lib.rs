@@ -459,7 +459,8 @@ impl RunRule {
     /// Chains a run of `class` bytes numbering `min..=max` that must start
     /// right after the byte ending the previous run; it may be followed by
     /// anything until [`followed_by`](Self::followed_by) restricts it. Up
-    /// to [`MAX_THEN`] steps can be chained.
+    /// to [`MAX_THEN`] steps can be chained. As for the first run, a `max`
+    /// of [`RUN_CAP`] means unbounded.
     pub fn then(mut self, class: RunClass, min: u8, max: u8) -> RunRule {
         let slot = self
             .then
@@ -506,6 +507,10 @@ impl RunRule {
                 end += 1;
             }
             let len = end - at;
+            if len > step.max as usize && step.max >= RUN_CAP {
+                // Longer than the cap: unbounded, as a capped first run.
+                return true;
+            }
             if len < step.min as usize || len > step.max as usize {
                 return false;
             }
