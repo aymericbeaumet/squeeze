@@ -159,14 +159,14 @@ fn buffered_output_collects_every_file() {
 }
 
 #[test]
-fn unreadable_entries_are_reported_and_the_walk_goes_on() {
+fn unreadable_entries_are_reported_and_the_walk_goes_on_but_fails() {
     let root = temp_tree("missing");
     squeeze()
         .args(["--url"])
         .arg(root.join("does-not-exist"))
         .arg(root.join("src"))
         .assert()
-        .success()
+        .failure()
         .stderr(predicate::str::contains("does-not-exist"))
         .stdout(predicate::str::contains("https://kept.example/a"));
     fs::remove_dir_all(&root).unwrap();

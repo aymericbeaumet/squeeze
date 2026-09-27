@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 #[cfg(target_os = "linux")]
 use std::{
     io::{BufRead, BufReader},
@@ -1882,10 +1882,16 @@ fn parallel_pipeline<'s, 'a>(
     jobs: usize,
     mut next_chunk: impl FnMut() -> io::Result<Option<Chunk<'a>>>,
 ) -> io::Result<bool> {
+    // Chunks read but not yet written: the reader waits while `window` of
+    // them are in flight, so a stalled writer (a slow or blocked stdout)
+    // stops the reading instead of piling up results.
+    let window = jobs * 4;
+    let progress = WriteProgress::default();
+    let progress = &progress;
     std::thread::scope(|scope| -> io::Result<bool> {
         // Bounded work queue keeps memory proportional to the worker count;
         // results go through an unbounded channel so a worker never blocks
-        // on the main thread, which is busy reading.
+        // on the main thread, which is busy reading; the window bounds it.
         let (work_tx, work_rx) = sync_channel::<Chunk<'a>>(jobs * 2);
         let (result_tx, result_rx) = channel::<ChunkResult>();
         let work_rx = Arc::new(Mutex::new(work_rx));
@@ -1918,12 +1924,15 @@ fn parallel_pipeline<'s, 'a>(
         // The writer runs on its own thread so a result never waits for the
         // reader, which may sit in a blocking read on a slow stream.
         let writer = scope.spawn(move || -> io::Result<bool> {
+            // However the writer ends, the reader must not wait for it.
+            let _done = progress.finish_on_drop();
             let mut pending: BTreeMap<usize, ChunkOutput> = BTreeMap::new();
             let mut next_index = 0;
             while let Ok(result) = result_rx.recv() {
                 pending.insert(result.index, result.output);
                 while let Some(output) = pending.remove(&next_index) {
                     next_index += 1;
+                    progress.written(next_index);
                     match output {
                         ChunkOutput::Text(text) => {
                             out.write_all(&text)?;
@@ -1945,7 +1954,11 @@ fn parallel_pipeline<'s, 'a>(
         });
 
         let mut read_error = None;
+        let mut sent = 0;
         loop {
+            if !progress.wait_below(sent, window) {
+                break;
+            }
             let chunk = match next_chunk() {
                 Ok(Some(chunk)) => chunk,
                 Ok(None) => break,
@@ -1958,6 +1971,7 @@ fn parallel_pipeline<'s, 'a>(
             if work_tx.send(chunk).is_err() {
                 break;
             }
+            sent += 1;
         }
         drop(work_tx);
         let written = writer.join().unwrap_or(Ok(false));
@@ -1966,6 +1980,52 @@ fn parallel_pipeline<'s, 'a>(
             None => written,
         }
     })
+}
+
+/// How far the writer of the parallel pipeline got: chunks written, and
+/// whether it stopped.
+#[derive(Default)]
+struct WriteProgress {
+    state: Mutex<(usize, bool)>,
+    changed: Condvar,
+}
+
+impl WriteProgress {
+    fn written(&self, count: usize) {
+        if let Ok(mut state) = self.state.lock() {
+            state.0 = count;
+        }
+        self.changed.notify_one();
+    }
+
+    /// Waits until fewer than `window` of the `sent` chunks are unwritten;
+    /// `false` when the writer stopped.
+    fn wait_below(&self, sent: usize, window: usize) -> bool {
+        let Ok(mut state) = self.state.lock() else {
+            return false;
+        };
+        while !state.1 && sent >= state.0 + window {
+            match self.changed.wait(state) {
+                Ok(next) => state = next,
+                Err(_) => return false,
+            }
+        }
+        !state.1
+    }
+
+    /// Marks the writer as stopped when the guard drops.
+    fn finish_on_drop(&self) -> impl Drop + '_ {
+        struct Finish<'a>(&'a WriteProgress);
+        impl Drop for Finish<'_> {
+            fn drop(&mut self) {
+                if let Ok(mut state) = self.0.state.lock() {
+                    state.1 = true;
+                }
+                self.0.changed.notify_one();
+            }
+        }
+        Finish(self)
+    }
 }
 
 fn scan_lines_parallel(
@@ -2244,12 +2304,15 @@ fn scan_tree_file(
 /// writing each file's results in one piece. With one thread the walk is
 /// sorted by name and the output deterministic. Returns `Ok(true)` when
 /// scanning must stop.
+/// Entries that cannot be read are reported on stderr and set `failed`;
+/// the walk goes on.
 fn scan_tree(
     scanner: &Scanner,
     opts: &Opts,
     roots: &[PathBuf],
     out: &mut (dyn Write + Send),
     state: &mut OutputState,
+    failed: &mut bool,
 ) -> io::Result<bool> {
     let threads = tree_threads(opts);
     let mut builder = ignore::WalkBuilder::new(&roots[0]);
@@ -2276,12 +2339,14 @@ fn scan_tree(
         failure: None,
     });
     let stop = AtomicBool::new(false);
+    let reported = AtomicBool::new(false);
     let flush_streaming = shared
         .lock()
         .map(|s| s.state.flush_streaming)
         .unwrap_or(false);
 
     let stop = &stop;
+    let reported_ref = &reported;
     let shared_ref = &shared;
     let local = || TreeLocal {
         text: Vec::new(),
@@ -2291,7 +2356,15 @@ fn scan_tree(
     if threads == 1 {
         // Sequential and sorted: the output order is reproducible.
         builder.sort_by_file_name(|a, b| a.cmp(b));
-        let mut visit = tree_visitor(scanner, opts, flush_streaming, stop, shared_ref, local());
+        let mut visit = tree_visitor(
+            scanner,
+            opts,
+            flush_streaming,
+            stop,
+            reported_ref,
+            shared_ref,
+            local(),
+        );
         for entry in builder.build() {
             if visit(entry) == ignore::WalkState::Quit {
                 break;
@@ -2304,12 +2377,14 @@ fn scan_tree(
                 opts,
                 flush_streaming,
                 stop,
+                reported_ref,
                 shared_ref,
                 local(),
             ))
         });
     }
 
+    *failed |= reported.load(Ordering::Relaxed);
     let mut shared = shared
         .into_inner()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2321,11 +2396,13 @@ fn scan_tree(
 
 /// The per-entry work of a tree walk: scan a regular file into `local`
 /// and hand its output to the shared writer.
+#[allow(clippy::too_many_arguments)]
 fn tree_visitor<'a, 'b: 'a>(
     scanner: &'a Scanner,
     opts: &'a Opts,
     flush_streaming: bool,
     stop: &'a AtomicBool,
+    reported: &'a AtomicBool,
     shared: &'a Mutex<TreeShared<'b>>,
     mut local: TreeLocal,
 ) -> impl FnMut(Result<ignore::DirEntry, ignore::Error>) -> ignore::WalkState + 'a {
@@ -2337,6 +2414,7 @@ fn tree_visitor<'a, 'b: 'a>(
             Ok(entry) => entry,
             Err(err) => {
                 eprintln!("squeeze: {err}");
+                reported.store(true, Ordering::Relaxed);
                 return ignore::WalkState::Continue;
             }
         };
@@ -2351,6 +2429,7 @@ fn tree_visitor<'a, 'b: 'a>(
             Ok(done) => done,
             Err(e) => {
                 eprintln!("squeeze: {}: {}", path.display(), e);
+                reported.store(true, Ordering::Relaxed);
                 false
             }
         };
@@ -2621,10 +2700,27 @@ fn main() -> ExitCode {
         targets.push(InputTarget::Tree(tree_roots));
     }
 
+    // An unreadable entry of a walk is reported and skipped; the exit status
+    // still says the scan was incomplete.
+    let mut walk_failed = false;
     for target in targets {
         let result = match target {
-            InputTarget::Tree(roots) => scan_tree(&scanner, &opts, &roots, &mut out, &mut state),
-            InputTarget::Dir(path) => scan_tree(&scanner, &opts, &[path], &mut out, &mut state),
+            InputTarget::Tree(roots) => scan_tree(
+                &scanner,
+                &opts,
+                &roots,
+                &mut out,
+                &mut state,
+                &mut walk_failed,
+            ),
+            InputTarget::Dir(path) => scan_tree(
+                &scanner,
+                &opts,
+                &[path],
+                &mut out,
+                &mut state,
+                &mut walk_failed,
+            ),
             InputTarget::Stdin => {
                 let stdin = io::stdin();
                 let mut reader = stdin.lock();
@@ -2749,6 +2845,7 @@ fn main() -> ExitCode {
     }
 
     match out.flush() {
+        Ok(()) if walk_failed => ExitCode::FAILURE,
         Ok(()) => ExitCode::SUCCESS,
         Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
         Err(e) => {
@@ -2765,6 +2862,24 @@ fn open_url(url: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reader_waits_for_the_writer_once_the_window_is_full() {
+        let progress = WriteProgress::default();
+        assert!(progress.wait_below(3, 4));
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| progress.wait_below(4, 4));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            assert!(!waiter.is_finished());
+            progress.written(1);
+            assert!(waiter.join().unwrap());
+        });
+        std::thread::scope(|scope| {
+            let waiter = scope.spawn(|| progress.wait_below(9, 4));
+            drop(progress.finish_on_drop());
+            assert!(!waiter.join().unwrap());
+        });
+    }
 
     fn result(value: &str) -> ResultItem {
         ResultItem {
