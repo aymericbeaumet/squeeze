@@ -32,6 +32,11 @@ clap_complete = "4.6.11"
 libc = "0.2.189"
 
 # macOS copies with pbcopy: linking AppKit would slow down every start.
+# musl's allocator serializes the parallel scanner; mimalloc keeps the static
+# Linux binaries as fast as glibc ones.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = "0.1.52"
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 

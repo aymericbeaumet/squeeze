@@ -39,6 +39,10 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),

@@ -54,7 +54,8 @@ Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`. Each
 contains the CLI, README, and license. For example, the Windows ARM64 archive
 is `squeeze-v0.2.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives,
 and each archive gets a build provenance attestation. Linux binaries link musl
-statically, so they run on any distribution; Windows binaries link the C
+statically, so they run on any distribution, and use mimalloc because musl's
+allocator serializes the parallel scanner (up to 2.7 times slower); Windows binaries link the C
 runtime statically (`.cargo/config.toml`), so they need no Visual C++
 Redistributable. Archive names are a public contract: `install.sh`,
 `install.ps1`, the Homebrew formula, the cargo-binstall metadata in
