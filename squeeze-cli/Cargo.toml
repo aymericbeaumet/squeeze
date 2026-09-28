@@ -24,7 +24,7 @@ memchr = "2.8.3"
 memmap2 = "0.9.11"
 simdutf8 = "0.1.5"
 open = "5.4.4"
-squeeze = { path = "../squeeze" }
+squeeze = { package = "squeeze-core", path = "../squeeze", version = "0.3.0" }
 ignore = "0.4.33"
 clap_complete = "4.6.11"
 
@@ -38,3 +38,17 @@ arboard = { version = "3.6.1", default-features = false, features = ["wayland-da
 [dev-dependencies]
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
+
+# `cargo binstall squeeze-cli` downloads the release archives instead of compiling.
+[package.metadata.binstall]
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides]
+x86_64-unknown-linux-gnu = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-amd64.tar.gz", pkg-fmt = "tgz" }
+x86_64-unknown-linux-musl = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-amd64.tar.gz", pkg-fmt = "tgz" }
+aarch64-unknown-linux-gnu = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-arm64.tar.gz", pkg-fmt = "tgz" }
+aarch64-unknown-linux-musl = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-arm64.tar.gz", pkg-fmt = "tgz" }
+x86_64-apple-darwin = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-macos-amd64.tar.gz", pkg-fmt = "tgz" }
+aarch64-apple-darwin = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-macos-arm64.tar.gz", pkg-fmt = "tgz" }
+x86_64-pc-windows-msvc = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-windows-amd64.zip", pkg-fmt = "zip" }
+aarch64-pc-windows-msvc = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-windows-arm64.zip", pkg-fmt = "zip" }

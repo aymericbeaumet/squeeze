@@ -1,5 +1,5 @@
 [package]
-name = "squeeze"
+name = "squeeze-core"
 version = "0.3.0"
 authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2024"
@@ -10,6 +10,8 @@ repository = "https://github.com/aymericbeaumet/squeeze"
 readme = "../readme.md"
 keywords = ["extract", "url", "email", "parser", "text"]
 categories = ["text-processing", "parsing", "command-line-utilities"]
+# The fixtures include live malware URLs; tests and benches run from the repository.
+exclude = ["benches/", "tests/"]
 
 [lib]
 name = "squeeze"

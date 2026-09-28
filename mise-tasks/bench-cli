@@ -71,7 +71,7 @@ echo "== building release binary"
 SQ="$ROOT/target/release/squeeze"
 
 echo "== generating corpora (scale $SCALE)"
-(cd "$ROOT" && cargo bench --locked -p squeeze --bench scanner -- \
+(cd "$ROOT" && cargo bench --locked -p squeeze-core --bench scanner -- \
   --write-corpus "$OUT/corpus" --only logs,prose,source,jsonl,markdown,hexdense,unicode >/dev/null 2>&1)
 CORPORA=()
 for f in "$OUT"/corpus/*.txt; do

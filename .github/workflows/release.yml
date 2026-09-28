@@ -21,6 +21,7 @@ jobs:
       tag: ${{ steps.release.outputs.tag }}
       sha: ${{ steps.release.outputs.sha }}
       should_release: ${{ steps.release.outputs.should_release }}
+      publish_crates: ${{ steps.release.outputs.publish_crates }}
     steps:
       - uses: actions/checkout@v7
       - name: Test release automation
@@ -30,6 +31,7 @@ jobs:
         run: python3 .github/scripts/release.py prepare
         env:
           GH_TOKEN: ${{ github.token }}
+          HAS_CRATES_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
 
   build:
     needs: prepare
@@ -38,10 +40,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux binaries are built on the glibc host for the static musl target.
           - runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
+            host: x86_64-unknown-linux-gnu
+            target: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            host: aarch64-unknown-linux-gnu
+            target: aarch64-unknown-linux-musl
           - runner: macos-15-intel
             target: x86_64-apple-darwin
           - runner: macos-15
@@ -54,14 +59,15 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      HOST: ${{ matrix.host || matrix.target }}
+      TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.sha }}
       - name: Select native Rust host
-        env:
-          TARGET: ${{ matrix.target }}
-        run: rustup set default-host "$TARGET"
+        run: rustup set default-host "$HOST"
       - uses: jdx/mise-action@v4
         with:
           version: 2026.9.15
@@ -70,28 +76,44 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.14'
-      - name: Verify native Rust target
-        env:
-          TARGET: ${{ matrix.target }}
+      - name: Verify native Rust host
         run: |
-          rustc -vV | grep -Fx "host: $TARGET"
+          rustc -vV | grep -Fx "host: $HOST"
+      - name: Add the static musl target
+        if: matrix.host
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+          rustup target add "$TARGET"
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
       - name: Check formatting and lints
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.runner == 'ubuntu-24.04'
         run: mise run check
       - name: Test
-        if: matrix.target != 'x86_64-unknown-linux-gnu'
+        if: matrix.runner != 'ubuntu-24.04'
         run: mise run test
       - name: Build release binary
-        run: mise run release
+        run: mise run release -- --target "$TARGET"
       - name: Verify binary version
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          ./target/release/squeeze --version | grep -Fx "squeeze $VERSION"
+          "./target/$TARGET/release/squeeze" --version | grep -Fx "squeeze $VERSION"
+      - name: Verify the Linux binary is static
+        if: matrix.host
+        run: |
+          file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(-pie)? linked'
+          docker run --rm -v "$PWD/target/$TARGET/release:/w:ro" alpine:3 /w/squeeze --version
+      - name: Verify the Windows binary needs no Visual C++ runtime
+        if: runner.os == 'Windows'
+        run: |
+          if grep -qai 'vcruntime140' "target/$TARGET/release/squeeze.exe"; then
+            echo "::error::squeeze.exe imports the Visual C++ runtime"
+            exit 1
+          fi
       - name: Package binary, license, and readme
         env:
           TAG: ${{ needs.prepare.outputs.tag }}
-          TARGET: ${{ matrix.target }}
         run: python .github/scripts/release.py package --tag "$TAG" --target "$TARGET"
       - uses: actions/upload-artifact@v7
         with:
@@ -104,8 +126,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-    outputs:
-      source_sha: ${{ steps.publish.outputs.source_sha }}
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -115,8 +137,10 @@ jobs:
           pattern: squeeze-*
           path: dist
           merge-multiple: true
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/squeeze-*
       - name: Publish complete release
-        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
@@ -127,13 +151,33 @@ jobs:
     needs: [prepare, release]
     runs-on: ubuntu-24.04
     steps:
-      - name: Update Homebrew formula
-        uses: mislav/bump-homebrew-formula-action@v4
+      - uses: actions/checkout@v7
         with:
-          commit-message: 'chore: update {{formulaName}} to {{version}}'
-          formula-name: squeeze
-          homebrew-tap: aymericbeaumet/homebrew-tap
-          tag-name: ${{ needs.prepare.outputs.tag }}
-          download-sha256: ${{ needs.release.outputs.source_sha }}
+          ref: ${{ needs.prepare.outputs.sha }}
+      - name: Install the prebuilt binaries from the tap
         env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: python3 .github/scripts/release.py homebrew --tag "$TAG" --tap aymericbeaumet/homebrew-tap
+
+  # Runs after the GitHub release exists, so cargo binstall finds the archives,
+  # or on its own when the release was published before the token was set.
+  publish-crates:
+    needs: [prepare, release]
+    if: >-
+      !cancelled() && needs.prepare.outputs.publish_crates == 'true' &&
+      (needs.release.result == 'success' || needs.prepare.outputs.should_release == 'false')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.sha || github.sha }}
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.9.15
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish squeeze-core and squeeze-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: python3 .github/scripts/release.py crates

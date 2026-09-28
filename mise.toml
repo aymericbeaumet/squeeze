@@ -24,7 +24,7 @@ run = "cargo test --workspace --locked -- --nocapture"
 
 [tasks.bench]
 description = "Benchmark scanner throughput and operation counts (pass options after --)"
-run = "cargo bench --locked -p squeeze --bench scanner --"
+run = "cargo bench --locked -p squeeze-core --bench scanner --"
 
 [tasks.lint]
 description = "Lint all targets"
@@ -40,13 +40,13 @@ run = "cargo fmt --all -- --check"
 
 [tasks.doc]
 description = "Build and open documentation"
-run = "cargo doc -p squeeze --locked --no-deps --all-features --open"
+run = "cargo doc -p squeeze-core --locked --no-deps --all-features --open"
 
 [tasks.doc-check]
 description = "Check documentation without warnings"
 env.RUSTDOCFLAGS = "-D warnings"
 run = [
-  "cargo doc -p squeeze --locked --no-deps --all-features",
+  "cargo doc -p squeeze-core --locked --no-deps --all-features",
   "cargo doc -p squeeze-cli --locked --no-deps --all-features",
 ]
 

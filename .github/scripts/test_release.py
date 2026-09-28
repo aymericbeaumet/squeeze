@@ -41,6 +41,19 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "versions differ"):
                 release.crate_version(root)
 
+    def test_cli_must_require_the_released_library(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "squeeze").mkdir()
+            (root / "squeeze/Cargo.toml").write_text('[package]\nversion = "0.2.0"\n')
+            (root / "squeeze-cli").mkdir()
+            manifest = '[package]\nversion = "0.2.0"\n[dependencies]\nsqueeze = {{ version = "{}" }}\n'
+            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.1.0"))
+            with self.assertRaisesRegex(ValueError, "CLI requires 0.1.0"):
+                release.crate_version(root)
+            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.2.0"))
+            self.assertEqual(release.crate_version(root), "0.2.0")
+
     def test_tag_must_match_manifests(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
             release.validate_tag("0.2.0", "tag", "v0.1.0")
@@ -52,11 +65,32 @@ class ReleaseTests(unittest.TestCase):
 
     def test_published_release_skips_without_retagging(self):
         with patch.object(release, "crate_version", return_value="0.2.0"), patch.object(
+            release, "crate_published", return_value=True
+        ), patch.object(
             release, "api", return_value={"draft": False}
         ) as api, patch.object(release, "output") as output:
             release.prepare()
         api.assert_called_once()
         output.assert_any_call("should_release", "false")
+        output.assert_any_call("publish_crates", "false")
+
+    def test_unpublished_crates_need_a_token(self):
+        for token, expected in (("true", "true"), ("", "false")):
+            with self.subTest(token=token), patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": token}), \
+                    patch.object(release, "crate_version", return_value="0.2.0"), \
+                    patch.object(release, "crate_published", side_effect=lambda name, _: name == "squeeze-core"), \
+                    patch.object(release, "api", return_value={"draft": False}), \
+                    patch.object(release, "output") as output:
+                release.prepare()
+                output.assert_any_call("publish_crates", expected)
+
+    def test_crates_publish_in_dependency_order_and_skip_published(self):
+        published = {"squeeze-core"}
+        with patch.object(release, "crate_published", side_effect=lambda name, _: name in published), \
+                patch.object(release.subprocess, "run") as run:
+            release.publish_crates("0.2.0")
+        run.assert_called_once_with(["cargo", "publish", "--locked", "--package", "squeeze-cli"], check=True)
+        self.assertEqual(release.PACKAGES, ("squeeze-core", "squeeze-cli"))
 
     def test_existing_tag_must_reference_tested_commit(self):
         with patch.object(release, "api", return_value={"object": {"type": "commit", "sha": "old"}}):
@@ -66,8 +100,8 @@ class ReleaseTests(unittest.TestCase):
     def test_package_contains_binary_license_and_readme(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "target/release").mkdir(parents=True)
-            (root / "target/release/squeeze.exe").write_bytes(b"binary")
+            (root / "target/aarch64-pc-windows-msvc/release").mkdir(parents=True)
+            (root / "target/aarch64-pc-windows-msvc/release/squeeze.exe").write_bytes(b"binary")
             (root / "LICENSE").write_text("license")
             (root / "readme.md").write_text("readme")
             archive = release.package("v0.2.0", "aarch64-pc-windows-msvc", root)
@@ -105,9 +139,7 @@ class ReleaseTests(unittest.TestCase):
             Path("dist").mkdir()
             for target in release.TARGETS:
                 Path("dist", release.archive_name("v0.2.0", target)).write_bytes(b"archive")
-            with patch.object(release, "api", side_effect=api), patch.object(
-                release, "urlopen", return_value=io.BytesIO(b"source archive")
-            ), patch.object(release, "output"):
+            with patch.object(release, "api", side_effect=api):
                 with self.assertRaisesRegex(RuntimeError, "upload failed"):
                     release.publish("v0.2.0", "commit")
                 self.assertFalse(any(method == "PATCH" for method, _, _ in calls))
@@ -118,6 +150,37 @@ class ReleaseTests(unittest.TestCase):
                 "draft": False, "make_latest": "true",
             }))
             self.assertEqual(len(Path("dist/SHA256SUMS").read_text().splitlines()), 6)
+
+    def test_homebrew_formula_installs_the_prebuilt_binaries(self):
+        checksums = {release.archive_name("v0.2.0", target): target for target in release.TARGETS}
+        formula = release.homebrew_formula("v0.2.0", checksums)
+        self.assertIn('version "0.2.0"', formula)
+        self.assertNotIn("cargo", formula)
+        self.assertIn('bin.install "squeeze"', formula)
+        self.assertIn('generate_completions_from_executable(bin/"squeeze", "--completions")', formula)
+        for platform in ("macos-arm64", "macos-amd64", "linux-arm64", "linux-amd64"):
+            name = f"squeeze-v0.2.0-{platform}.tar.gz"
+            self.assertIn(f'url "https://github.com/owner/repo/releases/download/v0.2.0/{name}"', formula)
+            self.assertIn(f'sha256 "{checksums[name]}"', formula)
+        self.assertLess(formula.index("on_macos"), formula.index("on_linux"))
+
+    def test_homebrew_update_is_idempotent(self):
+        sums = "".join(f"{target}  {release.archive_name('v0.2.0', target)}\n" for target in release.TARGETS)
+        formula = release.homebrew_formula("v0.2.0", {
+            release.archive_name("v0.2.0", target): target for target in release.TARGETS
+        })
+        for current, writes in ((None, 1), ({"sha": "old", "content": "b2xk"}, 1),
+                                ({"sha": "same", "content": release.base64.b64encode(formula.encode())}, 0)):
+            with self.subTest(current=current), patch.object(
+                release, "urlopen", return_value=io.BytesIO(sums.encode())
+            ), patch.object(release, "api", return_value=current) as api:
+                release.update_homebrew("v0.2.0", "owner/homebrew-tap")
+            puts = [call for call in api.call_args_list if call.args[0] == "PUT"]
+            self.assertEqual(len(puts), writes)
+            if puts:
+                body = puts[0].args[2]
+                self.assertEqual(body["message"], "chore: update squeeze to 0.2.0")
+                self.assertEqual(body.get("sha"), current and current["sha"])
 
 
 if __name__ == "__main__":

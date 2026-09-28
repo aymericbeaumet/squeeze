@@ -76,3 +76,38 @@ jobs:
         run: |
           rustc -vV | grep -Fx "host: $TARGET"
       - run: mise run test
+
+  # Release binaries for Linux are static musl builds; catch breakage before a release.
+  static-linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
+        with:
+          version: 2026.9.15
+          cache: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: static
+      - name: Add the static musl target
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+          rustup target add "$TARGET"
+          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - run: mise run release -- --target "$TARGET"
+      - name: Run the static binary on Alpine
+        run: |
+          file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(-pie)? linked'
+          docker run --rm -v "$PWD/target/$TARGET/release:/w:ro" alpine:3 \
+            sh -c 'echo "see https://example.com." | /w/squeeze --url' | grep -Fx https://example.com
