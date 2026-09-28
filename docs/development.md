@@ -19,7 +19,9 @@ access) and review the diff; the registries change a few times a year.
 
 `mise run watch` and `mise run watch-check` use mise's watcher. The optional
 `outdated` and `audit` tasks require the corresponding Cargo extensions.
-The Makefile forwards existing commands to mise.
+`mise tasks` lists every task: one-liners live in `mise.toml`, longer ones
+such as `bench-cli` and `update-iana` are executable file tasks in
+`mise-tasks/`.
 
 Actions pins mise 2026.9.12, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while

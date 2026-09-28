@@ -4,6 +4,9 @@
   formatting, Clippy, tests, doctests, and documentation checks used by CI.
 - Run `mise run release` when changing build or packaging behavior and
   `mise run msrv` when changing dependencies or the minimum supported Rust version.
+- mise is the only task runner: add one-liners to `mise.toml` and longer
+  scripts as executable file tasks in `mise-tasks/` (`#MISE description=...`);
+  no Makefile or standalone `scripts/`.
 - Keep both crate versions and their entries in `Cargo.lock` synchronized.
   A new version on `main` triggers publication; see [release details](docs/development.md).
 - Finders favor precision. After changing one, smoke-test false positives with

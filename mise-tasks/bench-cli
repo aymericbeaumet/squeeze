@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+#MISE description="Benchmark the CLI against ripgrep, grep and ugrep (needs hyperfine)"
 # Reproducible end-to-end benchmark of the squeeze CLI against other line
 # matchers on the same extraction tasks.
 #
-#   scripts/bench-cli.sh [--scale N] [--runs N] [--out DIR] [--quick]
-#                        [--big GIB] [--tree FILES]
+#   mise run bench-cli -- [--scale N] [--runs N] [--out DIR] [--quick]
+#                         [--big GIB] [--tree FILES]
 #
 # Corpora are generated deterministically by the library's `scanner` bench
 # (`--write-corpus`), each concatenated SCALE times (default 16, ~16 MiB per

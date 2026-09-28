@@ -180,7 +180,7 @@ interleaved rounds. On a loaded machine wall-clock numbers still drift by
 and are the primary signal when comparing changes. For end-to-end CPU time
 prefer the minimum user time over many interleaved runs of each binary.
 
-`mise run bench-cli` (`scripts/bench-cli.sh`) builds the release binary,
+`mise run bench-cli` (`mise-tasks/bench-cli`) builds the release binary,
 generates corpora at a chosen scale, and times the same extraction tasks
 through squeeze, ripgrep, GNU/BSD grep and ugrep with hyperfine, recording
 match counts next to the timings. Results land in `/tmp/squeeze-bench/summary.md`.
