@@ -102,7 +102,7 @@ jobs:
       - name: Verify the Linux binary is static
         if: matrix.host
         run: |
-          file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(-pie)? linked'
+          file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
           docker run --rm -v "$PWD/target/$TARGET/release:/w:ro" alpine:3 /w/squeeze --version
       - name: Verify the Windows binary needs no Visual C++ runtime
         if: runner.os == 'Windows'

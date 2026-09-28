@@ -108,6 +108,6 @@ jobs:
       - run: mise run release -- --target "$TARGET"
       - name: Run the static binary on Alpine
         run: |
-          file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(-pie)? linked'
+          file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
           docker run --rm -v "$PWD/target/$TARGET/release:/w:ro" alpine:3 \
             sh -c 'echo "see https://example.com." | /w/squeeze --url' | grep -Fx https://example.com
