@@ -90,6 +90,13 @@ run = "cargo outdated"
 [tasks.audit]
 run = "cargo audit"
 
+[tasks.demo]
+description = "Record the readme demo into docs/demo/demo.gif (needs Docker)"
+run = [
+  "docker run --rm -v \"$PWD:/src\" -v squeeze-demo-cargo:/usr/local/cargo/registry -w /src rust:1.98.1-alpine cargo build --release --locked -p squeeze-cli --target-dir target/demo",
+  "docker run --rm -v \"$PWD:/vhs\" ghcr.io/charmbracelet/vhs:v0.12.1 docs/demo/demo.tape",
+]
+
 [tasks.run]
 description = "Run the CLI (pass options after --)"
 run = "cargo run --locked -p squeeze-cli --"
