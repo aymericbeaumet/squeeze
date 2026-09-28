@@ -58,8 +58,9 @@ cargo install --locked --git https://github.com/aymericbeaumet/squeeze squeeze-c
 
 ## Usage
 
-Pick one or more finders. `squeeze` scans the files, directories, and quoted
-glob patterns you pass after the options. Without a path it reads standard
+Pick one or more finders, or none to run all of them with each result
+labeled by kind. `squeeze` scans the files, directories, and quoted glob
+patterns you pass after the options. Without a path it reads standard
 input, or searches the current directory when standard input is a terminal.
 Directories are walked recursively on every core, the way ripgrep walks
 them: hidden entries, `.gitignore` and `.ignore` rules, and binary files are

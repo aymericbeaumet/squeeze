@@ -911,24 +911,23 @@ fn mirror_flag_should_output_full_input() {
 // ============================================================================
 
 #[test]
-fn no_finder_flag_should_fail_with_a_hint() {
+fn no_finder_flag_should_run_every_finder_with_kinds() {
     squeeze()
-        .write_stdin("https://example.com\n")
+        .write_stdin("mail ops@example.com from 10.0.4.2\n")
         .assert()
-        .code(2)
-        .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("no finder selected"))
-        .stderr(predicate::str::contains("--all"));
+        .success()
+        .stdout(predicate::str::contains("email\tops@example.com\n"))
+        .stdout(predicate::str::contains("ip\t10.0.4.2\n"));
 }
 
 #[test]
-fn modifier_without_its_finder_should_fail_with_a_hint() {
+fn modifier_without_its_finder_should_apply_to_every_finder() {
     squeeze()
         .arg("--strict")
-        .write_stdin("https://example.com\n")
+        .write_stdin("see https://example.com\n")
         .assert()
-        .code(2)
-        .stderr(predicate::str::contains("no finder selected"));
+        .success()
+        .stdout(predicate::str::contains("uri\thttps://example.com\n"));
 }
 
 #[test]

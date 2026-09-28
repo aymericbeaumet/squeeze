@@ -75,7 +75,10 @@ enum Precedence {
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
     about = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text",
     after_help = "\
+Without a finder, every finder runs and each result is labeled with its kind.
+
 Examples:
+  squeeze notes.md
   echo 'docs at https://example.com' | squeeze --url
   git log | squeeze --email --sort --uniq
   squeeze --todo --fixme --with-location 'src/**/*.rs'
@@ -165,7 +168,10 @@ struct Opts {
 #[derive(Args)]
 #[command(next_help_heading = "Finders")]
 struct FinderOpts {
-    #[arg(long = "all", help = "enable all finders")]
+    #[arg(
+        long = "all",
+        help = "enable all finders (the default when none is given)"
+    )]
     all: bool,
 
     // cidr
@@ -2690,7 +2696,7 @@ fn main() -> ExitCode {
 
     env_logger::init();
 
-    let opts = Opts::parse();
+    let mut opts = Opts::parse();
 
     // Validated before the empty-finders check so `--jobs 0` reports its own
     // error even when no finder flags are given.
@@ -2700,6 +2706,15 @@ fn main() -> ExitCode {
     }
 
     let finders = match build_finders(&opts.finders) {
+        // Without a finder, show everything squeeze recognizes, labeled.
+        Ok(finders) if finders.is_empty() => {
+            opts.finders.all = true;
+            opts.with_kind = true;
+            build_finders(&opts.finders)
+        }
+        result => result,
+    };
+    let finders = match finders {
         Ok(finders) => finders,
         Err(message) => {
             // Same path clap takes for its own invalid values: usage error on
@@ -2709,15 +2724,6 @@ fn main() -> ExitCode {
                 .exit()
         }
     };
-
-    if finders.is_empty() {
-        let mut cmd = Opts::command();
-        cmd.error(
-            clap::error::ErrorKind::MissingRequiredArgument,
-            "no finder selected; pass one such as --url or --email, or --all to enable every finder",
-        )
-        .exit()
-    }
 
     let scanner = match Scanner::try_new(finders) {
         Ok(scanner) => scanner,
