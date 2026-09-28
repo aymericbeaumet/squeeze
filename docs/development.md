@@ -23,7 +23,7 @@ access) and review the diff; the registries change a few times a year.
 such as `bench-cli` and `update-iana` are executable file tasks in
 `mise-tasks/`.
 
-Actions pins mise 2026.9.12, whose release assets cover all six platforms.
+Actions pins mise 2026.9.15, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
