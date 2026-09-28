@@ -217,7 +217,8 @@ main() {
 	if ! mkdir -p "$dir" || [ ! -w "$dir" ]; then
 		die "cannot write to $dir; choose another directory with --to DIR"
 	fi
-	staged=$dir/.squeeze.$$
+	# mktemp creates the file exclusively, so a planted symlink cannot redirect the copy.
+	staged=$(mktemp "$dir/.squeeze.XXXXXX") || die "cannot write to $dir; choose another directory with --to DIR"
 	cp "$tmp/x/squeeze" "$staged"
 	chmod 755 "$staged"
 	mv -f "$staged" "$dir/squeeze"
