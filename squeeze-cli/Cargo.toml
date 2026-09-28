@@ -1,6 +1,6 @@
 [package]
 name = "squeeze-cli"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2024"
 rust-version = "1.95"
@@ -24,7 +24,7 @@ memchr = "2.8.3"
 memmap2 = "0.9.11"
 simdutf8 = "0.1.5"
 open = "5.4.4"
-squeeze = { package = "squeeze-core", path = "../squeeze", version = "0.3.0" }
+squeeze = { package = "squeeze-core", path = "../squeeze", version = "0.4.0" }
 ignore = "0.4.33"
 clap_complete = "4.6.11"
 

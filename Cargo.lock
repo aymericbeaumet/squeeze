@@ -1108,7 +1108,7 @@ checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
 name = "squeeze-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "assert_cmd",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "squeeze-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "glob",
  "memchr",
