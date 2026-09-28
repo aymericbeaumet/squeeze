@@ -911,6 +911,24 @@ fn mirror_flag_should_output_full_input() {
 // ============================================================================
 
 #[test]
+fn completions_should_print_a_script_for_each_shell() {
+    for (shell, marker) in [
+        ("bash", "complete -F _squeeze"),
+        ("zsh", "#compdef squeeze"),
+        ("fish", "complete -c squeeze"),
+        ("powershell", "Register-ArgumentCompleter"),
+        ("elvish", "edit:completion:arg-completer[squeeze]"),
+    ] {
+        squeeze()
+            .args(["--completions", shell])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(marker))
+            .stdout(predicate::str::contains("with-location"));
+    }
+}
+
+#[test]
 fn no_finder_flag_should_run_every_finder_with_kinds() {
     squeeze()
         .write_stdin("mail ops@example.com from 10.0.4.2\n")

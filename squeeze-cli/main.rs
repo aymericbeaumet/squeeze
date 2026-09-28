@@ -153,6 +153,12 @@ struct Opts {
         help = "follow symbolic links when walking a directory"
     )]
     follow: bool,
+    #[arg(
+        long = "completions",
+        value_name = "SHELL",
+        help = "print the completion script for SHELL and exit"
+    )]
+    completions: Option<clap_complete::Shell>,
 
     #[arg(
         value_name = "PATH",
@@ -2697,6 +2703,11 @@ fn main() -> ExitCode {
     env_logger::init();
 
     let mut opts = Opts::parse();
+
+    if let Some(shell) = opts.completions {
+        clap_complete::generate(shell, &mut Opts::command(), "squeeze", &mut io::stdout());
+        return ExitCode::SUCCESS;
+    }
 
     // Validated before the empty-finders check so `--jobs 0` reports its own
     // error even when no finder flags are given.

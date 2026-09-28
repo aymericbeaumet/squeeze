@@ -26,6 +26,7 @@ simdutf8 = "0.1.5"
 open = "5.4.4"
 squeeze = { path = "../squeeze" }
 ignore = "0.4.33"
+clap_complete = "4.6.11"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.189"
