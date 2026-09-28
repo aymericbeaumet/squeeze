@@ -107,16 +107,25 @@ def validate_tag(version, ref_type, ref_name):
     return tag
 
 
-def ensure_tag(tag, sha, create):
+def tag_commit(tag):
     ref = api("GET", endpoint(f"git/ref/tags/{tag}"), allow_missing=True)
     if ref is None:
-        if create:
-            api("POST", endpoint("git/refs"), {"ref": f"refs/tags/{tag}", "sha": sha})
-        return
+        return None
     target = ref["object"]
     while target["type"] == "tag":
         target = api("GET", endpoint(f"git/tags/{target['sha']}"))["object"]
-    if target["type"] != "commit" or target["sha"] != sha:
+    if target["type"] != "commit":
+        raise ValueError(f"Tag {tag} does not point to a commit")
+    return target["sha"]
+
+
+def ensure_tag(tag, sha, create):
+    existing = tag_commit(tag)
+    if existing is None:
+        if create:
+            api("POST", endpoint("git/refs"), {"ref": f"refs/tags/{tag}", "sha": sha})
+        return
+    if existing != sha:
         raise ValueError(f"Existing tag {tag} points to a different commit")
 
 
@@ -126,7 +135,7 @@ def prepare():
                        os.environ.get("GITHUB_REF_NAME", "main"))
     output("version", version)
     output("tag", tag)
-    unpublished = [name for name in PACKAGES if not crate_published(name, version)]
+    unpublished = unpublished_crates(version)
     if unpublished and os.environ.get("HAS_CRATES_TOKEN") != "true":
         print(f"::notice::Set CARGO_REGISTRY_TOKEN to publish {', '.join(unpublished)} {version}")
         unpublished = []
@@ -134,6 +143,9 @@ def prepare():
     existing = api("GET", endpoint(f"releases/tags/{tag}"), allow_missing=True)
     if existing is not None and not existing["draft"]:
         output("should_release", "false")
+        if unpublished:
+            # Crates published after the release must come from the tagged commit.
+            output("sha", tag_commit(tag))
         print(f"{tag} is already published")
         return
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -204,6 +216,16 @@ def crate_published(name, version):
         if error.code == 404:
             return False
         raise
+
+
+def unpublished_crates(version):
+    # crates.io being unreachable must not hold back the binary release; the
+    # crates job checks again before publishing.
+    try:
+        return [name for name in PACKAGES if not crate_published(name, version)]
+    except OSError as error:
+        print(f"::warning::Could not query crates.io ({error}); the crates job will check again")
+        return list(PACKAGES)
 
 
 def publish_crates(version):

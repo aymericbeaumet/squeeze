@@ -171,7 +171,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.prepare.outputs.sha || github.sha }}
+          ref: ${{ needs.prepare.outputs.sha }}
       - uses: jdx/mise-action@v4
         with:
           version: 2026.9.15

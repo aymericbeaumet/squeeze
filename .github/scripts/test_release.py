@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 
 spec = importlib.util.spec_from_file_location("release", Path(__file__).with_name("release.py"))
@@ -80,9 +80,43 @@ class ReleaseTests(unittest.TestCase):
                     patch.object(release, "crate_version", return_value="0.2.0"), \
                     patch.object(release, "crate_published", side_effect=lambda name, _: name == "squeeze-core"), \
                     patch.object(release, "api", return_value={"draft": False}), \
+                    patch.object(release, "tag_commit", return_value="tagged"), \
                     patch.object(release, "output") as output:
                 release.prepare()
                 output.assert_any_call("publish_crates", expected)
+
+    def test_crates_after_a_published_release_use_its_tagged_commit(self):
+        def api(method, path, **kwargs):
+            if path.endswith("releases/tags/v0.2.0"):
+                return {"draft": False}
+            if path.endswith("git/ref/tags/v0.2.0"):
+                return {"object": {"type": "tag", "sha": "annotated"}}
+            if path.endswith("git/tags/annotated"):
+                return {"object": {"type": "commit", "sha": "tagged"}}
+            raise AssertionError(path)
+
+        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true"}), \
+                patch.object(release, "crate_version", return_value="0.2.0"), \
+                patch.object(release, "crate_published", return_value=False), \
+                patch.object(release, "api", side_effect=api), \
+                patch.object(release, "output") as output:
+            release.prepare()
+        output.assert_any_call("should_release", "false")
+        output.assert_any_call("publish_crates", "true")
+        output.assert_any_call("sha", "tagged")
+
+    def test_unreachable_crates_io_does_not_block_the_release(self):
+        error = URLError("timed out")
+        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true"}), \
+                patch.object(release, "crate_version", return_value="0.2.0"), \
+                patch.object(release, "urlopen", side_effect=error), \
+                patch.object(release, "api", return_value=None), \
+                patch.object(release, "ensure_tag"), \
+                patch.object(release.subprocess, "check_output", return_value="commit\n"), \
+                patch.object(release, "output") as output:
+            release.prepare()
+        output.assert_any_call("should_release", "true")
+        output.assert_any_call("publish_crates", "true")
 
     def test_crates_publish_in_dependency_order_and_skip_published(self):
         published = {"squeeze-core"}
