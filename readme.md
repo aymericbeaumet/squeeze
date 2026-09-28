@@ -90,8 +90,8 @@ With several finders, results come out in the order they appear:
 
 ```console
 $ echo '2026-01-15T10:30:00Z GET /health from 10.0.4.2 took 3ms' | squeeze --datetime --ip --with-kind
-datetime	2026-01-15T10:30:00Z
-ip	10.0.4.2
+datetime  2026-01-15T10:30:00Z
+ip        10.0.4.2
 ```
 
 ### Finders
@@ -134,7 +134,7 @@ RFC 3986 to the letter.
 | `--last` | only print the last result |
 | `--sort` | sort the results |
 | `--uniq` | deduplicate the results, keeping the first occurrence |
-| `--with-kind` | print the finder name (`uri`, `email`, …) with each result |
+| `--with-kind` | print the finder name (`uri`, `email`, …) with each result, aligned in a terminal and tab-separated otherwise |
 | `--with-location` | print `path:line:column:` before each result |
 | `--output <fmt>` | `text` (default), `json`, `yaml`, `csv`, or `none` |
 | `--no-overlap` | drop matches that overlap an earlier one (`--precedence longest` keeps the longest instead) |

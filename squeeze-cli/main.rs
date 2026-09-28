@@ -159,6 +159,9 @@ struct Opts {
         help = "print the completion script for SHELL and exit"
     )]
     completions: Option<clap_complete::Shell>,
+    /// Column width that aligns kinds in a terminal; 0 separates them with a tab.
+    #[arg(skip)]
+    kind_width: usize,
 
     #[arg(
         value_name = "PATH",
@@ -812,6 +815,7 @@ impl OutputState {
 struct Detail {
     kind: bool,
     location: bool,
+    kind_width: usize,
 }
 
 impl Detail {
@@ -819,6 +823,7 @@ impl Detail {
         Detail {
             kind: opts.with_kind,
             location: opts.with_location,
+            kind_width: opts.kind_width,
         }
     }
 
@@ -859,7 +864,7 @@ fn write_formatted<W: Write>(
             for r in results {
                 let location = detail.location.then(|| Location::of(r));
                 let kind = detail.kind.then_some(r.kind);
-                write_text_line(out, location.as_ref(), kind, &r.value)?;
+                write_text_line(out, location.as_ref(), kind, detail.kind_width, &r.value)?;
             }
         }
         Format::Json => {
@@ -908,6 +913,7 @@ fn write_text_line<W: Write + ?Sized>(
     out: &mut W,
     location: Option<&Location>,
     kind: Option<&str>,
+    kind_width: usize,
     value: &str,
 ) -> io::Result<()> {
     if let Some(location) = location {
@@ -917,9 +923,13 @@ fn write_text_line<W: Write + ?Sized>(
         }
         write!(out, "{}:{}:", location.line, location.column)?;
     }
-    if let Some(kind) = kind {
-        out.write_all(kind.as_bytes())?;
-        out.write_all(b"\t")?;
+    match kind {
+        Some(kind) if kind_width > 0 => write!(out, "{kind:<kind_width$}")?,
+        Some(kind) => {
+            out.write_all(kind.as_bytes())?;
+            out.write_all(b"\t")?;
+        }
+        None => {}
     }
     out.write_all(value.as_bytes())?;
     out.write_all(b"\n")
@@ -1262,7 +1272,13 @@ fn emit_streaming_value(
     kind: &str,
     value: &str,
 ) -> io::Result<()> {
-    write_text_line(out, location, opts.with_kind.then_some(kind), value)?;
+    write_text_line(
+        out,
+        location,
+        opts.with_kind.then_some(kind),
+        opts.kind_width,
+        value,
+    )?;
     if flush {
         out.flush()?;
     }
@@ -1856,6 +1872,7 @@ fn scan_chunk(
                     &mut text,
                     location.as_ref(),
                     opts.with_kind.then_some(kind),
+                    opts.kind_width,
                     value,
                 );
             } else if let Some(item) = make_result_item(scanner, opts, source, line_number, line, m)
@@ -1873,7 +1890,13 @@ fn scan_chunk(
             if !value.is_empty() {
                 let kind = scanner.finders()[finder].id();
                 // Writing into a Vec cannot fail.
-                let _ = write_text_line(&mut text, None, opts.with_kind.then_some(kind), value);
+                let _ = write_text_line(
+                    &mut text,
+                    None,
+                    opts.with_kind.then_some(kind),
+                    opts.kind_width,
+                    value,
+                );
             }
             false
         });
@@ -2669,7 +2692,10 @@ fn finalize_results(
             &mut clipboard,
             &results,
             clipboard_format(opts.output),
-            Detail::new(opts),
+            Detail {
+                kind_width: 0,
+                ..Detail::new(opts)
+            },
         )?;
         let text = String::from_utf8_lossy(&clipboard);
         copy_to_clipboard(&text).map_err(io::Error::other)?;
@@ -2735,6 +2761,10 @@ fn main() -> ExitCode {
                 .exit()
         }
     };
+
+    if opts.output == Format::Text && io::stdout().is_terminal() {
+        opts.kind_width = finders.iter().map(|f| f.id().len()).max().unwrap_or(0) + 2;
+    }
 
     let scanner = match Scanner::try_new(finders) {
         Ok(scanner) => scanner,
@@ -2939,6 +2969,19 @@ fn open_url(url: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinds_align_in_a_terminal_and_are_tab_separated_otherwise() {
+        let mut out = Vec::new();
+        write_text_line(&mut out, None, Some("ip"), 10, "10.0.4.2").unwrap();
+        write_text_line(&mut out, None, Some("datetime"), 10, "2026-01-15").unwrap();
+        write_text_line(&mut out, None, Some("ip"), 0, "10.0.4.2").unwrap();
+        write_text_line(&mut out, None, None, 10, "bare").unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "ip        10.0.4.2\ndatetime  2026-01-15\nip\t10.0.4.2\nbare\n"
+        );
+    }
 
     #[test]
     fn reader_waits_for_the_writer_once_the_window_is_full() {
