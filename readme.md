@@ -78,12 +78,13 @@ bash, zsh, fish, elvish, or PowerShell; Homebrew installs them for you.
 ## Usage
 
 Pick one or more finders, or none to run all of them with each result
-labeled by kind. `squeeze` scans the files, directories, and quoted glob
-patterns you pass after the options. Without a path it reads standard
-input, or searches the current directory when standard input is a terminal.
-Directories are walked recursively on every core, the way ripgrep walks
-them: hidden entries, `.gitignore` and `.ignore` rules, and binary files are
-skipped.
+labeled by kind. Like `grep`, `squeeze` reads standard input when you give
+it no path (or `-`), and scans the files, directories, and quoted glob
+patterns you pass after the options. A directory such as `.` is walked
+recursively the way ripgrep walks it: hidden entries, `.gitignore` and
+`.ignore` rules, and binary files are skipped. Scanning is parallel by
+default: directories and multiple files spread over every core, and so do
+standard input and big files.
 
 ```shell
 # Everything squeeze recognizes in a file, labeled by kind
@@ -99,7 +100,7 @@ git log --format='%an <%ae>' | squeeze --email --sort --uniq
 kubectl logs deploy/api | squeeze --ip --uuid --datetime --with-kind
 
 # TODOs and FIXMEs across a repository, with locations your editor understands
-squeeze --todo --fixme --with-location
+squeeze --todo --fixme --with-location .
 
 # Rust sources only
 squeeze --todo --fixme --with-location 'src/**/*.rs'

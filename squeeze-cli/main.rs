@@ -85,6 +85,7 @@ Examples:
   squeeze notes.md
   echo 'docs at https://example.com' | squeeze --url
   git log | squeeze --email --sort --uniq
+  squeeze --todo --fixme --with-location .
   squeeze --todo --fixme --with-location 'src/**/*.rs'
   kubectl logs my-pod | squeeze --ip --uuid --with-kind
   squeeze --all --with-kind --output json notes.md"
@@ -169,7 +170,7 @@ struct Opts {
 
     #[arg(
         value_name = "PATH",
-        help = "files, directories or glob patterns to scan; a directory is walked recursively like ripgrep does (hidden entries, .gitignore rules and binary files skipped); omit to read stdin, or the current directory when stdin is a terminal"
+        help = "files, directories or glob patterns to scan; a directory (such as .) is walked recursively like ripgrep does (hidden entries, .gitignore rules and binary files skipped); omit or pass - to read stdin"
     )]
     inputs: Vec<String>,
 
@@ -719,9 +720,9 @@ const AUTO_PARALLEL_MIN_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Threads to scan one input with. `--first` must stay sequential: the
 /// parallel path scans a whole chunk before printing, so `-1` on a slow
-/// stream would sit on a match it had already read. `auto` only
-/// parallelises inputs whose size is known and large enough to amortise the
-/// threads; streams stay sequential unless a count is given.
+/// stream would sit on a match it had already read. `auto` uses every core
+/// for streams and for files large enough to amortise the threads; a small
+/// file is scanned on one.
 fn effective_jobs(opts: &Opts, input_len: Option<u64>) -> usize {
     if opts.first {
         return 1;
@@ -2242,13 +2243,9 @@ fn has_glob_magic(input: &str) -> bool {
 }
 
 fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
+    // Like grep: no path means standard input; `.` searches here.
     if inputs.is_empty() {
-        // Like ripgrep: a terminal on stdin means "search here".
-        return Ok(if io::stdin().is_terminal() {
-            vec![InputTarget::Dir(PathBuf::from("."))]
-        } else {
-            vec![InputTarget::Stdin]
-        });
+        return Ok(vec![InputTarget::Stdin]);
     }
 
     let mut targets = Vec::new();
@@ -2973,6 +2970,14 @@ fn open_url(url: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_path_reads_standard_input_even_from_a_terminal() {
+        assert!(matches!(
+            expand_inputs(&[]).unwrap().as_slice(),
+            [InputTarget::Stdin]
+        ));
+    }
 
     #[test]
     fn kinds_align_in_a_terminal_and_are_tab_separated_otherwise() {

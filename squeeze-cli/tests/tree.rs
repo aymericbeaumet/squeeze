@@ -171,3 +171,32 @@ fn unreadable_entries_are_reported_and_the_walk_goes_on_but_fails() {
         .stdout(predicate::str::contains("https://kept.example/a"));
     fs::remove_dir_all(&root).unwrap();
 }
+
+#[test]
+fn dot_walks_the_current_directory() {
+    let root = temp_tree("dot");
+    let output = squeeze()
+        .current_dir(&root)
+        .args(["--url", "."])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        sorted_lines(&output.stdout),
+        ["https://kept.example/a", "https://todo.example/f"]
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn no_path_reads_standard_input_not_the_current_directory() {
+    let root = temp_tree("stdin");
+    squeeze()
+        .current_dir(&root)
+        .arg("--url")
+        .write_stdin("see https://stdin.example\n")
+        .assert()
+        .success()
+        .stdout("https://stdin.example\n");
+    fs::remove_dir_all(root).unwrap();
+}
