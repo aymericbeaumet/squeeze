@@ -23,15 +23,16 @@ access) and review the diff; the registries change a few times a year.
 such as `bench-cli` and `update-iana` are executable file tasks in
 `mise-tasks/`.
 
-Actions pins mise 2026.9.12, whose release assets cover all six platforms.
+Actions pins mise 2026.9.15, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
 
 ## Releases
 
-To release, bump the versions in both `squeeze/Cargo.toml` and
-`squeeze-cli/Cargo.toml`, refresh `Cargo.lock`, and merge to `main`.
+To release, bump the versions in both `squeeze/Cargo.toml` (the
+`squeeze-core` package) and `squeeze-cli/Cargo.toml`, including the CLI's
+`squeeze` dependency requirement, refresh `Cargo.lock`, and merge to `main`.
 The release workflow automatically builds and publishes the corresponding
 `v<version>` tag when that version has no published release. Ordinary pushes
 with an already published version do not rebuild release artifacts.
@@ -42,8 +43,8 @@ Each release is tested and built on six native
 
 | Platform | Architecture | Rust target | Runner |
 | --- | --- | --- | --- |
-| Linux | amd64 | `x86_64-unknown-linux-gnu` | `ubuntu-24.04` |
-| Linux | arm64 | `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` |
+| Linux | amd64 | `x86_64-unknown-linux-musl` | `ubuntu-24.04` |
+| Linux | arm64 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` |
 | macOS | amd64 | `x86_64-apple-darwin` | `macos-15-intel` |
 | macOS | arm64 | `aarch64-apple-darwin` | `macos-15` |
 | Windows | amd64 | `x86_64-pc-windows-msvc` | `windows-2025` |
@@ -51,18 +52,37 @@ Each release is tested and built on six native
 
 Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`. Each
 contains the CLI, README, and license. For example, the Windows ARM64 archive
-is `squeeze-v0.2.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives.
-Linux binaries target glibc and are built on Ubuntu 24.04.
+is `squeeze-v0.2.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives,
+and each archive gets a build provenance attestation. Linux binaries link musl
+statically, so they run on any distribution, and use mimalloc because musl's
+allocator serializes the parallel scanner (up to 2.7 times slower); Windows binaries link the C
+runtime statically (`.cargo/config.toml`), so they need no Visual C++
+Redistributable. Archive names are a public contract: `install.sh`,
+`install.ps1`, the Homebrew formula, the cargo-binstall metadata in
+`squeeze-cli/Cargo.toml`, and mise's GitHub backend all derive them.
 
 Publication waits for every build and test to pass. Assets are uploaded to a
 draft before the release becomes public, and retries can resume an unpublished
 release. The workflow uses the repository's `GITHUB_TOKEN` with `contents: write`.
-The existing Homebrew tap update runs after publication and requires
-`HOMEBREW_TAP_TOKEN` with write access to `aymericbeaumet/homebrew-tap`.
+
+After publication, the Homebrew job writes `Formula/squeeze.rb` in
+`aymericbeaumet/homebrew-tap` from the release's `SHA256SUMS`: the formula
+installs the prebuilt macOS and Linux archives and generates shell
+completions. It requires `HOMEBREW_TAP_TOKEN` with write access to the tap.
+The crates job publishes `squeeze-core`, then `squeeze-cli`, to crates.io when
+`CARGO_REGISTRY_TOKEN` is set and the version is not there yet; without the
+secret, the workflow leaves a notice instead. Because crates.io publications
+are permanent, a failed crates job can simply be rerun: published crates are
+skipped.
+
+`install.sh` and `install.ps1` install the latest release for the current
+user. The `install` workflow runs them on every platform when they change and
+daily against the latest release. `mise run demo` rebuilds the readme's
+`docs/demo/demo.gif` from `docs/demo/demo.tape` with VHS in Docker.
 
 Release helpers use Python 3.11+ and the standard library. Run their tests with
 `python3 -m unittest discover -s .github/scripts -p 'test_*.py'` and validate
 workflow changes with `actionlint`. If publication fails after creating a tag,
 rerun the failed workflow at its original commit or dispatch it on that tag.
 An existing tag pointing at another commit is rejected. If only the Homebrew
-update fails, rerun that failed job after fixing the tap token or permissions.
+or crates job fails, rerun it after fixing its token or permissions.

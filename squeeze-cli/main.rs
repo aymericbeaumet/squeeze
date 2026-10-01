@@ -39,6 +39,10 @@ use std::{
     process::{Command, Stdio},
 };
 
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 const VERSION: &str = match option_env!("SQUEEZE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
@@ -75,9 +79,13 @@ enum Precedence {
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
     about = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text",
     after_help = "\
+Without a finder, every finder runs and each result is labeled with its kind.
+
 Examples:
+  squeeze notes.md
   echo 'docs at https://example.com' | squeeze --url
   git log | squeeze --email --sort --uniq
+  squeeze --todo --fixme --with-location .
   squeeze --todo --fixme --with-location 'src/**/*.rs'
   kubectl logs my-pod | squeeze --ip --uuid --with-kind
   squeeze --all --with-kind --output json notes.md"
@@ -150,10 +158,19 @@ struct Opts {
         help = "follow symbolic links when walking a directory"
     )]
     follow: bool,
+    #[arg(
+        long = "completions",
+        value_name = "SHELL",
+        help = "print the completion script for SHELL and exit"
+    )]
+    completions: Option<clap_complete::Shell>,
+    /// Column width that aligns kinds in a terminal; 0 separates them with a tab.
+    #[arg(skip)]
+    kind_width: usize,
 
     #[arg(
         value_name = "PATH",
-        help = "files, directories or glob patterns to scan; a directory is walked recursively like ripgrep does (hidden entries, .gitignore rules and binary files skipped); omit to read stdin, or the current directory when stdin is a terminal"
+        help = "files, directories or glob patterns to scan; a directory (such as .) is walked recursively like ripgrep does (hidden entries, .gitignore rules and binary files skipped); omit or pass - to read stdin"
     )]
     inputs: Vec<String>,
 
@@ -165,7 +182,10 @@ struct Opts {
 #[derive(Args)]
 #[command(next_help_heading = "Finders")]
 struct FinderOpts {
-    #[arg(long = "all", help = "enable all finders")]
+    #[arg(
+        long = "all",
+        help = "enable all finders (the default when none is given)"
+    )]
     all: bool,
 
     // cidr
@@ -700,9 +720,9 @@ const AUTO_PARALLEL_MIN_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Threads to scan one input with. `--first` must stay sequential: the
 /// parallel path scans a whole chunk before printing, so `-1` on a slow
-/// stream would sit on a match it had already read. `auto` only
-/// parallelises inputs whose size is known and large enough to amortise the
-/// threads; streams stay sequential unless a count is given.
+/// stream would sit on a match it had already read. `auto` uses every core
+/// for streams and for files large enough to amortise the threads; a small
+/// file is scanned on one.
 fn effective_jobs(opts: &Opts, input_len: Option<u64>) -> usize {
     if opts.first {
         return 1;
@@ -800,6 +820,7 @@ impl OutputState {
 struct Detail {
     kind: bool,
     location: bool,
+    kind_width: usize,
 }
 
 impl Detail {
@@ -807,6 +828,7 @@ impl Detail {
         Detail {
             kind: opts.with_kind,
             location: opts.with_location,
+            kind_width: opts.kind_width,
         }
     }
 
@@ -847,7 +869,7 @@ fn write_formatted<W: Write>(
             for r in results {
                 let location = detail.location.then(|| Location::of(r));
                 let kind = detail.kind.then_some(r.kind);
-                write_text_line(out, location.as_ref(), kind, &r.value)?;
+                write_text_line(out, location.as_ref(), kind, detail.kind_width, &r.value)?;
             }
         }
         Format::Json => {
@@ -896,6 +918,7 @@ fn write_text_line<W: Write + ?Sized>(
     out: &mut W,
     location: Option<&Location>,
     kind: Option<&str>,
+    kind_width: usize,
     value: &str,
 ) -> io::Result<()> {
     if let Some(location) = location {
@@ -905,9 +928,13 @@ fn write_text_line<W: Write + ?Sized>(
         }
         write!(out, "{}:{}:", location.line, location.column)?;
     }
-    if let Some(kind) = kind {
-        out.write_all(kind.as_bytes())?;
-        out.write_all(b"\t")?;
+    match kind {
+        Some(kind) if kind_width > 0 => write!(out, "{kind:<kind_width$}")?,
+        Some(kind) => {
+            out.write_all(kind.as_bytes())?;
+            out.write_all(b"\t")?;
+        }
+        None => {}
     }
     out.write_all(value.as_bytes())?;
     out.write_all(b"\n")
@@ -1250,7 +1277,13 @@ fn emit_streaming_value(
     kind: &str,
     value: &str,
 ) -> io::Result<()> {
-    write_text_line(out, location, opts.with_kind.then_some(kind), value)?;
+    write_text_line(
+        out,
+        location,
+        opts.with_kind.then_some(kind),
+        opts.kind_width,
+        value,
+    )?;
     if flush {
         out.flush()?;
     }
@@ -1844,6 +1877,7 @@ fn scan_chunk(
                     &mut text,
                     location.as_ref(),
                     opts.with_kind.then_some(kind),
+                    opts.kind_width,
                     value,
                 );
             } else if let Some(item) = make_result_item(scanner, opts, source, line_number, line, m)
@@ -1861,7 +1895,13 @@ fn scan_chunk(
             if !value.is_empty() {
                 let kind = scanner.finders()[finder].id();
                 // Writing into a Vec cannot fail.
-                let _ = write_text_line(&mut text, None, opts.with_kind.then_some(kind), value);
+                let _ = write_text_line(
+                    &mut text,
+                    None,
+                    opts.with_kind.then_some(kind),
+                    opts.kind_width,
+                    value,
+                );
             }
             false
         });
@@ -2203,13 +2243,9 @@ fn has_glob_magic(input: &str) -> bool {
 }
 
 fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
+    // Like grep: no path means standard input; `.` searches here.
     if inputs.is_empty() {
-        // Like ripgrep: a terminal on stdin means "search here".
-        return Ok(if io::stdin().is_terminal() {
-            vec![InputTarget::Dir(PathBuf::from("."))]
-        } else {
-            vec![InputTarget::Stdin]
-        });
+        return Ok(vec![InputTarget::Stdin]);
     }
 
     let mut targets = Vec::new();
@@ -2657,7 +2693,10 @@ fn finalize_results(
             &mut clipboard,
             &results,
             clipboard_format(opts.output),
-            Detail::new(opts),
+            Detail {
+                kind_width: 0,
+                ..Detail::new(opts)
+            },
         )?;
         let text = String::from_utf8_lossy(&clipboard);
         copy_to_clipboard(&text).map_err(io::Error::other)?;
@@ -2690,7 +2729,12 @@ fn main() -> ExitCode {
 
     env_logger::init();
 
-    let opts = Opts::parse();
+    let mut opts = Opts::parse();
+
+    if let Some(shell) = opts.completions {
+        clap_complete::generate(shell, &mut Opts::command(), "squeeze", &mut io::stdout());
+        return ExitCode::SUCCESS;
+    }
 
     // Validated before the empty-finders check so `--jobs 0` reports its own
     // error even when no finder flags are given.
@@ -2700,6 +2744,15 @@ fn main() -> ExitCode {
     }
 
     let finders = match build_finders(&opts.finders) {
+        // Without a finder, show everything squeeze recognizes, labeled.
+        Ok(finders) if finders.is_empty() => {
+            opts.finders.all = true;
+            opts.with_kind = true;
+            build_finders(&opts.finders)
+        }
+        result => result,
+    };
+    let finders = match finders {
         Ok(finders) => finders,
         Err(message) => {
             // Same path clap takes for its own invalid values: usage error on
@@ -2710,13 +2763,8 @@ fn main() -> ExitCode {
         }
     };
 
-    if finders.is_empty() {
-        let mut cmd = Opts::command();
-        cmd.error(
-            clap::error::ErrorKind::MissingRequiredArgument,
-            "no finder selected; pass one such as --url or --email, or --all to enable every finder",
-        )
-        .exit()
+    if opts.output == Format::Text && io::stdout().is_terminal() {
+        opts.kind_width = finders.iter().map(|f| f.id().len()).max().unwrap_or(0) + 2;
     }
 
     let scanner = match Scanner::try_new(finders) {
@@ -2922,6 +2970,27 @@ fn open_url(url: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_path_reads_standard_input_even_from_a_terminal() {
+        assert!(matches!(
+            expand_inputs(&[]).unwrap().as_slice(),
+            [InputTarget::Stdin]
+        ));
+    }
+
+    #[test]
+    fn kinds_align_in_a_terminal_and_are_tab_separated_otherwise() {
+        let mut out = Vec::new();
+        write_text_line(&mut out, None, Some("ip"), 10, "10.0.4.2").unwrap();
+        write_text_line(&mut out, None, Some("datetime"), 10, "2026-01-15").unwrap();
+        write_text_line(&mut out, None, Some("ip"), 0, "10.0.4.2").unwrap();
+        write_text_line(&mut out, None, None, 10, "bare").unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "ip        10.0.4.2\ndatetime  2026-01-15\nip\t10.0.4.2\nbare\n"
+        );
+    }
 
     #[test]
     fn reader_waits_for_the_writer_once_the_window_is_full() {
