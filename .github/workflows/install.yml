@@ -1,0 +1,146 @@
+name: install
+
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - install.ps1
+      - .github/workflows/install.yml
+  workflow_dispatch:
+  schedule:
+    - cron: '30 5 * * *'
+
+permissions:
+  contents: read
+
+# Every job pipes the checked-out script, the way the README pipes the one from
+# the main branch, so that pull requests test their own changes.
+jobs:
+  sh:
+    name: install.sh (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash # adds pipefail, so a failing curl fails the step
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the latest release
+        run: curl -fsSL "file://$PWD/install.sh" | sh
+      - name: Run squeeze
+        run: |
+          "$HOME/.local/bin/squeeze" --version | grep -E '^squeeze [0-9]+\.[0-9]+\.[0-9]+'
+          test "$(echo 'see https://example.com' | "$HOME/.local/bin/squeeze" --url)" = https://example.com
+      - name: Install a pinned version with flags
+        run: |
+          curl -fsSL "file://$PWD/install.sh" | sh -s -- --version 0.3.0 --to "$RUNNER_TEMP/flags"
+          "$RUNNER_TEMP/flags/squeeze" --version | grep -Fx 'squeeze 0.3.0'
+      - name: Install a pinned version with environment variables
+        env:
+          SQUEEZE_VERSION: v0.3.0
+          SQUEEZE_INSTALL_DIR: ${{ runner.temp }}/env
+        run: |
+          curl -fsSL "file://$PWD/install.sh" | sh
+          "$SQUEEZE_INSTALL_DIR/squeeze" --version | grep -Fx 'squeeze 0.3.0'
+      - name: Fail on a missing release
+        run: |
+          if curl -fsSL "file://$PWD/install.sh" | sh -s -- --version 0.0.0 --to "$RUNNER_TEMP/missing"; then
+            echo 'the installer should have failed' >&2
+            exit 1
+          fi
+          test ! -e "$RUNNER_TEMP/missing"
+      - name: Prefer the arm64 build under Rosetta
+        if: matrix.runner == 'macos-15'
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then
+            echo '::notice::Rosetta is not installed, skipping'
+            exit 0
+          fi
+          arch -x86_64 /bin/sh -c 'uname -m' | grep -Fx x86_64
+          curl -fsSL "file://$PWD/install.sh" | arch -x86_64 /bin/sh -s -- --to "$RUNNER_TEMP/rosetta"
+          file "$RUNNER_TEMP/rosetta/squeeze" | grep arm64
+
+  ps1:
+    name: install.ps1 (${{ matrix.runner }}, ${{ matrix.shell }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-2025, windows-11-arm]
+        shell: [pwsh, powershell]
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the latest release
+        run: |
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          # The installer also puts squeeze on the current session's PATH.
+          squeeze --version
+      - name: Run squeeze and check the user PATH
+        run: |
+          $dir = Join-Path $env:LOCALAPPDATA 'Programs\squeeze\bin'
+          $version = & "$dir\squeeze.exe" --version
+          if ($version -notmatch '^squeeze \d+\.\d+\.\d+$') { throw "unexpected version: $version" }
+          $urls = 'see https://example.com' | & "$dir\squeeze.exe" --url
+          if ($urls -ne 'https://example.com') { throw "unexpected output: $urls" }
+          $key = Get-Item HKCU:\Environment
+          $userPath = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if (($userPath -split ';') -notcontains $dir) { throw "$dir is missing from the user PATH: $userPath" }
+          if ($key.GetValueKind('Path') -ne 'ExpandString') { throw 'the user PATH is no longer REG_EXPAND_SZ' }
+      - name: Install a pinned version with environment variables
+        env:
+          SQUEEZE_VERSION: v0.3.0
+          SQUEEZE_INSTALL_DIR: ${{ runner.temp }}\env
+        run: |
+          Get-Content -Raw install.ps1 | Invoke-Expression
+          $version = & "$env:SQUEEZE_INSTALL_DIR\squeeze.exe" --version
+          if ($version -ne 'squeeze 0.3.0') { throw "unexpected version: $version" }
+      - name: Fail on a missing release
+        env:
+          SQUEEZE_VERSION: 0.0.0
+          SQUEEZE_INSTALL_DIR: ${{ runner.temp }}\missing
+        run: |
+          # Same shape as the README command, which must exit non-zero on errors.
+          $shell = (Get-Process -Id $PID).Path
+          & $shell -NoProfile -ExecutionPolicy ByPass -Command 'Get-Content -Raw install.ps1 | Invoke-Expression'
+          if ($LASTEXITCODE -eq 0) { throw 'the installer should have failed' }
+          if (Test-Path $env:SQUEEZE_INSTALL_DIR) { throw 'the installer should not have created the install directory' }
+          exit 0
+
+  # v0.3.0's Linux binaries need glibc 2.39, so this job only runs on schedule
+  # and on demand until releases ship static binaries.
+  sh-containers:
+    name: install.sh (${{ matrix.image }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: alpine:3 # BusyBox wget
+            setup: 'true'
+          - image: debian:11 # end of life: packages are only left on archive.debian.org
+            setup: >-
+              echo 'deb http://archive.debian.org/debian bullseye main' > /etc/apt/sources.list &&
+              apt-get update && apt-get install -y --no-install-recommends ca-certificates wget
+          - image: ubuntu:20.04
+            setup: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install and run squeeze
+        env:
+          IMAGE: ${{ matrix.image }}
+          SETUP: ${{ matrix.setup }}
+        run: |
+          # shellcheck disable=SC2016 # expanded inside the container
+          docker run --rm -e SETUP -v "$PWD:/src:ro" "$IMAGE" sh -euc '
+            eval "$SETUP" >/dev/null
+            cat /src/install.sh | sh
+            ~/.local/bin/squeeze --version
+            test "$(echo "see https://example.com" | ~/.local/bin/squeeze --url)" = https://example.com
+          '

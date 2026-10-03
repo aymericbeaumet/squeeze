@@ -1,0 +1,41 @@
+name: Wrong or missing match
+description: squeeze extracts something it should not, or misses something it should.
+labels: [bug]
+body:
+  - type: textarea
+    id: input
+    attributes:
+      label: Input
+      description: The smallest text that shows the problem.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: squeeze --url input.txt
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual output
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected output
+      description: What should come out, and why (a spec, an RFC, or another tool's behavior).
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `squeeze --version`.
+    validations:
+      required: true

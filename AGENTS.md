@@ -6,14 +6,23 @@
   `mise run msrv` when changing dependencies or the minimum supported Rust version.
 - mise is the only task runner: add one-liners to `mise.toml` and longer
   scripts as executable file tasks in `mise-tasks/` (`#MISE description=...`);
-  no Makefile or standalone `scripts/`.
-- Keep both crate versions and their entries in `Cargo.lock` synchronized.
-  A new version on `main` triggers publication; see [release details](docs/development.md).
+  no Makefile or standalone `scripts/`. `install.sh` and `install.ps1` are
+  user-facing installers, not development tasks.
+- The library package is `squeeze-core` (imported as `squeeze`); `squeeze`
+  is taken on crates.io. Keep both crate versions, the CLI's requirement on
+  the library, and their `Cargo.lock` entries synchronized. A new version on
+  `main` publishes the release, crates, and Homebrew formula; see
+  [release details](docs/development.md).
+- Release archive names (`squeeze-vX.Y.Z-<os>-<arch>`) are a public contract
+  shared by the installers, the Homebrew formula, cargo-binstall metadata, and
+  mise's GitHub backend; change them everywhere together.
 - Finders favor precision. After changing one, smoke-test false positives with
   `mise run run -- --all --with-kind readme.md squeeze-cli/main.rs` and pin
   intentional trade-offs in the `squeeze/tests/hardening_*.rs` suites.
 - CI and releases cover Linux, macOS, and Windows on both amd64 and arm64.
-  Preserve all six native targets when changing workflows.
+  Preserve all six native targets when changing workflows. Release binaries
+  must run on a clean machine: Linux ones link musl statically, Windows ones
+  the C runtime.
 - After changing release automation, run `actionlint` and, with Python 3.11+,
   `python3 -m unittest discover -s .github/scripts -p 'test_*.py'`.
 - Performance work is measured, never guessed: `mise run bench -- --stats` reports
@@ -26,11 +35,11 @@
 - The scanner has NEON and SSSE3 backends. After touching `squeeze/classify.rs`
   or the block walk in `squeeze/scanner.rs`, run the library tests for the other
   architecture as well: on Apple silicon
-  `cargo test -p squeeze --target x86_64-apple-darwin` runs the SSSE3 path under
-  Rosetta and `cargo clippy -p squeeze --target x86_64-apple-darwin --all-targets
+  `cargo test -p squeeze-core --target x86_64-apple-darwin` runs the SSSE3 path under
+  Rosetta and `cargo clippy -p squeeze-core --target x86_64-apple-darwin --all-targets
   -- -D warnings` lints the code that only compiles there (`rustup target add
   x86_64-apple-darwin` once); CI covers both.
-- Finder changes must keep `cargo test -p squeeze` green: the fuzz suites check
+- Finder changes must keep `cargo test -p squeeze-core` green: the fuzz suites check
   gate/rule contracts and strategy parity, `regex_parity` pins the hand-written
   codetag/modeline/phone matchers to the former regexes, and `linear_scans`
   rejects quadratic rescans on adversarial lines.

@@ -1,0 +1,5 @@
+2026-09-28T09:14:02Z INFO  GET https://api.example.com/users?page=2 from 10.0.4.2
+2026-09-28T09:14:02Z INFO  request 3f2b8c1e-9d4a-4c1b-8f7e-2a6d5b9c0e11 took 12ms
+2026-09-28T09:14:03Z WARN  webhook https://hooks.example.org/deliver failed, emailing billing@example.com
+2026-09-28T09:14:05Z ERROR upstream 2001:db8::17 timed out (see https://status.example.com/incidents/42).
+2026-09-28T09:14:07Z INFO  deployed v2.3.1-rc.1 (commit 5d41402abc4b2a76b9719d911017c592) by @alice

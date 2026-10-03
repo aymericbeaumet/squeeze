@@ -1,6 +1,6 @@
 [package]
 name = "squeeze-cli"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2024"
 rust-version = "1.95"
@@ -16,24 +16,44 @@ name = "squeeze"
 path = "main.rs"
 
 [dependencies]
-clap = { version = "4.6", features = ["derive"] }
-log = "0.4"
-env_logger = "0.11"
-glob = "0.3"
-memchr = "2"
-memmap2 = "0.9"
-simdutf8 = "0.1"
-open = "5"
-squeeze = { path = "../squeeze" }
-ignore = "0.4"
+clap = { version = "4.6.7", features = ["derive"] }
+log = "0.4.34"
+env_logger = "0.11.11"
+glob = "0.3.4"
+memchr = "2.8.3"
+memmap2 = "0.9.11"
+simdutf8 = "0.1.5"
+open = "5.4.4"
+squeeze = { package = "squeeze-core", path = "../squeeze", version = "0.4.0" }
+ignore = "0.4.33"
+clap_complete = "4.6.11"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = "0.2.189"
 
 # macOS copies with pbcopy: linking AppKit would slow down every start.
+# musl's allocator serializes the parallel scanner; mimalloc keeps the static
+# Linux binaries as fast as glibc ones.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = "0.1.52"
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 
 [dev-dependencies]
-assert_cmd = "2"
-predicates = "3"
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+
+# `cargo binstall squeeze-cli` downloads the release archives instead of compiling.
+[package.metadata.binstall]
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides]
+x86_64-unknown-linux-gnu = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-amd64.tar.gz", pkg-fmt = "tgz" }
+x86_64-unknown-linux-musl = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-amd64.tar.gz", pkg-fmt = "tgz" }
+aarch64-unknown-linux-gnu = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-arm64.tar.gz", pkg-fmt = "tgz" }
+aarch64-unknown-linux-musl = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-linux-arm64.tar.gz", pkg-fmt = "tgz" }
+x86_64-apple-darwin = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-macos-amd64.tar.gz", pkg-fmt = "tgz" }
+aarch64-apple-darwin = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-macos-arm64.tar.gz", pkg-fmt = "tgz" }
+x86_64-pc-windows-msvc = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-windows-amd64.zip", pkg-fmt = "zip" }
+aarch64-pc-windows-msvc = { pkg-url = "{ repo }/releases/download/v{ version }/squeeze-v{ version }-windows-arm64.zip", pkg-fmt = "zip" }
