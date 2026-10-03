@@ -6,7 +6,7 @@
 //! both by wall-clock time and by the amount of work it dispatches.
 //!
 //! ```text
-//! cargo bench -p squeeze-core --bench scanner -- [OPTIONS]
+//! cargo bench -p squeeze-lib --bench scanner -- [OPTIONS]
 //!
 //!   --stats             print operation counters next to throughput
 //!   --per-finder        also time every finder alone on every corpus

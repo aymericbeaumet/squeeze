@@ -28,7 +28,7 @@ TARGETS = {
 }
 
 # Publication order: the CLI depends on the library.
-PACKAGES = ("squeeze-core", "squeeze-cli")
+PACKAGES = ("squeeze-lib", "squeeze-cli")
 
 FORMULA = """\
 # frozen_string_literal: true
@@ -86,12 +86,15 @@ def output(name, value):
 
 def crate_version(root=Path(".")):
     manifests = {}
-    for crate in ("squeeze", "squeeze-cli"):
+    for crate, package in (("squeeze-lib", "squeeze-lib"), ("squeeze-cli", "squeeze-cli")):
         with (root / crate / "Cargo.toml").open("rb") as stream:
             manifests[crate] = tomllib.load(stream)
+        if manifests[crate]["package"]["name"] != package:
+            raise ValueError(f"Expected {crate} package to be named {package}")
     versions = [manifest["package"]["version"] for manifest in manifests.values()]
-    required = manifests["squeeze-cli"].get("dependencies", {}).get("squeeze", {}).get("version")
-    if len(set(versions)) != 1 or required not in (None, versions[0]):
+    dependency = manifests["squeeze-cli"].get("dependencies", {}).get("squeeze", {})
+    required = dependency.get("version")
+    if dependency.get("package") != "squeeze-lib" or len(set(versions)) != 1 or required != versions[0]:
         raise ValueError(f"Crate versions differ: {versions}, CLI requires {required}")
     if not re.fullmatch(r"\d+\.\d+\.\d+", versions[0]):
         raise ValueError("Automatic releases require a stable major.minor.patch version")
@@ -137,8 +140,7 @@ def prepare():
     output("tag", tag)
     unpublished = unpublished_crates(version)
     if unpublished and os.environ.get("HAS_CRATES_TOKEN") != "true":
-        print(f"::notice::Set CARGO_REGISTRY_TOKEN to publish {', '.join(unpublished)} {version}")
-        unpublished = []
+        raise ValueError(f"CARGO_REGISTRY_TOKEN is required to publish {', '.join(unpublished)} {version}")
     output("publish_crates", "true" if unpublished else "false")
     existing = api("GET", endpoint(f"releases/tags/{tag}"), allow_missing=True)
     if existing is not None and not existing["draft"]:
@@ -210,12 +212,17 @@ def crate_published(name, version):
         "User-Agent": "squeeze-release (https://github.com/aymericbeaumet/squeeze)",
     })
     try:
-        with urlopen(request, timeout=60):
-            return True
+        with urlopen(request, timeout=60) as response:
+            published = json.load(response)["version"]
     except HTTPError as error:
         if error.code == 404:
             return False
         raise
+    if published["crate"] != name or published["num"] != version:
+        raise ValueError(f"Unexpected crates.io response for {name} {version}")
+    if published["repository"] != "https://github.com/aymericbeaumet/squeeze":
+        raise ValueError(f"{name} {version} is already published by another repository")
+    return True
 
 
 def unpublished_crates(version):

@@ -1,7 +1,7 @@
 # squeeze [![CI](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml) [![Latest release](https://img.shields.io/github/v/release/aymericbeaumet/squeeze)](https://github.com/aymericbeaumet/squeeze/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Extract URLs, emails, IPs, hashes, TODOs, and 15 other kinds of data from any
-text. Like `grep -o`, but it already knows what a URL looks like.
+Extract 20 kinds of data from text, including URLs, emails, IPs, hashes, and
+TODOs. Like `grep -o`, but it already knows what a URL looks like.
 
 ![squeeze pulling timestamps, URLs, IPs, a UUID, an email, a version, a hash, and a handle out of a log file](docs/demo/demo.gif)
 
@@ -21,10 +21,9 @@ https://en.wikipedia.org/wiki/Squeeze_(disambiguation)
 https://status.example.com
 ```
 
-- **Gets the edge cases right.** Each finder is a small parser following its
-  format's spec (RFC 3986 URIs, IPv6, semver, JWTs, …), and it copes with the
-  Markdown, JSON, HTML, and prose around a match: trailing punctuation,
-  balanced parentheses, and quotes.
+- **Handles surrounding text.** Targeted parsers recognize common formats
+  within Markdown, JSON, HTML, and prose, including links with balanced
+  parentheses and surrounding punctuation or quotes.
 - **Plays well with pipes and repositories.** It reads stdin, files, globs,
   or whole directory trees (skipping what `.gitignore` ignores, like
   ripgrep), streams results as it finds them, and stops at the first one
@@ -32,44 +31,40 @@ https://status.example.com
 - **Structured when you need it.** JSON, YAML, or CSV output with the kind,
   line, and column of each match, or `path:line:column:` prefixes your editor
   can jump to.
-- **Fast.** It uses less CPU than ripgrep, ugrep, and GNU grep on every
-  [benchmarked task](#performance), even single-threaded, and scans big
-  files, streams, and directory trees on every core.
+- **Faster than ripgrep on our URL benchmark.** On a generated 56 MiB mixed
+  corpus, single-threaded squeeze used 18 ms of CPU versus ripgrep's 35 ms.
+  The [benchmark](docs/performance.md#cli-benchmarks) includes the exact
+  command, generated data, and match counts; the tools match different URL
+  grammars.
 - **Also a Rust library.** Every finder is available as a
   [crate](#use-as-a-rust-library).
 
 ## Install
 
-**macOS and Linux**:
+**Homebrew** (macOS and Linux):
 
 ```shell
-curl -fsSL https://raw.githubusercontent.com/aymericbeaumet/squeeze/main/install.sh | sh
+brew install aymericbeaumet/tap/squeeze
 ```
 
-**Windows** (PowerShell):
+**Cargo** (all platforms, Rust 1.95+):
 
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/aymericbeaumet/squeeze/main/install.ps1 | iex"
+```shell
+cargo install --locked squeeze-cli
 ```
 
-The scripts download the latest release for your platform, check its SHA-256
-checksum, and install `squeeze` in `~/.local/bin` (`%LOCALAPPDATA%\Programs\squeeze\bin`
-on Windows) without admin rights. Read them first:
-[install.sh](install.sh), [install.ps1](install.ps1).
+**mise** (all platforms):
 
-**Homebrew** (macOS, Linux): `brew install aymericbeaumet/tap/squeeze`
+```shell
+mise use -g github:aymericbeaumet/squeeze
+```
 
-**Cargo**: `cargo binstall squeeze-cli` fetches the prebuilt binary;
-`cargo install --locked squeeze-cli` builds it (Rust 1.95+).
-
-**mise**: `mise use -g github:aymericbeaumet/squeeze`
-
-**Manually**: download the archive for your platform (Linux, macOS, or
-Windows; `amd64` or `arm64`) from
+**Release archives**: download the archive for your platform (Linux, macOS,
+or Windows; `amd64` or `arm64`) from
 [GitHub Releases](https://github.com/aymericbeaumet/squeeze/releases/latest)
-and put `squeeze` on your `PATH`. Linux binaries are static and run on any
-distribution. Every release lists SHA-256 checksums and carries build
-provenance you can check with
+and verify it against the release's `SHA256SUMS` before putting `squeeze`
+(`squeeze.exe` on Windows) on your `PATH`. Linux binaries are statically linked.
+Release archives also carry build provenance you can check with
 `gh attestation verify <archive> --repo aymericbeaumet/squeeze`.
 
 **Shell completions**: `squeeze --completions <shell>` prints the script for
@@ -77,8 +72,9 @@ bash, zsh, fish, elvish, or PowerShell; Homebrew installs them for you.
 
 ## Usage
 
-Pick one or more finders, or none to run all of them with each result
-labeled by kind. Like `grep`, `squeeze` reads standard input when you give
+Pick one or more finders, or none to run all of them. Results contain only the
+matched values by default; use `--with-kind` to label them. Like `grep`,
+`squeeze` reads standard input when you give
 it no path (or `-`), and scans the files, directories, and quoted glob
 patterns you pass after the options. A directory such as `.` is walked
 recursively the way ripgrep walks it: hidden entries, `.gitignore` and
@@ -86,8 +82,18 @@ recursively the way ripgrep walks it: hidden entries, `.gitignore` and
 default: directories and multiple files spread over every core, and so do
 standard input and big files.
 
+For example, a broad scan of a log prints the value without a kind prefix:
+
+```console
+$ printf 'peer=192.0.2.1\n' > app.log
+$ squeeze app.log
+192.0.2.1
+```
+
+Run `squeeze --with-kind app.log` when you also need the finder name.
+
 ```shell
-# Everything squeeze recognizes in a file, labeled by kind
+# Everything squeeze recognizes in a file, one value per line
 squeeze app.log
 
 # Every link on a web page
@@ -105,7 +111,7 @@ squeeze --todo --fixme --with-location .
 # Rust sources only
 squeeze --todo --fixme --with-location 'src/**/*.rs'
 
-# Everything squeeze can find, as JSON
+# Everything squeeze can find, with metadata as JSON
 squeeze --all --with-kind --output json notes.md
 ```
 
@@ -222,37 +228,25 @@ urls() { fc -rl 1 | squeeze --url --uniq; }
 
 ## Performance
 
-No regex engine is involved: SIMD searches and byte classification find the
-few positions where a match can start, every finder is linear on adversarial
-input, and big files, streams, and directory trees are scanned on every core.
+No regex engine is involved: SIMD searches and byte classification narrow the
+positions where a match can start. Big files, streams, and directory trees can
+be scanned across available cores.
 
-CPU time to extract each kind from a 56 MiB mixed corpus (logs, prose,
-source, JSON, Markdown), single-threaded, lower is better:
-
-| task | squeeze | ripgrep | ugrep | GNU grep |
-|---|---|---|---|---|
-| URLs | **18 ms** | 35 ms | 30 ms | 58 ms |
-| emails | **14 ms** | 29 ms | 88 ms | 205 ms |
-| IPv4 | **29 ms** | 111 ms | 75 ms | 247 ms |
-| SHA-256 | **30 ms** | 94 ms | 167 ms | 154 ms |
-| UUIDs | **14 ms** | 51 ms | 24 ms | 98 ms |
-| all five at once | **93 ms** | 167 ms | 879 ms | 1198 ms |
-
-The regex tools get the closest POSIX pattern, which is looser than
-squeeze's grammars (it keeps trailing punctuation, for one). With its
-default parallelism, squeeze reads a 2 GiB file at least eight times faster
-than ripgrep and ugrep. Methodology, wall times, streams, directory trees,
-and how to reproduce with `mise run bench-cli` are in
-[docs/performance.md](docs/performance.md#cli-benchmarks).
+Run `mise run bench-cli -- --scale 8 --runs 7 --big 2 --tree 20000` to
+regenerate the corpus and the comparison in the
+[CLI benchmark](docs/performance.md#cli-benchmarks). Its source data and
+results are written under `/tmp/squeeze-bench/`. The regex tools use
+approximate patterns and can return different matches, so compare the match
+counts alongside the timings.
 
 ## Use as a Rust library
 
-The finders live in the [`squeeze-core`](https://crates.io/crates/squeeze-core)
-crate, which the CLI builds on and which is imported as `squeeze`:
+The finders are packaged as `squeeze-lib`, which the CLI builds on and which
+is imported as `squeeze`. For the 0.5.0 release, add:
 
 ```toml
 [dependencies]
-squeeze = { package = "squeeze-core", version = "0.4" }
+squeeze = { package = "squeeze-lib", version = "0.5" }
 ```
 
 ```rust
@@ -267,8 +261,9 @@ for m in scanner.scan_line(line) {
 }
 ```
 
-The API documentation is on [docs.rs](https://docs.rs/squeeze-core), or run
-`cargo doc --open -p squeeze-core` in a clone.
+Once the 0.5.0 crate is published, its API documentation will be on
+[docs.rs](https://docs.rs/squeeze-lib). In a clone, run
+`cargo doc --open -p squeeze-lib`.
 
 ## Development
 

@@ -54,8 +54,9 @@ jobs:
           RUBY
           )
 
-          # Remove leading whitespace from heredoc
-          FORMULA_CONTENT=$(echo "$FORMULA_CONTENT" | sed 's/^          //')
+          # Remove the indentation used to keep the heredoc readable in YAML.
+          FORMULA_CONTENT=${FORMULA_CONTENT#'          '}
+          FORMULA_CONTENT=${FORMULA_CONTENT//$'\n          '/$'\n'}
 
           ENCODED_CONTENT=$(echo "$FORMULA_CONTENT" | base64 -w 0)
 

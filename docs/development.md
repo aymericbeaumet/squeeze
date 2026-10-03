@@ -12,7 +12,7 @@ builds the optimized CLI. Cargo tasks use `--locked` so CI and release builds
 use the committed dependency resolution. After changing crate versions or
 dependencies, refresh `Cargo.lock` with Cargo and review the diff.
 
-`squeeze/iana.rs` embeds the IANA root-zone TLDs and registered URI schemes
+`squeeze-lib/iana.rs` embeds the IANA root-zone TLDs and registered URI schemes
 that the domain and URI finders use to reject lookalikes such as `opts.all` or
 `key:value`. Refresh it with `mise run update-iana` (Python 3, network
 access) and review the diff; the registries change a few times a year.
@@ -30,9 +30,10 @@ Verify those assets before updating the pin. Mise manages Rust through rustup. I
 
 ## Releases
 
-To release, bump the versions in both `squeeze/Cargo.toml` (the
-`squeeze-core` package) and `squeeze-cli/Cargo.toml`, including the CLI's
-`squeeze` dependency requirement, refresh `Cargo.lock`, and merge to `main`.
+To release, keep the `squeeze-lib` package in `squeeze-lib/Cargo.toml`, the
+`squeeze-cli` package in `squeeze-cli/Cargo.toml`, and the CLI's library
+dependency requirement at the same version. Refresh `Cargo.lock` and merge to
+`main`.
 The release workflow automatically builds and publishes the corresponding
 `v<version>` tag when that version has no published release. Ordinary pushes
 with an already published version do not rebuild release artifacts.
@@ -52,14 +53,13 @@ Each release is tested and built on six native
 
 Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`. Each
 contains the CLI, README, and license. For example, the Windows ARM64 archive
-is `squeeze-v0.2.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives,
+is `squeeze-v0.5.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives,
 and each archive gets a build provenance attestation. Linux binaries link musl
 statically, so they run on any distribution, and use mimalloc because musl's
 allocator serializes the parallel scanner (up to 2.7 times slower); Windows binaries link the C
 runtime statically (`.cargo/config.toml`), so they need no Visual C++
-Redistributable. Archive names are a public contract: `install.sh`,
-`install.ps1`, the Homebrew formula, the cargo-binstall metadata in
-`squeeze-cli/Cargo.toml`, and mise's GitHub backend all derive them.
+Redistributable. Archive names are a public contract for the Homebrew formula
+and mise's GitHub backend.
 
 Publication waits for every build and test to pass. Assets are uploaded to a
 draft before the release becomes public, and retries can resume an unpublished
@@ -69,16 +69,15 @@ After publication, the Homebrew job writes `Formula/squeeze.rb` in
 `aymericbeaumet/homebrew-tap` from the release's `SHA256SUMS`: the formula
 installs the prebuilt macOS and Linux archives and generates shell
 completions. It requires `HOMEBREW_TAP_TOKEN` with write access to the tap.
-The crates job publishes `squeeze-core`, then `squeeze-cli`, to crates.io when
-`CARGO_REGISTRY_TOKEN` is set and the version is not there yet; without the
-secret, the workflow leaves a notice instead. Because crates.io publications
-are permanent, a failed crates job can simply be rerun: published crates are
-skipped.
+The crates job publishes `squeeze-lib` to crates.io first, waits for the
+registry to serve that version, then publishes `squeeze-cli` with its matching
+library dependency. If either crate version is unpublished, the prepare job
+requires `CARGO_REGISTRY_TOKEN` before the new release can proceed. Because
+crates.io publications are permanent, rerunning a failed crates job skips
+versions that were already published.
 
-`install.sh` and `install.ps1` install the latest release for the current
-user. The `install` workflow runs them on every platform when they change and
-daily against the latest release. `mise run demo` rebuilds the readme's
-`docs/demo/demo.gif` from `docs/demo/demo.tape` with VHS in Docker.
+`mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
+`docs/demo/demo.tape` with VHS in a container (Colima on macOS).
 
 Release helpers use Python 3.11+ and the standard library. Run their tests with
 `python3 -m unittest discover -s .github/scripts -p 'test_*.py'` and validate
