@@ -1,6 +1,6 @@
 [workspace]
 members = [
-  "squeeze",
+  "squeeze-lib",
   "squeeze-cli",
 ]
 resolver = "3"

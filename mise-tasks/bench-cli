@@ -71,7 +71,7 @@ echo "== building release binary"
 SQ="$ROOT/target/release/squeeze"
 
 echo "== generating corpora (scale $SCALE)"
-(cd "$ROOT" && cargo bench --locked -p squeeze-core --bench scanner -- \
+(cd "$ROOT" && cargo bench --locked -p squeeze-lib --bench scanner -- \
   --write-corpus "$OUT/corpus" --only logs,prose,source,jsonl,markdown,hexdense,unicode >/dev/null 2>&1)
 CORPORA=()
 for f in "$OUT"/corpus/*.txt; do
@@ -174,7 +174,8 @@ for tool in "${TOOLS[@]}"; do
     ripgrep|ugrep|"gnu grep") SCALE_TOOLS+=("$tool") ;;
   esac
 done
-SCALE_SECTIONS=()
+# Bash 3.2 treats an empty array as unset under `set -u`.
+SCALE_SECTIONS=("")
 SCALE_RUNS=$(( RUNS < 5 ? RUNS : 5 ))
 
 # Times one scale task. `$3` is the squeeze command; `$4` a template where
@@ -296,7 +297,7 @@ import json, os, sys
 out = sys.argv[1]
 split = sys.argv.index("--")
 corpora = sys.argv[2:split]
-sections = sys.argv[split + 1:]
+sections = [name for name in sys.argv[split + 1:] if name]
 tasks = ["url", "email", "ipv4", "sha256", "uuid", "five kinds", "everything", "todo"]
 def size_of(name):
     if name in ("big", "stdin"):

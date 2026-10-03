@@ -79,7 +79,7 @@ enum Precedence {
     author = "Aymeric Beaumet <hi@aymericbeaumet.com>",
     about = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text",
     after_help = "\
-Without a finder, every finder runs and each result is labeled with its kind.
+Without a finder, every finder runs and prints plain values.
 
 Examples:
   squeeze notes.md
@@ -2744,10 +2744,9 @@ fn main() -> ExitCode {
     }
 
     let finders = match build_finders(&opts.finders) {
-        // Without a finder, show everything squeeze recognizes, labeled.
+        // Without a finder, scan everything and keep the normal output default.
         Ok(finders) if finders.is_empty() => {
             opts.finders.all = true;
-            opts.with_kind = true;
             build_finders(&opts.finders)
         }
         result => result,

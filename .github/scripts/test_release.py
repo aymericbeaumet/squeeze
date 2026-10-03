@@ -35,24 +35,32 @@ class ReleaseTests(unittest.TestCase):
     def test_manifests_must_agree(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for crate, version in (("squeeze", "0.2.0"), ("squeeze-cli", "0.1.0")):
+            for crate, package, version in (("squeeze-lib", "squeeze-lib", "0.5.0"),
+                                            ("squeeze-cli", "squeeze-cli", "0.4.0")):
                 (root / crate).mkdir()
-                (root / crate / "Cargo.toml").write_text(f'[package]\nversion = "{version}"\n')
+                (root / crate / "Cargo.toml").write_text(
+                    f'[package]\nname = "{package}"\nversion = "{version}"\n')
             with self.assertRaisesRegex(ValueError, "versions differ"):
                 release.crate_version(root)
 
     def test_cli_must_require_the_released_library(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "squeeze").mkdir()
-            (root / "squeeze/Cargo.toml").write_text('[package]\nversion = "0.2.0"\n')
+            (root / "squeeze-lib").mkdir()
+            (root / "squeeze-lib/Cargo.toml").write_text(
+                '[package]\nname = "squeeze-lib"\nversion = "0.5.0"\n')
             (root / "squeeze-cli").mkdir()
-            manifest = '[package]\nversion = "0.2.0"\n[dependencies]\nsqueeze = {{ version = "{}" }}\n'
-            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.1.0"))
-            with self.assertRaisesRegex(ValueError, "CLI requires 0.1.0"):
+            manifest = ('[package]\nname = "squeeze-cli"\nversion = "0.5.0"\n'
+                        '[dependencies]\nsqueeze = {{ package = "squeeze-lib", version = "{}" }}\n')
+            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.4.0"))
+            with self.assertRaisesRegex(ValueError, "CLI requires 0.4.0"):
                 release.crate_version(root)
-            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.2.0"))
-            self.assertEqual(release.crate_version(root), "0.2.0")
+            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.5.0"))
+            self.assertEqual(release.crate_version(root), "0.5.0")
+            (root / "squeeze-cli/Cargo.toml").write_text(
+                manifest.format("0.5.0").replace('package = "squeeze-lib", ', ""))
+            with self.assertRaisesRegex(ValueError, "versions differ"):
+                release.crate_version(root)
 
     def test_tag_must_match_manifests(self):
         with self.assertRaisesRegex(ValueError, "does not match"):
@@ -75,15 +83,19 @@ class ReleaseTests(unittest.TestCase):
         output.assert_any_call("publish_crates", "false")
 
     def test_unpublished_crates_need_a_token(self):
-        for token, expected in (("true", "true"), ("", "false")):
+        for token in ("true", ""):
             with self.subTest(token=token), patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": token}), \
-                    patch.object(release, "crate_version", return_value="0.2.0"), \
-                    patch.object(release, "crate_published", side_effect=lambda name, _: name == "squeeze-core"), \
+                    patch.object(release, "crate_version", return_value="0.5.0"), \
+                    patch.object(release, "crate_published", side_effect=lambda name, _: name == "squeeze-lib"), \
                     patch.object(release, "api", return_value={"draft": False}), \
                     patch.object(release, "tag_commit", return_value="tagged"), \
                     patch.object(release, "output") as output:
-                release.prepare()
-                output.assert_any_call("publish_crates", expected)
+                if token:
+                    release.prepare()
+                    output.assert_any_call("publish_crates", "true")
+                else:
+                    with self.assertRaisesRegex(ValueError, "CARGO_REGISTRY_TOKEN is required"):
+                        release.prepare()
 
     def test_crates_after_a_published_release_use_its_tagged_commit(self):
         def api(method, path, **kwargs):
@@ -119,12 +131,26 @@ class ReleaseTests(unittest.TestCase):
         output.assert_any_call("publish_crates", "true")
 
     def test_crates_publish_in_dependency_order_and_skip_published(self):
-        published = {"squeeze-core"}
+        published = {"squeeze-lib"}
         with patch.object(release, "crate_published", side_effect=lambda name, _: name in published), \
                 patch.object(release.subprocess, "run") as run:
-            release.publish_crates("0.2.0")
+            release.publish_crates("0.5.0")
         run.assert_called_once_with(["cargo", "publish", "--locked", "--package", "squeeze-cli"], check=True)
-        self.assertEqual(release.PACKAGES, ("squeeze-core", "squeeze-cli"))
+        self.assertEqual(release.PACKAGES, ("squeeze-lib", "squeeze-cli"))
+
+    def test_crates_publish_core_before_cli(self):
+        with patch.object(release, "crate_published", return_value=False), \
+                patch.object(release.subprocess, "run") as run:
+            release.publish_crates("0.5.0")
+        self.assertEqual([call.args[0][-1] for call in run.call_args_list],
+                         ["squeeze-lib", "squeeze-cli"])
+
+    def test_registry_version_must_belong_to_this_repository(self):
+        published = (b'{"version":{"crate":"squeeze-lib","num":"0.5.0",'
+                     b'"repository":"https://example.com/other"}}')
+        with patch.object(release, "urlopen", return_value=io.BytesIO(published)):
+            with self.assertRaisesRegex(ValueError, "another repository"):
+                release.crate_published("squeeze-lib", "0.5.0")
 
     def test_existing_tag_must_reference_tested_commit(self):
         with patch.object(release, "api", return_value={"object": {"type": "commit", "sha": "old"}}):

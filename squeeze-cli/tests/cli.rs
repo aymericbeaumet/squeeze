@@ -929,13 +929,46 @@ fn completions_should_print_a_script_for_each_shell() {
 }
 
 #[test]
-fn no_finder_flag_should_run_every_finder_with_kinds() {
+fn no_finder_flag_should_run_every_finder_with_plain_values() {
     squeeze()
-        .write_stdin("mail ops@example.com from 10.0.4.2\n")
+        .write_stdin("$HOME\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("email\tops@example.com\n"))
-        .stdout(predicate::str::contains("ip\t10.0.4.2\n"));
+        .stdout(predicate::eq("$HOME\n"));
+}
+
+#[test]
+fn no_finder_flag_on_file_should_match_explicit_all() {
+    let path = temp_path("default-input.txt");
+    fs::write(&path, "$HOME\n").unwrap();
+    let implicit = squeeze()
+        .arg(&path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let explicit = squeeze()
+        .args(["--all"])
+        .arg(&path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(implicit, b"$HOME\n");
+    assert_eq!(implicit, explicit);
+    let _ = fs::remove_file(path);
+}
+
+#[test]
+fn with_kind_without_finder_flag_should_prefix_kind() {
+    squeeze()
+        .arg("--with-kind")
+        .write_stdin("$HOME\n")
+        .assert()
+        .success()
+        .stdout(predicate::eq("env\t$HOME\n"));
 }
 
 #[test]
@@ -945,7 +978,7 @@ fn modifier_without_its_finder_should_apply_to_every_finder() {
         .write_stdin("see https://example.com\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("uri\thttps://example.com\n"));
+        .stdout(predicate::eq("https://example.com\n"));
 }
 
 #[test]

@@ -177,7 +177,7 @@ jobs:
           version: 2026.9.15
           cache: false
       - uses: Swatinem/rust-cache@v2
-      - name: Publish squeeze-core and squeeze-cli
+      - name: Publish squeeze-lib and squeeze-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: python3 .github/scripts/release.py crates
