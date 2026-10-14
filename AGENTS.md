@@ -23,8 +23,8 @@
   Preserve all six native targets when changing workflows. Release binaries
   must run on a clean machine: Linux ones link musl statically, Windows ones
   the C runtime.
-- After changing release automation, run `actionlint` and, with Python 3.11+,
-  `python3 -m unittest discover -s .github/scripts -p 'test_*.py'`.
+- After changing release automation, run `mise run release-check` for the
+  pinned actionlint and Python helper tests.
 - Performance work is measured, never guessed: `mise run bench -- --stats` reports
   throughput and finder operation counts per corpus (`--strategy all` compares
   scanner strategies interleaved, `--save`/`--compare` diff runs), and

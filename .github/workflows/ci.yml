@@ -15,13 +15,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
         with:
-          version: 2026.9.15
+          version: 2026.10.10
           cache: false
       - uses: Swatinem/rust-cache@v2
       - name: Test release automation
-        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+        run: mise run release-check
       - run: mise run check
       - run: mise run release
 
@@ -29,9 +29,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
         with:
-          version: 2026.9.15
+          version: 2026.10.10
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:
@@ -65,9 +65,9 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: rustup set default-host "$TARGET"
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
         with:
-          version: 2026.9.15
+          version: 2026.10.10
           cache: false
       - uses: Swatinem/rust-cache@v2
       - name: Verify native Rust target
@@ -92,9 +92,9 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@v5
         with:
-          version: 2026.9.15
+          version: 2026.10.10
           cache: false
       - uses: Swatinem/rust-cache@v2
         with:

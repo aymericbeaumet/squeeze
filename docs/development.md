@@ -2,9 +2,11 @@
 
 ## Tooling
 
-`mise.toml` pins Rust 1.98.1 with rustfmt and Clippy. Run `mise trust`, then
+`mise.toml` pins Rust 1.99.0 with rustfmt and Clippy. Run `mise trust`, then
 `mise install`. The minimum supported Rust version remains 1.95; `mise run msrv`
 installs and tests that toolchain independently of the development pin.
+The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
+toolchain cannot silently replace the minimum-version check.
 
 `mise run check` runs formatting, Clippy with warnings denied, all workspace
 test targets, doctests, and documentation with warnings denied. `mise run release`
@@ -23,7 +25,7 @@ access) and review the diff; the registries change a few times a year.
 such as `bench-cli` and `update-iana` are executable file tasks in
 `mise-tasks/`.
 
-Actions pins mise 2026.9.15, whose release assets cover all six platforms.
+Actions pins mise 2026.10.10, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
@@ -79,9 +81,10 @@ versions that were already published.
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
 `docs/demo/demo.tape` with VHS in a container (Colima on macOS).
 
-Release helpers use Python 3.11+ and the standard library. Run their tests with
-`python3 -m unittest discover -s .github/scripts -p 'test_*.py'` and validate
-workflow changes with `actionlint`. If publication fails after creating a tag,
+Release helpers use Python 3.11+ and the standard library. Run
+`mise run release-check` to validate workflows with actionlint 1.7.12 and run
+the helper tests with Python 3.15.0, matching CI's Python 3.15. If publication
+fails after creating a tag,
 rerun the failed workflow at its original commit or dispatch it on that tag.
 An existing tag pointing at another commit is rejected. If only the Homebrew
 or crates job fails, rerun it after fixing its token or permissions.
