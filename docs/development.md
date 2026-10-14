@@ -32,8 +32,17 @@ Verify those assets before updating the pin. Mise manages Rust through rustup. I
 
 ## Releases
 
+The root `Cargo.toml` defines the `squeeze-cli` package and the workspace;
+`squeeze-lib/Cargo.toml` defines the library package. CLI sources and
+integration tests remain in `squeeze-cli/`, with explicit Cargo target paths.
+`cargo install --path . --locked` installs the local `squeeze` binary, and
+`cargo test` defaults to both workspace packages.
+Run `mise run package` from a clean checkout to build both publication
+archives and verify the CLI against the packaged library. CI also checks
+this and installs the CLI from the repository root.
+
 To release, keep the `squeeze-lib` package in `squeeze-lib/Cargo.toml`, the
-`squeeze-cli` package in `squeeze-cli/Cargo.toml`, and the CLI's library
+`squeeze-cli` package in `Cargo.toml`, and the CLI's library
 dependency requirement at the same version. Refresh `Cargo.lock` and merge to
 `main`.
 The release workflow automatically builds and publishes the corresponding

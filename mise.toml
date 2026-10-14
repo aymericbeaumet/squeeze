@@ -12,6 +12,10 @@ run = "cargo build --workspace --locked"
 description = "Build the optimized CLI"
 run = "cargo build --release --locked -p squeeze-cli"
 
+[tasks.package]
+description = "Package and verify both crates for publication"
+run = "cargo package --workspace --locked"
+
 [tasks.test]
 description = "Run workspace tests and doctests"
 run = [
@@ -71,7 +75,7 @@ run = "cargo clean"
 
 [tasks.install]
 description = "Install the CLI locally"
-run = "cargo install --locked --path squeeze-cli"
+run = "cargo install --locked --path ."
 
 [tasks.msrv]
 description = "Build and test with the minimum supported Rust version"

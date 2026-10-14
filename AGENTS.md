@@ -2,14 +2,17 @@
 
 - Use `mise install` and `mise run check` for the pinned Rust toolchain and the
   formatting, Clippy, tests, doctests, and documentation checks used by CI.
-- Run `mise run release` when changing build or packaging behavior and
-  `mise run msrv` when changing dependencies or the minimum supported Rust version.
+- Run `mise run release` and `mise run package` when changing build or packaging
+  behavior, and `mise run msrv` when changing dependencies or the minimum supported
+  Rust version.
 - mise is the only task runner: add one-liners to `mise.toml` and longer
   scripts as executable file tasks in `mise-tasks/` (`#MISE description=...`);
   no Makefile or standalone `scripts/`. Distribute through established package
   managers rather than repository install scripts.
 - The library package is `squeeze-lib` (imported as `squeeze`); `squeeze`
-  is taken on crates.io. Keep both crate versions, the CLI's requirement on
+  is taken on crates.io. The root manifest defines `squeeze-cli`; keep its
+  explicit targets in `squeeze-cli/` registered when adding integration tests.
+  Keep both crate versions, the CLI's requirement on
   the library, and their `Cargo.lock` entries synchronized. A new version on
   `main` publishes the release, crates, and Homebrew formula; see
   [release details](docs/development.md).

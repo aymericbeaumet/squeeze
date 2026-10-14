@@ -53,6 +53,10 @@ brew install aymericbeaumet/tap/squeeze
 cargo install --locked squeeze-cli
 ```
 
+From a clone, install the local CLI with `cargo install --path . --locked`.
+The `squeeze-cli` package installs the `squeeze` binary; the separate
+`squeeze-lib` package provides the [Rust API](#use-as-a-rust-library).
+
 **mise** (all platforms):
 
 ```shell
@@ -261,8 +265,8 @@ for m in scanner.scan_line(line) {
 }
 ```
 
-Once the 0.5.0 crate is published, its API documentation will be on
-[docs.rs](https://docs.rs/squeeze-lib). In a clone, run
+API documentation is available on [docs.rs](https://docs.rs/squeeze-lib).
+In a clone, run
 `cargo doc --open -p squeeze-lib`.
 
 ## Development

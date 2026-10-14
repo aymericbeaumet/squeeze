@@ -24,6 +24,11 @@ jobs:
         run: mise run release-check
       - run: mise run check
       - run: mise run release
+      - run: mise run package
+      - name: Install from the repository root
+        run: |
+          cargo install --locked --path . --root "$RUNNER_TEMP/squeeze-install"
+          "$RUNNER_TEMP/squeeze-install/bin/squeeze" --version
 
   msrv:
     runs-on: ubuntu-24.04

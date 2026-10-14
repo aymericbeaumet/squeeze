@@ -43,7 +43,7 @@ jobs:
 
             def install
               ENV["SQUEEZE_VERSION"] = version.to_s
-              system "cargo", "install", *std_cargo_args(path: "squeeze-cli")
+              system "cargo", "install", *std_cargo_args(path: ".")
             end
 
             test do
