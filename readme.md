@@ -267,7 +267,7 @@ for m in scanner.scan_line(line) {
 
 API documentation is available on [docs.rs](https://docs.rs/squeeze-lib).
 In a clone, run
-`cargo doc --open -p squeeze-lib`.
+`mise run doc`.
 
 ## Development
 

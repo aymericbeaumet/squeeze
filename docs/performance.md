@@ -187,7 +187,7 @@ match counts next to the timings. Results land in `/tmp/squeeze-bench/summary.md
 ready to paste between the `bench-cli` markers of [CLI benchmarks](#cli-benchmarks).
 
 To profile: build with `CARGO_PROFILE_RELEASE_STRIP=false
-CARGO_PROFILE_RELEASE_DEBUG=1 cargo build --release --target-dir target/prof`,
+CARGO_PROFILE_RELEASE_DEBUG=1 mise exec -- cargo build --release --locked --target-dir target/prof`,
 record with `samply record --save-only` and symbolicate the hot addresses
 with `atos -i` against a `dsymutil` bundle (macOS), or use `perf` (Linux).
 Note that the first pass over a memory-mapped file collects the page-touch

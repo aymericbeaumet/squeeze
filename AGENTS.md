@@ -1,6 +1,6 @@
 # Project workflow
 
-- Use `mise install` and `mise run check` for the pinned Rust toolchain and the
+- Use `mise install` and `mise run check` for pinned Rust and Python, plus the
   formatting, Clippy, tests, doctests, and documentation checks used by CI.
 - Run `mise run release` and `mise run package` when changing build or packaging
   behavior, and `mise run msrv` when changing dependencies or the minimum supported
@@ -38,11 +38,13 @@
 - The scanner has NEON and SSSE3 backends. After touching `squeeze-lib/classify.rs`
   or the block walk in `squeeze-lib/scanner.rs`, run the library tests for the other
   architecture as well: on Apple silicon
-  `cargo test -p squeeze-lib --target x86_64-apple-darwin` runs the SSSE3 path under
-  Rosetta and `cargo clippy -p squeeze-lib --target x86_64-apple-darwin --all-targets
-  -- -D warnings` lints the code that only compiles there (`rustup target add
-  x86_64-apple-darwin` once); CI covers both.
-- Finder changes must keep `cargo test -p squeeze-lib` green: the fuzz suites check
-  gate/rule contracts and strategy parity, `regex_parity` pins the hand-written
-  codetag/modeline/phone matchers to the former regexes, and `linear_scans`
+  `mise exec -- cargo test -p squeeze-lib --target x86_64-apple-darwin` runs the
+  SSSE3 path under Rosetta and `mise exec -- cargo clippy -p squeeze-lib --target
+  x86_64-apple-darwin --all-targets -- -D warnings` lints the code that only
+  compiles there (`mise exec -- rustup target add x86_64-apple-darwin` once);
+  CI covers both.
+- Finder changes must keep `mise exec -- cargo test -p squeeze-lib` green: the
+  fuzz suites check gate/rule contracts and strategy parity; `regex_parity`
+  pins the hand-written codetag/modeline/phone matchers to the former regexes,
+  and `linear_scans`
   rejects quadratic rescans on adversarial lines.

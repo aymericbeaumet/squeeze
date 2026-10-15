@@ -1,8 +1,10 @@
 [tools]
-rust = { version = "1.99.0", profile = "minimal", components = [
+rust = { version = "1.99.1", profile = "minimal", components = [
   "clippy",
   "rustfmt",
 ] }
+python = "3.15.0"
+actionlint = "1.7.12"
 
 [tasks.build]
 description = "Build the workspace"
@@ -89,12 +91,18 @@ run = [
 
 [tasks.release-check]
 description = "Validate workflows and release helpers"
-tools.actionlint = "1.7.12"
-tools.python = "3.15.0"
 run = [
   "actionlint",
-  "python3 -m unittest discover -s .github/scripts -p 'test_*.py'",
+  { task = "release-helper-tests" },
 ]
+
+[tasks.release-helper-tests]
+description = "Test the release helper"
+run = "python3 -m unittest discover -s .github/scripts -p 'test_*.py'"
+
+[tasks.release-helper]
+description = "Run the release helper (pass its command and options after --)"
+run = "python3 .github/scripts/release.py"
 
 [tasks.watch]
 run = "mise watch test"
@@ -106,16 +114,22 @@ run = "mise watch check"
 run = "cargo update"
 
 [tasks.outdated]
-run = "cargo outdated"
+run = [
+  "mise install github:kbknapp/cargo-outdated@0.19.0",
+  "mise exec github:kbknapp/cargo-outdated@0.19.0 -- cargo outdated",
+]
 
 [tasks.audit]
-run = "cargo audit"
+run = [
+  "mise install aqua:rustsec/rustsec/cargo-audit@0.22.2",
+  "mise exec aqua:rustsec/rustsec/cargo-audit@0.22.2 -- cargo audit",
+]
 
 [tasks.demo]
 description = "Record the readme demo into docs/demo/demo.gif (Colima on macOS)"
 run = [
-  "docker run --rm -v \"$PWD:/src\" -v squeeze-demo-cargo:/usr/local/cargo/registry -w /src rust:1.99.0-alpine cargo build --release --locked -p squeeze-cli --target-dir target/demo",
-  "docker run --rm -v \"$PWD:/vhs\" ghcr.io/charmbracelet/vhs:v0.12.1 docs/demo/demo.tape",
+  "docker run --rm -v \"$PWD:/src\" -v squeeze-demo-cargo:/usr/local/cargo/registry -w /src rust:1.99.1-alpine@sha256:32442d80d49d2b4beffcf91dbe7cedc657cad821e91680a0db3f8e9ee23aad18 cargo build --release --locked -p squeeze-cli --target-dir target/demo",
+  "docker run --rm -v \"$PWD:/vhs\" ghcr.io/charmbracelet/vhs:v0.12.1@sha256:ea49a6a1c529be83153e88321892b5585964418f0b9055e8c1e0d732194234a3 docs/demo/demo.tape",
 ]
 
 [tasks.run]
