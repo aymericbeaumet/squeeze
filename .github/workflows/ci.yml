@@ -14,26 +14,31 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          version: 2026.9.15
+          version: 2026.10.11
           cache: false
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Test release automation
-        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+        run: mise run release-check
       - run: mise run check
       - run: mise run release
+      - run: mise run package
+      - name: Install from the repository root
+        run: |
+          mise run install -- --root "$RUNNER_TEMP/squeeze-install"
+          "$RUNNER_TEMP/squeeze-install/bin/squeeze" --version
 
   msrv:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          version: 2026.9.15
+          version: 2026.10.11
           cache: false
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: msrv
       - run: mise run msrv
@@ -60,16 +65,16 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Select native Rust host
         env:
           TARGET: ${{ matrix.target }}
         run: rustup set default-host "$TARGET"
-      - uses: jdx/mise-action@v4
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          version: 2026.9.15
+          version: 2026.10.11
           cache: false
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Verify native Rust target
         env:
           TARGET: ${{ matrix.target }}
@@ -91,12 +96,12 @@ jobs:
     env:
       TARGET: ${{ matrix.target }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: jdx/mise-action@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         with:
-          version: 2026.9.15
+          version: 2026.10.11
           cache: false
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           key: static
       - name: Add the static musl target
@@ -109,5 +114,5 @@ jobs:
       - name: Run the static binary on Alpine
         run: |
           file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'
-          docker run --rm -v "$PWD/target/$TARGET/release:/w:ro" alpine:3 \
+          docker run --rm -v "$PWD/target/$TARGET/release:/w:ro" alpine:3@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 \
             sh -c 'echo "see https://example.com." | /w/squeeze --url' | grep -Fx https://example.com

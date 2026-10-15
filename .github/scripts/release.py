@@ -86,11 +86,11 @@ def output(name, value):
 
 def crate_version(root=Path(".")):
     manifests = {}
-    for crate, package in (("squeeze-lib", "squeeze-lib"), ("squeeze-cli", "squeeze-cli")):
-        with (root / crate / "Cargo.toml").open("rb") as stream:
-            manifests[crate] = tomllib.load(stream)
-        if manifests[crate]["package"]["name"] != package:
-            raise ValueError(f"Expected {crate} package to be named {package}")
+    for path, package in (("squeeze-lib/Cargo.toml", "squeeze-lib"), ("Cargo.toml", "squeeze-cli")):
+        with (root / path).open("rb") as stream:
+            manifests[package] = tomllib.load(stream)
+        if manifests[package]["package"]["name"] != package:
+            raise ValueError(f"Expected {path} package to be named {package}")
     versions = [manifest["package"]["version"] for manifest in manifests.values()]
     dependency = manifests["squeeze-cli"].get("dependencies", {}).get("squeeze", {})
     required = dependency.get("version")

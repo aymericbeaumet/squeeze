@@ -36,8 +36,8 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for crate, package, version in (("squeeze-lib", "squeeze-lib", "0.5.0"),
-                                            ("squeeze-cli", "squeeze-cli", "0.4.0")):
-                (root / crate).mkdir()
+                                            (".", "squeeze-cli", "0.4.0")):
+                (root / crate).mkdir(exist_ok=True)
                 (root / crate / "Cargo.toml").write_text(
                     f'[package]\nname = "{package}"\nversion = "{version}"\n')
             with self.assertRaisesRegex(ValueError, "versions differ"):
@@ -49,15 +49,14 @@ class ReleaseTests(unittest.TestCase):
             (root / "squeeze-lib").mkdir()
             (root / "squeeze-lib/Cargo.toml").write_text(
                 '[package]\nname = "squeeze-lib"\nversion = "0.5.0"\n')
-            (root / "squeeze-cli").mkdir()
             manifest = ('[package]\nname = "squeeze-cli"\nversion = "0.5.0"\n'
                         '[dependencies]\nsqueeze = {{ package = "squeeze-lib", version = "{}" }}\n')
-            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.4.0"))
+            (root / "Cargo.toml").write_text(manifest.format("0.4.0"))
             with self.assertRaisesRegex(ValueError, "CLI requires 0.4.0"):
                 release.crate_version(root)
-            (root / "squeeze-cli/Cargo.toml").write_text(manifest.format("0.5.0"))
+            (root / "Cargo.toml").write_text(manifest.format("0.5.0"))
             self.assertEqual(release.crate_version(root), "0.5.0")
-            (root / "squeeze-cli/Cargo.toml").write_text(
+            (root / "Cargo.toml").write_text(
                 manifest.format("0.5.0").replace('package = "squeeze-lib", ', ""))
             with self.assertRaisesRegex(ValueError, "versions differ"):
                 release.crate_version(root)
