@@ -47,6 +47,5 @@
   CI covers both.
 - Finder changes must keep `mise exec -- cargo test -p squeeze-lib` green: the
   fuzz suites check gate/rule contracts and strategy parity; `regex_parity`
-  pins the hand-written codetag/modeline/phone matchers to the former regexes,
-  and `linear_scans`
-  rejects quadratic rescans on adversarial lines.
+  checks codetag/modeline/phone matchers against reference regexes, and
+  `linear_scans` rejects quadratic rescans on adversarial lines.
