@@ -1,8 +1,7 @@
 # Performance
 
-squeeze aims to be the fastest structured-data extractor available. This
-document describes how the scanner reaches that goal, how performance is
-measured, and the rules a finder must follow to keep the guarantees.
+This document describes how squeeze scans input, how to measure its
+performance, and the contracts each finder must follow.
 
 ## Architecture
 
@@ -81,7 +80,7 @@ finder, happens only where a match can actually start.
    add a *trigger context* over the two previous bytes and the class of
    the next one, tabulated once: the URI finder's rule that a colon not
    followed by `/` must end a registered scheme rejects timestamps and
-   `key:value` pairs before any call (URI calls per KB on logs: 32 to 4).
+   `key:value` pairs before any call.
 6. **Run rules.** At a candidate, the scanner measures the digit and hex
    runs once (`Runs::at`, from the classifier's lanes when they cover the
    run) and evaluates each finder's declarative `RunRule`s. A rule can
@@ -100,9 +99,8 @@ finder, happens only where a match can actually start.
    (modeline option runs, too-deep JSON bracket runs, IPv6-shaped runs,
    dotted tokens for the domain finder).
 
-Two other strategies remain selectable for comparison: `Legacy` (the
-original per-byte dispatch tables) and `Gated` (the exact tables without
-the vector stage).
+Two other strategies are selectable for comparison: `Legacy` (per-byte
+dispatch tables) and `Gated` (the exact tables without the vector stage).
 
 The CLI memory-maps regular files of 64 KiB and more and reads everything
 else in 256 KiB blocks, validates UTF-8 once per block or 1 MiB window with
@@ -155,8 +153,8 @@ and every contract has a property test in `squeeze-lib/tests/fuzz.rs`:
 - Strategies and backends must agree byte for byte, `scan_buffer` must
   agree with per-line scanning for every plan, `linear_scans.rs` rejects
   quadratic rescans on adversarial 100 KB lines, and `regex_parity.rs`
-  pins the hand-written codetag, modeline and phone matchers to the regexes
-  they replaced (kept as dev-dependencies only). The domain finder's
+  compares the codetag, modeline and phone matchers with reference regexes
+  (dev-dependencies only). The domain finder's
   trigger path is compared with its `find` reference the same way.
 
 ## Measuring
@@ -175,7 +173,7 @@ unicode, plus the URI fixture and any `--corpus FILE`):
 | `--write-corpus DIR` | dump the corpora for external tools |
 
 The bench pins itself to performance cores (macOS QoS) and keeps the best of
-interleaved rounds. On a loaded machine wall-clock numbers still drift by
+interleaved rounds. On a loaded machine wall-clock numbers can drift by
 50% or more between runs; **operation counts are exact and load-independent**
 and are the primary signal when comparing changes. For end-to-end CPU time
 prefer the minimum user time over many interleaved runs of each binary.
@@ -198,62 +196,52 @@ stalls of the whole run.
 Finder invocations per KB with every finder enabled, from `--stats`
 (exact counts, unaffected by machine load):
 
-| corpus | original | context gates | run rules | no regex | passes and chained rules |
-|---|---|---|---|---|---|
-| logs | 3154 | 704 | 179 | 220 | 94 |
-| prose | 1157 | 127 | 11 | 6 | 9 |
-| source | 979 | 181 | 93 | 93 | 48 |
-| jsonl | 2588 | 519 | 147 | 234 | 74 |
-| markdown | 1189 | 184 | 66 | 66 | 47 |
-| hexdense | 2839 | 461 | 69 | 67 | 46 |
-| unicode | 937 | 199 | 136 | 136 | 111 |
-| nomatch | 800 | 57 | 0 | 0 | 0 |
-| urls | 2029 | 364 | 98 | 118 | 56 |
+| corpus | finder calls per KB |
+|---|---|
+| logs | 94 |
+| prose | 9 |
+| source | 48 |
+| jsonl | 74 |
+| markdown | 47 |
+| hexdense | 46 |
+| unicode | 111 |
+| nomatch | 0 |
+| urls | 56 |
 
-The `no regex` column counts the former scan-mode finders, which run as
-gated dispatch or trigger finders instead of one regex pass per line: their
-calls are counted where they used to be invisible. The last column adds
-the pass planner, chained run rules and word rules; on the mixed corpus the
-ip, phone, mac and cidr finders lost 50 to 80 percent of their calls and
-codetag went from 26.7 to 1.8 calls per KB, while the hit rate of the
-remaining calls is above 30 percent. Hash, UUID, MAC, datetime, colour, env
-and handle are only ever invoked on true matches.
+On these corpora, hash, UUID, MAC, datetime, colour, env and handle finders
+are invoked only on true matches.
 
-Adversarial single lines that used to be quadratic (a 100 KB `1.1.1.1...`
-run, `[` repeated, `ex:a ` repeated, `a.b` repeated) scan at 85 to 150 MiB/s.
+Adversarial 100 KB single lines (`1.1.1.1...`, `[` repeated, `ex:a `
+repeated, `a.b` repeated) scan at 85 to 150 MiB/s in the recorded run.
 
 End-to-end, minimum user CPU time over 7 interleaved runs on the 56 MiB
-mixed corpus (Apple M4 Pro, machine under external load), single-threaded,
-before and after the byte and literal search stage (masks, previous-byte
-filter, anchor checks in the search, literal prefixes, mapped-page
-prefetch):
+mixed corpus (Apple M4 Pro, machine under external load), single-threaded:
 
-| command | before | after |
-|---|---|---|
-| `squeeze --all` | 320 ms | 315 ms |
-| `squeeze --url --email --ipv4 --sha256 --uuid` | 86 ms | 74 ms |
-| `squeeze --url` | 25 ms | 15 ms |
-| `squeeze --uuid` | 17 ms | 12 ms |
-| `squeeze --datetime` | 18 ms | 12 ms |
-| `squeeze --sha256` | 33 ms | 29 ms |
-| `squeeze --ipv4` | 33 ms | 23 ms |
-| `squeeze --mac` | 52 ms | 17 ms |
-| `squeeze --domain` | 26 ms | 22 ms |
-| `squeeze --todo` | 48 ms | 8 ms |
-| `squeeze --codetag` | 112 ms | 108 ms |
+| command | user CPU time |
+|---|---|
+| `squeeze --all` | 315 ms |
+| `squeeze --url --email --ipv4 --sha256 --uuid` | 74 ms |
+| `squeeze --url` | 15 ms |
+| `squeeze --uuid` | 12 ms |
+| `squeeze --datetime` | 12 ms |
+| `squeeze --sha256` | 29 ms |
+| `squeeze --ipv4` | 23 ms |
+| `squeeze --mac` | 17 ms |
+| `squeeze --domain` | 22 ms |
+| `squeeze --todo` | 8 ms |
+| `squeeze --codetag` | 108 ms |
 
-On a 64 MB log, where the colons of timestamps dominate, `--url` went from
-45 to 25 ms and `--mac` from 83 to 27 ms. Startup is 1.3 ms of user time.
+On a 64 MB log, where the colons of timestamps dominate, `--url` takes
+25 ms and `--mac` 27 ms. Startup takes 1.3 ms of user time.
 
 The comparison with other matchers is in [CLI benchmarks](#cli-benchmarks).
 
 ## CLI benchmarks
 
-From the repository root, run the command used for the results below:
+Run the benchmark suite from the repository root:
 
 ```sh
 mise install
-mise install hyperfine@1.20.0 ripgrep@15.2.0
 mise run bench-cli -- --scale 8 --runs 7 --big 2 --tree 20000 --out /tmp/squeeze-bench
 ```
 
@@ -341,27 +329,23 @@ with trailing punctuation, 64-hex runs inside longer runs).
 `squeeze` is the default, which scans standard input and files of 8 MiB and
 more on every core with output kept in order, and walks directories on
 several threads. `five kinds` runs the five finders together
-against the union of the five patterns; `everything` runs all 20 finders,
-which no regex tool can do in one pass. CPU time is the number to compare
-on a busy machine. Library-level throughput and operation counts per finder
-come from `mise run bench -- --stats`, above.
+against the union of the five patterns; `everything` runs all finders,
+with no equivalent task configured for the other tools. CPU time is the
+number to compare on a busy machine. Library-level throughput and operation
+counts per finder come from `mise run bench -- --stats`, above.
 
-## Known limits and next steps
+## Known limits
 
 - The block classifier's rules see eight neighbour categories, so a
   candidate whose exact gate depends on a finer class (`-` versus other
-  punctuation, `y` versus other letters) still reaches the exact gates:
+  punctuation, `y` versus other letters) reaches the exact gates:
   about 130 per KB on prose and 50 per KB on logs, listed by `--stats`.
-  Wider category vectors (two bytes per lane) would remove most of them.
 - The URI parser costs about 130 ns per matched URL: it walks the
   hier-part, query and fragment character by character and trims the
-  result afterwards. A table-driven single pass would roughly halve it.
-- `env` still rescans to the end of the line for every `${` of an unclosed
-  expression; the scan now stops at line terminators, and a memo could make
-  it linear.
+  result afterwards.
+- `env` rescans to the end of the line for every `${` of an unclosed
+  expression, so repeated open expressions can cause quadratic work.
 - The default codetag mnemonics (about seventy, some starting with `s`,
-  which the long s folds onto) are too many for a literal pass and still
-  go through the block classifier; a Teddy-style multi-literal search
-  would cover them.
-- The vector stage processes 16 bytes per step. An AVX2 backend (32 lanes)
-  and a 64-byte NEON step would halve the per-block overhead.
+  which the long s folds onto) are too many for a literal pass and
+  go through the block classifier.
+- The vector stage processes 16 bytes per step.

@@ -6,7 +6,7 @@
 Run `mise trust`, then `mise install`. The committed `mise.lock` records resolved
 downloads for all six CI platforms; the mise action installs from it in locked
 mode. Update it with `mise lock` when changing tools. The minimum supported Rust
-version remains 1.95; `mise run msrv` installs and tests that toolchain
+version is 1.95; `mise run msrv` installs and tests that toolchain
 independently of the development pin.
 The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
 toolchain cannot silently replace the minimum-version check.
@@ -39,7 +39,7 @@ Actions tool cache is disabled, while
 
 The root `Cargo.toml` defines the `squeeze-cli` package and the workspace;
 `squeeze-lib/Cargo.toml` defines the library package. CLI sources and
-integration tests remain in `squeeze-cli/`, with explicit Cargo target paths.
+integration tests live in `squeeze-cli/`, with explicit Cargo target paths.
 `cargo install --path . --locked` installs the local `squeeze` binary, and
 `cargo test` defaults to both workspace packages.
 Run `mise run package` from a clean checkout to build both publication
@@ -69,13 +69,16 @@ Each release is tested and built on six native
 
 Linux and macOS archives use `.tar.gz`; Windows archives use `.zip`. Each
 contains the CLI, README, and license. For example, the Windows ARM64 archive
-is `squeeze-v0.5.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives,
+is `squeeze-v1.0.0-windows-arm64.zip`. `SHA256SUMS` accompanies the archives,
 and each archive gets a build provenance attestation. Linux binaries link musl
 statically, so they run on any distribution, and use mimalloc because musl's
 allocator serializes the parallel scanner (up to 2.7 times slower); Windows binaries link the C
 runtime statically (`.cargo/config.toml`), so they need no Visual C++
 Redistributable. Archive names are a public contract for the Homebrew formula
 and mise's GitHub backend.
+
+To verify an archive's build provenance, run
+`gh attestation verify <archive> --repo aymericbeaumet/squeeze`.
 
 Publication waits for every build and test to pass. Assets are uploaded to a
 draft before the release becomes public, and retries can resume an unpublished

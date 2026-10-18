@@ -19,8 +19,8 @@
 # The regexes are approximations of the finders' grammars: match counts are
 # recorded next to the timings so differences in what each tool extracts stay
 # visible. `five kinds` runs the five squeeze finders together against the
-# union of the five patterns; `everything` runs squeeze with every finder (20
-# kinds), which no regex tool can be asked to do in one pass.
+# union of the five patterns; `everything` runs squeeze with every finder,
+# with no equivalent task configured for the other tools.
 #
 # Three scale scenarios follow: `big`, the mixed corpus repeated to GIB GiB
 # (default 2, 0 to skip) and read from the file; `stdin`, the same bytes
