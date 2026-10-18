@@ -1,3 +1,6 @@
+[settings]
+lockfile = true
+
 [tools]
 rust = { version = "1.99.1", profile = "minimal", components = [
   "clippy",
@@ -114,16 +117,12 @@ run = "mise watch check"
 run = "cargo update"
 
 [tasks.outdated]
-run = [
-  "mise install github:kbknapp/cargo-outdated@0.19.0",
-  "mise exec github:kbknapp/cargo-outdated@0.19.0 -- cargo outdated",
-]
+tools."github:kbknapp/cargo-outdated" = "0.19.0"
+run = "cargo outdated"
 
 [tasks.audit]
-run = [
-  "mise install aqua:rustsec/rustsec/cargo-audit@0.22.2",
-  "mise exec aqua:rustsec/rustsec/cargo-audit@0.22.2 -- cargo audit",
-]
+tools."aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
+run = "cargo audit"
 
 [tasks.demo]
 description = "Record the readme demo into docs/demo/demo.gif (Colima on macOS)"

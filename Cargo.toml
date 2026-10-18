@@ -46,7 +46,7 @@ ignore = "0.4.33"
 clap_complete = "4.6.11"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.190"
+libc = "0.2.191"
 
 # macOS copies with pbcopy: linking AppKit would slow down every start.
 # musl's allocator serializes the parallel scanner; mimalloc keeps the static

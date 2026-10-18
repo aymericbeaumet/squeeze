@@ -2,6 +2,8 @@
 
 - Use `mise install` and `mise run check` for pinned Rust and Python, plus the
   formatting, Clippy, tests, doctests, and documentation checks used by CI.
+- Update and commit `mise.lock` with `mise.toml` tool changes; lock all six CI
+  platforms with `mise lock --platform linux-x64,linux-arm64,macos-x64,macos-arm64,windows-x64,windows-arm64`.
 - Run `mise run release` and `mise run package` when changing build or packaging
   behavior, and `mise run msrv` when changing dependencies or the minimum supported
   Rust version.

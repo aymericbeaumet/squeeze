@@ -3,9 +3,11 @@
 ## Tooling
 
 `mise.toml` pins Rust 1.99.1 with rustfmt and Clippy, plus Python 3.15.0.
-Run `mise trust`, then `mise install`. The minimum supported Rust version remains
-1.95; `mise run msrv` installs and tests that toolchain independently of the
-development pin.
+Run `mise trust`, then `mise install`. The committed `mise.lock` records resolved
+downloads for all six CI platforms; the mise action installs from it in locked
+mode. Update it with `mise lock` when changing tools. The minimum supported Rust
+version remains 1.95; `mise run msrv` installs and tests that toolchain
+independently of the development pin.
 The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
 toolchain cannot silently replace the minimum-version check.
 
@@ -21,12 +23,12 @@ that the domain and URI finders use to reject lookalikes such as `opts.all` or
 access) and review the diff; the registries change a few times a year.
 
 `mise run watch` and `mise run watch-check` use mise's watcher. The optional
-`outdated` and `audit` tasks install their pinned Cargo extensions through mise.
+`outdated` and `audit` tasks use Cargo extensions pinned by mise.
 `mise tasks` lists every task: one-liners live in `mise.toml`, longer ones
 such as `bench-cli` and `update-iana` are executable file tasks in
 `mise-tasks/`.
 
-Actions pins mise 2026.10.11, whose release assets cover all six platforms.
+Actions pins mise 2026.10.13, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Workflow action revisions and
 container images are pinned to digests. Mise manages Rust through rustup. Its
 Actions tool cache is disabled, while
