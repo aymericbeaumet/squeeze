@@ -2,9 +2,14 @@
 
 ## Tooling
 
-`mise.toml` pins Rust 1.98.1 with rustfmt and Clippy. Run `mise trust`, then
-`mise install`. The minimum supported Rust version remains 1.95; `mise run msrv`
-installs and tests that toolchain independently of the development pin.
+`mise.toml` pins Rust 1.99.1 with rustfmt and Clippy, plus Python 3.15.0.
+Run `mise trust`, then `mise install`. The committed `mise.lock` records resolved
+downloads for all six CI platforms; the mise action installs from it in locked
+mode. Update it with `mise lock` when changing tools. The minimum supported Rust
+version remains 1.95; `mise run msrv` installs and tests that toolchain
+independently of the development pin.
+The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
+toolchain cannot silently replace the minimum-version check.
 
 `mise run check` runs formatting, Clippy with warnings denied, all workspace
 test targets, doctests, and documentation with warnings denied. `mise run release`
@@ -18,20 +23,31 @@ that the domain and URI finders use to reject lookalikes such as `opts.all` or
 access) and review the diff; the registries change a few times a year.
 
 `mise run watch` and `mise run watch-check` use mise's watcher. The optional
-`outdated` and `audit` tasks require the corresponding Cargo extensions.
+`outdated` and `audit` tasks use Cargo extensions pinned by mise.
 `mise tasks` lists every task: one-liners live in `mise.toml`, longer ones
 such as `bench-cli` and `update-iana` are executable file tasks in
 `mise-tasks/`.
 
-Actions pins mise 2026.9.15, whose release assets cover all six platforms.
-Verify those assets before updating the pin. Mise manages Rust through rustup. Its Actions tool cache is disabled, while
+Actions pins mise 2026.10.13, whose release assets cover all six platforms.
+Verify those assets before updating the pin. Workflow action revisions and
+container images are pinned to digests. Mise manages Rust through rustup. Its
+Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
 
 ## Releases
 
+The root `Cargo.toml` defines the `squeeze-cli` package and the workspace;
+`squeeze-lib/Cargo.toml` defines the library package. CLI sources and
+integration tests remain in `squeeze-cli/`, with explicit Cargo target paths.
+`cargo install --path . --locked` installs the local `squeeze` binary, and
+`cargo test` defaults to both workspace packages.
+Run `mise run package` from a clean checkout to build both publication
+archives and verify the CLI against the packaged library. CI also checks
+this and installs the CLI from the repository root.
+
 To release, keep the `squeeze-lib` package in `squeeze-lib/Cargo.toml`, the
-`squeeze-cli` package in `squeeze-cli/Cargo.toml`, and the CLI's library
+`squeeze-cli` package in `Cargo.toml`, and the CLI's library
 dependency requirement at the same version. Refresh `Cargo.lock` and merge to
 `main`.
 The release workflow automatically builds and publishes the corresponding
@@ -79,9 +95,11 @@ versions that were already published.
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
 `docs/demo/demo.tape` with VHS in a container (Colima on macOS).
 
-Release helpers use Python 3.11+ and the standard library. Run their tests with
-`python3 -m unittest discover -s .github/scripts -p 'test_*.py'` and validate
-workflow changes with `actionlint`. If publication fails after creating a tag,
+Release helpers use Python 3.11+ and the standard library. Run
+`mise run release-check` to validate workflows with actionlint 1.7.12 and run
+the helper tests with pinned Python 3.15.0. Release jobs use the same mise
+environment and `mise run release-helper` to invoke the helper. If publication
+fails after creating a tag,
 rerun the failed workflow at its original commit or dispatch it on that tag.
 An existing tag pointing at another commit is rejected. If only the Homebrew
 or crates job fails, rerun it after fixing its token or permissions.

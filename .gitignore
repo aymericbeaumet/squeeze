@@ -16,3 +16,6 @@ proptest-regressions/
 
 # Cargo lock for libraries (keep for binaries)
 # Cargo.lock
+
+# Keep the project tool lockfile even when a global Git ignore matches *.lock.
+!mise.lock

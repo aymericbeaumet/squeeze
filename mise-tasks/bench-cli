@@ -190,7 +190,7 @@ time_scale() {
   local warmup=1
   if [ "$section" = tree ]; then warmup=3; fi
   local args=(--warmup "$warmup" --runs "$SCALE_RUNS" -i --output=pipe --export-json "$OUT/results/$slug.json")
-  if [ "$shell" = 0 ]; then args+=(-N); fi
+  if [ "$shell" = 1 ]; then args+=(--shell bash); else args+=(-N); fi
   : > "$counts"
   echo "== $section / $name"
   # Match counts: through a shell like hyperfine when the command pipes,
@@ -326,7 +326,7 @@ for corpus in corpora + sections:
                 parts = line.rsplit(" ", 1)
                 if len(parts) == 2:
                     counts[parts[0]] = parts[1].strip()
-        results = {r["command"]: r for r in data["results"]}
+        results = {r["name"]: r for r in data["results"]}
         if header is None:
             # Columns: every tool seen in any task of this corpus, in order.
             header = []
@@ -334,8 +334,8 @@ for corpus in corpora + sections:
                 tp = os.path.join(out, "results", f"{corpus}-{t.replace(' ', '-')}.json")
                 if os.path.exists(tp):
                     for r in json.load(open(tp))["results"]:
-                        if r["command"] not in header:
-                            header.append(r["command"])
+                        if r["name"] not in header:
+                            header.append(r["name"])
             lines.append("| task | " + " | ".join(header) + " |")
             lines.append("|---|" + "---|" * len(header))
         cells = []
@@ -345,11 +345,10 @@ for corpus in corpora + sections:
                 cells.append("n/a")
                 continue
             # The median wall time: on a busy machine a single slow run
-            # moves the mean far more than it moves the median (hyperfine
-            # before 1.6 only reports the mean).
-            wall = r.get("median", r["mean"])
+            # moves the mean far more than it moves the median.
+            wall = r["summary"]["time_wall_clock"]["median"]
             ms = wall * 1000
-            cpu = (r["user"] + r["system"]) * 1000
+            cpu = r["summary"]["time_cpu"]["mean"] * 1000
             mbs = size / wall / 1048576
             count = counts.get(name, "?")
             cells.append(f"{ms:.0f} ms wall, {cpu:.0f} ms cpu ({mbs:.0f} MiB/s, {count} matches)")
