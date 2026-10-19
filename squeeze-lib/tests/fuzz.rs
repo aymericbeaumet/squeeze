@@ -528,9 +528,11 @@ proptest! {
         prop_assert_eq!(&input[matches[0].range.clone()], sample_email());
     }
 
+    // No '/' in the prefix: `Chrome/192.168.1.1` is a user-agent version,
+    // which the ip finder rejects by design.
     #[test]
     fn scanner_with_embedded_ip(
-        prefix in "[^0-9.:a-fA-F\\[\\]]{0,20}",
+        prefix in "[^0-9.:a-fA-F\\[\\]/]{0,20}",
         suffix in "[^0-9.:a-fA-F\\[\\]]{0,20}"
     ) {
         let input = format!("{}{}{}", prefix, sample_ip(), suffix);

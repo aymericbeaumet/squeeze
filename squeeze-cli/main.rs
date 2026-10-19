@@ -2781,6 +2781,19 @@ fn main() -> ExitCode {
         }
     };
 
+    // A bare `squeeze` typed in a terminal would otherwise wait on stdin in
+    // silence; pasting text there stays supported.
+    if opts.inputs.is_empty() && io::stdin().is_terminal() {
+        let eof = if cfg!(windows) {
+            "Ctrl-Z, Enter"
+        } else {
+            "Ctrl-D"
+        };
+        eprintln!(
+            "squeeze: reading stdin; paste text and press {eof}, or pass a path such as . (see --help)"
+        );
+    }
+
     // Unlocked: the tree walker writes from several threads, each file's
     // results in one piece; the buffer keeps the per-write locking rare.
     let mut out = BufWriter::new(io::stdout());

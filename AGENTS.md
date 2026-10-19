@@ -24,6 +24,10 @@
 - Finders favor precision. After changing one, smoke-test false positives with
   `mise run run -- --all --with-kind readme.md squeeze-cli/main.rs` and pin
   intentional trade-offs in the `squeeze-lib/tests/hardening_*.rs` suites.
+- Keep `readme.md` a short pitch (demo, install, examples, finders); the
+  option reference lives in `docs/usage.md` and recipes in
+  `docs/integrations.md`. When CLI output or flags change, update these
+  docs and `--help`, and re-record `docs/demo/demo.gif` with `mise run demo`.
 - CI and releases cover Linux, macOS, and Windows on both amd64 and arm64.
   Preserve all six native targets when changing workflows. Release binaries
   must run on a clean machine: Linux ones link musl statically, Windows ones
