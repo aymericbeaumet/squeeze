@@ -28,7 +28,7 @@ access) and review the diff; the registries change a few times a year.
 such as `bench-cli` and `update-iana` are executable file tasks in
 `mise-tasks/`.
 
-Actions pins mise 2026.10.13, whose release assets cover all six platforms.
+Actions pins mise 2026.10.15, whose release assets cover all six platforms.
 Verify those assets before updating the pin. Workflow action revisions and
 container images are pinned to digests. Mise manages Rust through rustup. Its
 Actions tool cache is disabled, while
