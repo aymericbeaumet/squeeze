@@ -150,6 +150,9 @@ def prepare():
             output("sha", tag_commit(tag))
         print(f"{tag} is already published")
         return
+    # Checked before building so a release never goes out without its formula.
+    if os.environ.get("HAS_HOMEBREW_TOKEN") != "true":
+        raise ValueError(f"HOMEBREW_TAP_TOKEN is required to update the Homebrew formula for {tag}")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     ensure_tag(tag, sha, create=False)
     output("sha", sha)

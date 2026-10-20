@@ -129,7 +129,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_unreachable_crates_io_does_not_block_the_release(self):
         error = URLError("timed out")
-        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true"}), \
+        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true", "HAS_HOMEBREW_TOKEN": "true"}), \
                 patch.object(release, "crate_version", return_value="0.2.0"), \
                 patch.object(release, "urlopen", side_effect=error), \
                 patch.object(release, "api", return_value=None), \
@@ -139,6 +139,23 @@ class ReleaseTests(unittest.TestCase):
             release.prepare()
         output.assert_any_call("should_release", "true")
         output.assert_any_call("publish_crates", "true")
+
+    def test_new_releases_need_the_tap_token(self):
+        for token in ("true", ""):
+            with self.subTest(token=token), \
+                    patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true", "HAS_HOMEBREW_TOKEN": token}), \
+                    patch.object(release, "crate_version", return_value="0.6.0"), \
+                    patch.object(release, "crate_published", return_value=True), \
+                    patch.object(release, "api", return_value=None), \
+                    patch.object(release, "ensure_tag"), \
+                    patch.object(release.subprocess, "check_output", return_value="commit\n"), \
+                    patch.object(release, "output") as output:
+                if token:
+                    release.prepare()
+                    output.assert_any_call("should_release", "true")
+                else:
+                    with self.assertRaisesRegex(ValueError, "HOMEBREW_TAP_TOKEN is required"):
+                        release.prepare()
 
     def test_crates_publish_only_the_library(self):
         with patch.object(release, "crate_published", return_value=False), \

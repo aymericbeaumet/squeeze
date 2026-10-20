@@ -30,7 +30,7 @@ jobs:
           # This formula is automatically updated on every push to main. DO NOT EDIT.
 
           class SqueezeNightly < Formula
-            desc "Extract rich information from any text (URIs, codetags, etc.) - nightly"
+            desc "Extract URLs, emails, IPs, hashes, TODOs, and more from any text (nightly)"
             homepage "https://github.com/aymericbeaumet/squeeze"
             url "${ARCHIVE_URL}"
             version "${VERSION}"

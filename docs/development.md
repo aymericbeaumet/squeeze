@@ -90,12 +90,20 @@ release. The workflow uses the repository's `GITHUB_TOKEN` with `contents: write
 After publication, the Homebrew job writes `Formula/squeeze.rb` in
 `aymericbeaumet/homebrew-tap` from the release's `SHA256SUMS`: the formula
 installs the prebuilt macOS and Linux archives and generates shell
-completions. It requires `HOMEBREW_TAP_TOKEN` with write access to the tap.
-The crates job publishes `squeeze-lib` to crates.io once every platform's
-build and tests pass. If that version is unpublished, the prepare job
-requires `CARGO_REGISTRY_TOKEN` before the new release can proceed. Because
-crates.io publications are permanent, rerunning a failed crates job skips a
-version that was already published.
+completions. The crates job publishes `squeeze-lib` to crates.io once every
+platform's build and tests pass. Because crates.io publications are
+permanent, rerunning a failed crates job skips a version that was already
+published.
+
+The three install paths of the readme map to these outputs: Homebrew to the
+tap's formula, mise's `github:` backend to the release archives, and
+`cargo install --git` to the repository itself. The release needs two
+repository secrets, which the prepare job checks before building anything:
+
+| Secret | Used by | Required when |
+| --- | --- | --- |
+| `HOMEBREW_TAP_TOKEN` | the Homebrew job and the nightly formula | a new release is built; needs contents write access to `aymericbeaumet/homebrew-tap` |
+| `CARGO_REGISTRY_TOKEN` | the crates job | the `squeeze-lib` version is not on crates.io yet; needs the publish-update scope |
 
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
 `docs/demo/demo.tape` with VHS in a container (Colima on macOS).
