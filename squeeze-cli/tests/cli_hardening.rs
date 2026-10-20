@@ -299,9 +299,8 @@ fn hash_unknown_algorithm_should_fail_with_usage_error() {
         .code(2)
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
-            "invalid value 'blake2' for '--hash'",
-        ))
-        .stderr(predicate::str::contains("md5, sha1, sha256, sha512"));
+            "unknown hash algorithm 'blake2' (expected md5, sha1, sha256, or sha512)",
+        ));
 }
 
 #[test]
@@ -313,9 +312,7 @@ fn hash_unknown_algorithm_in_comma_list_should_fail_with_usage_error() {
         .failure()
         .code(2)
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains(
-            "invalid value 'bogus' for '--hash'",
-        ));
+        .stderr(predicate::str::contains("unknown hash algorithm 'bogus'"));
 }
 
 #[test]
@@ -491,7 +488,7 @@ fn hide_mnemonic_help_should_describe_hiding() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("hide the mnemonics"))
+        .stdout(predicate::str::contains("without their mnemonic"))
         .stdout(predicate::str::contains("whether to show the mnemonics").not());
 }
 
@@ -503,5 +500,195 @@ fn jobs_zero_without_finder_flags_should_fail() {
         .write_stdin("")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("--jobs must be >= 1"));
+        .code(2)
+        .stderr(predicate::str::contains("at least 1"));
+}
+
+// ============================================================================
+// Exit status: 0 by default, 1 for nothing found with --exit-code, 2 on errors
+// ============================================================================
+
+#[test]
+fn nothing_found_exits_0_by_default() {
+    squeeze()
+        .arg("--url")
+        .write_stdin("no links here\n")
+        .assert()
+        .code(0)
+        .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn exit_code_reports_whether_anything_was_found() {
+    squeeze()
+        .args(["--url", "--exit-code"])
+        .write_stdin("no links here\n")
+        .assert()
+        .code(1);
+    squeeze()
+        .args(["--url", "--exit-code"])
+        .write_stdin("see https://example.com\n")
+        .assert()
+        .code(0)
+        .stdout("https://example.com\n");
+    squeeze()
+        .args(["--url", "--exit-code", "--output", "json"])
+        .write_stdin("see https://example.com\n")
+        .assert()
+        .code(0);
+}
+
+#[test]
+fn unreadable_inputs_report_the_path_the_same_way_and_exit_2() {
+    let missing = temp_path("missing.txt");
+    let display = missing.display().to_string();
+    squeeze()
+        .arg(&missing)
+        .assert()
+        .code(2)
+        .stderr(predicate::str::starts_with(format!("squeeze: {display}: ")));
+    squeeze()
+        .arg(&missing)
+        .arg("Cargo.toml")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::starts_with(format!("squeeze: {display}: ")));
+}
+
+// ============================================================================
+// Finder values: typos are usage errors, values may follow the flag
+// ============================================================================
+
+#[test]
+fn codetag_typo_is_a_usage_error_with_a_suggestion() {
+    squeeze()
+        .arg("--codetag=tood")
+        .write_stdin("TODO: x\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "unknown codetag mnemonic 'tood', did you mean 'TODO'?",
+        ));
+}
+
+#[test]
+fn uri_scheme_must_be_valid() {
+    squeeze()
+        .arg("--uri=not a scheme")
+        .write_stdin("")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "invalid URI scheme 'not a scheme'",
+        ));
+}
+
+#[test]
+fn finder_values_may_follow_the_flag() {
+    let path = temp_path("values.txt");
+    fs::write(
+        &path,
+        "5d41402abc4b2a76b9719d911017c592 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae\n",
+    )
+    .unwrap();
+    squeeze()
+        .args(["--hash", "sha256"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout("2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae\n");
+    // A word that is not an algorithm stays a path.
+    squeeze()
+        .arg("--hash")
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("5d41402abc4b2a76b9719d911017c592"));
+    fs::remove_file(path).unwrap();
+}
+
+// ============================================================================
+// --color, --css-color, --open, --precedence, --hide-mnemonic
+// ============================================================================
+
+#[test]
+fn color_always_paints_kinds_and_never_keeps_plain_text() {
+    squeeze()
+        .args(["--ip", "--with-kind", "--color=always"])
+        .write_stdin("from 10.0.4.2\n")
+        .assert()
+        .success()
+        .stdout("\x1b[36mip\x1b[0m\t10.0.4.2\n");
+    squeeze()
+        .args(["--ip", "--with-kind", "--color", "never"])
+        .env("CLICOLOR_FORCE", "1")
+        .write_stdin("from 10.0.4.2\n")
+        .assert()
+        .success()
+        .stdout("ip\t10.0.4.2\n");
+    // Structured output is never colored.
+    squeeze()
+        .args(["--ip", "--color=always", "--output", "json"])
+        .write_stdin("from 10.0.4.2\n")
+        .assert()
+        .success()
+        .stdout("[\"10.0.4.2\"]\n");
+}
+
+#[test]
+fn color_without_when_points_to_the_css_color_finder() {
+    squeeze()
+        .arg("--color")
+        .write_stdin("#ff0000\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--css-color"));
+    squeeze()
+        .arg("--css-color")
+        .write_stdin("#ff0000\n")
+        .assert()
+        .success()
+        .stdout("#ff0000\n");
+}
+
+#[test]
+fn open_skips_kinds_it_was_not_asked_to_open() {
+    // Nothing is opened: paths need --open=path.
+    squeeze()
+        .args(["--path", "--open"])
+        .write_stdin("see /etc/hosts\n")
+        .assert()
+        .success()
+        .stdout("/etc/hosts\n")
+        .stderr(predicate::str::contains("--open=path"));
+}
+
+#[test]
+fn precedence_implies_no_overlap() {
+    squeeze()
+        .args(["--uri", "--ip", "--precedence", "longest"])
+        .write_stdin("see https://10.0.0.1/a\n")
+        .assert()
+        .success()
+        .stdout("https://10.0.0.1/a\n");
+    // Small files take the sequential path, which must apply it too.
+    let path = temp_path("precedence.txt");
+    fs::write(&path, "see https://10.0.0.1/a\n").unwrap();
+    squeeze()
+        .args(["--uri", "--ip", "--precedence", "longest"])
+        .arg(&path)
+        .assert()
+        .success()
+        .stdout("https://10.0.0.1/a\n");
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn hide_mnemonic_drops_the_blanks_after_the_colon() {
+    squeeze()
+        .args(["--todo", "--hide-mnemonic"])
+        .write_stdin("// TODO:  fix this\n")
+        .assert()
+        .success()
+        .stdout("fix this\n");
 }

@@ -326,9 +326,9 @@ fn path_flag_should_extract_multiple_paths() {
 // ============================================================================
 
 #[test]
-fn color_flag_should_extract_hex_color() {
+fn css_color_flag_should_extract_hex_color() {
     squeeze()
-        .arg("--color")
+        .arg("--css-color")
         .write_stdin("color: #ff00aa\n")
         .assert()
         .success()
@@ -336,9 +336,9 @@ fn color_flag_should_extract_hex_color() {
 }
 
 #[test]
-fn color_flag_should_extract_short_hex() {
+fn css_color_flag_should_extract_short_hex() {
     squeeze()
-        .arg("--color")
+        .arg("--css-color")
         .write_stdin("color: #f0a\n")
         .assert()
         .success()
@@ -346,9 +346,9 @@ fn color_flag_should_extract_short_hex() {
 }
 
 #[test]
-fn color_flag_should_extract_rgb() {
+fn css_color_flag_should_extract_rgb() {
     squeeze()
-        .arg("--color")
+        .arg("--css-color")
         .write_stdin("color: rgb(255, 0, 170)\n")
         .assert()
         .success()
@@ -356,9 +356,9 @@ fn color_flag_should_extract_rgb() {
 }
 
 #[test]
-fn color_flag_should_extract_hsl() {
+fn css_color_flag_should_extract_hsl() {
     squeeze()
-        .arg("--color")
+        .arg("--css-color")
         .write_stdin("color: hsl(120, 100%, 50%)\n")
         .assert()
         .success()
@@ -366,9 +366,9 @@ fn color_flag_should_extract_hsl() {
 }
 
 #[test]
-fn color_flag_should_extract_multiple_colors() {
+fn css_color_flag_should_extract_multiple_colors() {
     squeeze()
-        .arg("--color")
+        .arg("--css-color")
         .write_stdin("#ff0000 and rgb(0, 255, 0)\n")
         .assert()
         .success()

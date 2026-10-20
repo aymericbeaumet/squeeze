@@ -9,7 +9,7 @@
 //! use squeeze::{codetag::Codetag, Finder};
 //!
 //! let mut finder = Codetag::default();
-//! finder.add_mnemonic("TODO");
+//! finder.add_mnemonic("TODO").unwrap();
 //! finder.build_mnemonics_regex().unwrap();
 //!
 //! let text = "// TODO: implement this feature";
@@ -18,119 +18,118 @@
 //! }
 //! ```
 
-use super::{ByteSet, Finder, RunClass, RunRule};
+use super::{ByteSet, Error, Finder, RunClass, RunRule};
 use crate::word::{boundary_after, boundary_before, char_at};
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::ops::Range;
 use std::sync::OnceLock;
 
+/// The [PEP 350](https://peps.python.org/pep-0350/) mnemonics, grouped by
+/// meaning.
+const PEP_350: &[&str] = &[
+    // todo
+    "TODO",
+    "MILESTONE",
+    "MLSTN",
+    "DONE",
+    "YAGNI",
+    "TBD",
+    "TOBEDONE",
+    // fixme
+    "FIXME",
+    "XXX",
+    "DEBUG",
+    "BROKEN",
+    "REFACTOR",
+    "REFACT",
+    "RFCTR",
+    "OOPS",
+    "SMELL",
+    "NEEDSWORK",
+    "INSPECT",
+    // bug
+    "BUG",
+    "BUGFIX",
+    // nobug
+    "NOBUG",
+    "NOFIX",
+    "WONTFIX",
+    "DONTFIX",
+    "NEVERFIX",
+    "UNFIXABLE",
+    "CANTFIX",
+    // req
+    "REQ",
+    "REQUIREMENT",
+    "STORY",
+    // rfe
+    "RFE",
+    "FEETCH",
+    "NYI",
+    "FR",
+    "FTRQ",
+    "FTR",
+    // idea
+    "IDEA",
+    // ???
+    "???",
+    "QUESTION",
+    "QUEST",
+    "QSTN",
+    "WTF",
+    // !!!
+    "!!!",
+    "ALERT",
+    // hack
+    "HACK",
+    "CLEVER",
+    "MAGIC",
+    // port
+    "PORT",
+    "PORTABILITY",
+    "WKRD",
+    // caveat
+    "CAVEAT",
+    "CAV",
+    "CAVT",
+    "WARNING",
+    "CAUTION",
+    // note
+    "NOTE",
+    "HELP",
+    // faq
+    "FAQ",
+    // gloss
+    "GLOSS",
+    "GLOSSARY",
+    // see
+    "SEE",
+    "REF",
+    "REFERENCE",
+    // todoc
+    "TODOC",
+    "DOCDO",
+    "DODOC",
+    "NEEDSDOC",
+    "EXPLAIN",
+    "DOCUMENT",
+    // cred
+    "CRED",
+    "CREDIT",
+    "THANKS",
+    // stat
+    "STAT",
+    "STATUS",
+    // rvd
+    "RVD",
+    "REVIEWED",
+    "REVIEW",
+];
+
 fn default_mnemonics() -> &'static HashSet<String> {
     static DEFAULT_MNEMONICS: OnceLock<HashSet<String>> = OnceLock::new();
-    DEFAULT_MNEMONICS.get_or_init(|| {
-        [
-            // todo
-            "TODO",
-            "MILESTONE",
-            "MLSTN",
-            "DONE",
-            "YAGNI",
-            "TBD",
-            "TOBEDONE",
-            // fixme
-            "FIXME",
-            "XXX",
-            "DEBUG",
-            "BROKEN",
-            "REFACTOR",
-            "REFACT",
-            "RFCTR",
-            "OOPS",
-            "SMELL",
-            "NEEDSWORK",
-            "INSPECT",
-            // bug
-            "BUG",
-            "BUGFIX",
-            // nobug
-            "NOBUG",
-            "NOFIX",
-            "WONTFIX",
-            "DONTFIX",
-            "NEVERFIX",
-            "UNFIXABLE",
-            "CANTFIX",
-            // req
-            "REQ",
-            "REQUIREMENT",
-            "STORY",
-            // rfe
-            "RFE",
-            "FEETCH",
-            "NYI",
-            "FR",
-            "FTRQ",
-            "FTR",
-            // idea
-            "IDEA",
-            // ???
-            "???",
-            "QUESTION",
-            "QUEST",
-            "QSTN",
-            "WTF",
-            // !!!
-            "!!!",
-            "ALERT",
-            // hack
-            "HACK",
-            "CLEVER",
-            "MAGIC",
-            // port
-            "PORT",
-            "PORTABILITY",
-            "WKRD",
-            // caveat
-            "CAVEAT",
-            "CAV",
-            "CAVT",
-            "WARNING",
-            "CAUTION",
-            // note
-            "NOTE",
-            "HELP",
-            // faq
-            "FAQ",
-            // gloss
-            "GLOSS",
-            "GLOSSARY",
-            // see
-            "SEE",
-            "REF",
-            "REFERENCE",
-            // todoc
-            "TODOC",
-            "DOCDO",
-            "DODOC",
-            "NEEDSDOC",
-            "EXPLAIN",
-            "DOCUMENT",
-            // cred
-            "CRED",
-            "CREDIT",
-            "THANKS",
-            // stat
-            "STAT",
-            "STATUS",
-            // rvd
-            "RVD",
-            "REVIEWED",
-            "REVIEW",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
-    })
+    DEFAULT_MNEMONICS.get_or_init(|| PEP_350.iter().map(|s| s.to_string()).collect())
 }
 
 /// A mnemonic prepared for matching.
@@ -374,7 +373,16 @@ impl Codetag {
 
     fn range_from(&self, input: &[u8], pos: usize) -> Option<Range<usize>> {
         let (_, head_end) = self.match_at(input, pos)?;
-        let from = if self.hide_mnemonic { head_end } else { pos };
+        let from = if self.hide_mnemonic {
+            // `TODO: fix` yields `fix`, without the blanks after the colon.
+            head_end
+                + input[head_end..]
+                    .iter()
+                    .take_while(|&&b| b == b' ' || b == b'\t')
+                    .count()
+        } else {
+            pos
+        };
         let to = input.len();
         if from >= to { None } else { Some(from..to) }
     }
@@ -489,21 +497,48 @@ impl Finder for Codetag {
 }
 
 impl Codetag {
-    /// Adds a custom mnemonic to search for.
+    /// The [PEP 350](https://peps.python.org/pep-0350/) mnemonics, grouped by
+    /// meaning, that the finder matches by default.
+    pub const MNEMONICS: &'static [&'static str] = PEP_350;
+
+    /// Restricts matching to a [PEP 350](https://peps.python.org/pep-0350/)
+    /// mnemonic from [`Codetag::MNEMONICS`].
     ///
     /// When at least one mnemonic is added, only those mnemonics will be matched.
     /// If no mnemonics are added, all default PEP 350 mnemonics are used.
     ///
-    /// Mnemonic matching is case-insensitive. Surrounding whitespace is
-    /// trimmed; empty and whitespace-only mnemonics are ignored, as they
-    /// would otherwise match every `word:`.
-    pub fn add_mnemonic(&mut self, mnemonic: &str) {
+    /// Mnemonic matching is case-insensitive and surrounding whitespace is
+    /// trimmed. Any other mnemonic leaves the finder unchanged and returns
+    /// [`Error::UnknownMnemonic`], with the closest one when it looks like a
+    /// typo; use [`Codetag::add_custom_mnemonic`] to match it anyway.
+    pub fn add_mnemonic(&mut self, mnemonic: &str) -> Result<(), Error> {
+        let trimmed = mnemonic.trim();
+        if trimmed.is_empty() {
+            return Err(Error::EmptyMnemonic);
+        }
+        if !default_mnemonics().contains(&trimmed.to_uppercase()) {
+            return Err(Error::UnknownMnemonic {
+                name: mnemonic.to_string(),
+                suggestion: crate::error::suggest(trimmed, PEP_350),
+            });
+        }
+        self.add_custom_mnemonic(trimmed)
+    }
+
+    /// Restricts matching to any mnemonic, including ones outside PEP 350.
+    ///
+    /// Mnemonic matching is case-insensitive and surrounding whitespace is
+    /// trimmed. An empty or whitespace-only mnemonic, which would match every
+    /// `word:`, leaves the finder unchanged and returns
+    /// [`Error::EmptyMnemonic`].
+    pub fn add_custom_mnemonic(&mut self, mnemonic: &str) -> Result<(), Error> {
         let mnemonic = mnemonic.trim();
         if mnemonic.is_empty() {
-            return;
+            return Err(Error::EmptyMnemonic);
         }
         self.mnemonics.insert(mnemonic.to_uppercase());
         self.index = OnceLock::new();
+        Ok(())
     }
 
     /// Builds the matching tables for the configured mnemonics.
@@ -593,13 +628,14 @@ mod tests {
         finder.hide_mnemonic = true;
         finder.build_mnemonics_regex().unwrap();
         let input = "todo: foobar";
-        assert_eq!(Some(" foobar"), finder.find(input).map(|r| &input[r]));
+        assert_eq!(Some("foobar"), finder.find(input).map(|r| &input[r]));
+        assert_eq!(None, finder.find("todo: \t "));
     }
 
     #[test]
     fn it_should_limit_results_to_the_given_mnemonics() {
         let mut finder = Codetag::default();
-        finder.add_mnemonic("test");
+        finder.add_custom_mnemonic("test").unwrap();
         finder.build_mnemonics_regex().unwrap();
         let input = "test: check if cmd is installed";
         assert_eq!(
@@ -651,7 +687,7 @@ mod tests {
     #[test]
     fn it_should_not_match_partial_mnemonics() {
         let mut finder = Codetag::default();
-        finder.add_mnemonic("TODO");
+        finder.add_mnemonic("TODO").unwrap();
         finder.build_mnemonics_regex().unwrap();
 
         // Should not match TODOS or MYTODO
@@ -847,7 +883,7 @@ mod tests {
     #[test]
     fn it_should_handle_custom_mnemonic_case_insensitivity() {
         let mut finder = Codetag::default();
-        finder.add_mnemonic("CUSTOM");
+        finder.add_custom_mnemonic("CUSTOM").unwrap();
         finder.build_mnemonics_regex().unwrap();
 
         // Should match regardless of case
@@ -860,9 +896,9 @@ mod tests {
     #[test]
     fn it_should_handle_multiple_custom_mnemonics() {
         let mut finder = Codetag::default();
-        finder.add_mnemonic("AAA");
-        finder.add_mnemonic("BBB");
-        finder.add_mnemonic("CCC");
+        finder.add_custom_mnemonic("AAA").unwrap();
+        finder.add_custom_mnemonic("BBB").unwrap();
+        finder.add_custom_mnemonic("CCC").unwrap();
         finder.build_mnemonics_regex().unwrap();
 
         assert!(finder.find("AAA: test").is_some());
@@ -911,22 +947,44 @@ mod tests {
     }
 
     #[test]
-    fn it_should_ignore_empty_and_whitespace_only_mnemonics() {
+    fn it_should_reject_unknown_mnemonics_unless_custom() {
+        let mut finder = Codetag::default();
+        assert_eq!(
+            Err(Error::UnknownMnemonic {
+                name: "tood".to_string(),
+                suggestion: Some("TODO"),
+            }),
+            finder.add_mnemonic("tood")
+        );
+        assert!(matches!(
+            finder.add_mnemonic("perf"),
+            Err(Error::UnknownMnemonic {
+                suggestion: None,
+                ..
+            })
+        ));
+        finder.add_custom_mnemonic("perf").unwrap();
+        assert!(finder.find("PERF: hot loop").is_some());
+        assert_eq!(None, finder.find("TODO: x"));
+    }
+
+    #[test]
+    fn it_should_reject_empty_and_whitespace_only_mnemonics() {
         // Reachable via CLI `--codetag=todo,` (trailing comma): an empty
         // mnemonic must not become an empty alternation branch that matches
         // every `word:`.
         let mut finder = Codetag::default();
-        finder.add_mnemonic("");
-        finder.add_mnemonic("   ");
-        finder.add_mnemonic("\t");
+        assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic(""));
+        assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic("   "));
+        assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic("\t"));
         finder.build_mnemonics_regex().unwrap();
         assert_eq!(None, finder.find("hello: world"));
         // No effective custom mnemonics were added, so defaults stay active.
         assert!(finder.find("TODO: x").is_some());
 
         let mut finder = Codetag::default();
-        finder.add_mnemonic("todo");
-        finder.add_mnemonic("");
+        finder.add_mnemonic("todo").unwrap();
+        assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic(""));
         finder.build_mnemonics_regex().unwrap();
         assert_eq!(None, finder.find("hello: world"));
         assert!(finder.find("todo: x").is_some());

@@ -1,5 +1,5 @@
 """Build release archives and publish complete, retryable GitHub releases,
-the crates, and the Homebrew formula."""
+the library crate, and the Homebrew formula."""
 
 import argparse
 import base64
@@ -27,8 +27,8 @@ TARGETS = {
     "aarch64-pc-windows-msvc": "windows-arm64",
 }
 
-# Publication order: the CLI depends on the library.
-PACKAGES = ("squeeze-lib", "squeeze-cli")
+# Only the library goes to crates.io; the CLI ships as release archives.
+CRATE = "squeeze-lib"
 
 FORMULA = """\
 # frozen_string_literal: true
@@ -138,15 +138,15 @@ def prepare():
                        os.environ.get("GITHUB_REF_NAME", "main"))
     output("version", version)
     output("tag", tag)
-    unpublished = unpublished_crates(version)
+    unpublished = crate_unpublished(version)
     if unpublished and os.environ.get("HAS_CRATES_TOKEN") != "true":
-        raise ValueError(f"CARGO_REGISTRY_TOKEN is required to publish {', '.join(unpublished)} {version}")
+        raise ValueError(f"CARGO_REGISTRY_TOKEN is required to publish {CRATE} {version}")
     output("publish_crates", "true" if unpublished else "false")
     existing = api("GET", endpoint(f"releases/tags/{tag}"), allow_missing=True)
     if existing is not None and not existing["draft"]:
         output("should_release", "false")
         if unpublished:
-            # Crates published after the release must come from the tagged commit.
+            # A crate published after the release must come from the tagged commit.
             output("sha", tag_commit(tag))
         print(f"{tag} is already published")
         return
@@ -225,23 +225,21 @@ def crate_published(name, version):
     return True
 
 
-def unpublished_crates(version):
+def crate_unpublished(version):
     # crates.io being unreachable must not hold back the binary release; the
     # crates job checks again before publishing.
     try:
-        return [name for name in PACKAGES if not crate_published(name, version)]
+        return not crate_published(CRATE, version)
     except OSError as error:
         print(f"::warning::Could not query crates.io ({error}); the crates job will check again")
-        return list(PACKAGES)
+        return True
 
 
-def publish_crates(version):
-    for name in PACKAGES:
-        if crate_published(name, version):
-            print(f"{name} {version} is already on crates.io")
-            continue
-        # Cargo waits for each crate to reach the index before publishing its dependents.
-        subprocess.run(["cargo", "publish", "--locked", "--package", name], check=True)
+def publish_crate(version):
+    if crate_published(CRATE, version):
+        print(f"{CRATE} {version} is already on crates.io")
+        return
+    subprocess.run(["cargo", "publish", "--locked", "--package", CRATE], check=True)
 
 
 def homebrew_formula(tag, checksums):
@@ -295,6 +293,6 @@ if __name__ == "__main__":
     elif args.command == "publish":
         publish(args.tag, args.sha)
     elif args.command == "crates":
-        publish_crates(crate_version())
+        publish_crate(crate_version())
     else:
         update_homebrew(args.tag, args.tap)

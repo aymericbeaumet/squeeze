@@ -4,7 +4,7 @@
 //! known non-bugs so future changes to these finders are deliberate.
 
 use squeeze::{
-    Finder, codetag::Codetag, modeline::Modeline, path::Path as PathFinder, scanner::Scanner,
+    Error, Finder, codetag::Codetag, modeline::Modeline, path::Path as PathFinder, scanner::Scanner,
 };
 
 // ---------------------------------------------------------------------------
@@ -592,9 +592,9 @@ fn modeline_scanner_parity_corpus() {
 // ===========================================================================
 
 #[test]
-fn codetag_empty_mnemonic_is_ignored() {
+fn codetag_empty_mnemonic_is_rejected() {
     let mut finder = Codetag::default();
-    finder.add_mnemonic("");
+    assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic(""));
     finder.build_mnemonics_regex().unwrap();
     // The empty mnemonic must not create an empty alternation branch that
     // matches every `word:`.
@@ -604,10 +604,10 @@ fn codetag_empty_mnemonic_is_ignored() {
 }
 
 #[test]
-fn codetag_whitespace_only_mnemonics_are_ignored() {
+fn codetag_whitespace_only_mnemonics_are_rejected() {
     let mut finder = Codetag::default();
-    finder.add_mnemonic("   ");
-    finder.add_mnemonic("\t");
+    assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic("   "));
+    assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic("\t"));
     finder.build_mnemonics_regex().unwrap();
     assert_eq!(None, finder.find("hello: world"));
     assert!(finder.find("FIXME: y").is_some());
@@ -617,8 +617,8 @@ fn codetag_whitespace_only_mnemonics_are_ignored() {
 fn codetag_empty_mnemonic_alongside_real_one() {
     // Mirrors CLI usage `--codetag=todo,` (trailing comma).
     let mut finder = Codetag::default();
-    finder.add_mnemonic("todo");
-    finder.add_mnemonic("");
+    finder.add_mnemonic("todo").unwrap();
+    assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic(""));
     finder.build_mnemonics_regex().unwrap();
     assert_eq!(None, finder.find("hello: world"));
     assert_eq!(
@@ -632,7 +632,7 @@ fn codetag_empty_mnemonic_alongside_real_one() {
 #[test]
 fn codetag_mnemonic_surrounding_whitespace_is_trimmed() {
     let mut finder = Codetag::default();
-    finder.add_mnemonic(" custom ");
+    finder.add_custom_mnemonic(" custom ").unwrap();
     finder.build_mnemonics_regex().unwrap();
     assert!(finder.find("custom: task").is_some());
 }
@@ -642,7 +642,7 @@ fn codetag_lazy_compilation_without_build_call() {
     // The regex compiles lazily on first use; build_mnemonics_regex is
     // optional (doc fix pin).
     let mut finder = Codetag::default();
-    finder.add_mnemonic("");
+    assert_eq!(Err(Error::EmptyMnemonic), finder.add_mnemonic(""));
     assert_eq!(None, finder.find("hello: world"));
 }
 
@@ -653,7 +653,7 @@ fn codetag_lazy_compilation_without_build_call() {
 #[test]
 fn codetag_special_chars_matched_literally() {
     let mut finder = Codetag::default();
-    finder.add_mnemonic("a(b");
+    finder.add_custom_mnemonic("a(b").unwrap();
     finder.build_mnemonics_regex().unwrap();
     assert!(finder.find("a(b: x").is_some());
 }

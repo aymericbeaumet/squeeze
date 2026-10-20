@@ -16,7 +16,8 @@
   explicit targets in `squeeze-cli/` registered when adding integration tests.
   Keep both crate versions, the CLI's requirement on
   the library, and their `Cargo.lock` entries synchronized. A new version on
-  `main` publishes the release, crates, and Homebrew formula; see
+  `main` publishes the release, the `squeeze-lib` crate, and the Homebrew
+  formula; the CLI is not published to crates.io. See
   [release details](docs/development.md).
 - Release archive names (`squeeze-vX.Y.Z-<os>-<arch>`) are a public contract
   shared by the Homebrew formula, cargo-binstall metadata, and
@@ -28,6 +29,11 @@
   option reference lives in `docs/usage.md` and recipes in
   `docs/integrations.md`. When CLI output or flags change, update these
   docs and `--help`, and re-record `docs/demo/demo.gif` with `mise run demo`.
+- Errors are typed. Fallible library configuration returns `squeeze::Error`
+  (`squeeze-lib/error.rs`, with typo suggestions); the CLI turns those into
+  clap usage errors and its own failures into `squeeze-cli/error.rs` variants
+  printed as `squeeze: <path>: <reason>`. Every error exits 2; 1 is reserved
+  for `--exit-code` finding nothing.
 - CI and releases cover Linux, macOS, and Windows on both amd64 and arm64.
   Preserve all six native targets when changing workflows. Release binaries
   must run on a clean machine: Linux ones link musl statically, Windows ones

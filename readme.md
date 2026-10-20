@@ -42,10 +42,10 @@ brew install aymericbeaumet/tap/squeeze
 mise use -g github:aymericbeaumet/squeeze
 ```
 
-**Cargo** (Rust 1.95+):
+**Cargo** (Rust 1.95+), from source:
 
 ```shell
-cargo install --locked squeeze-cli
+cargo install --locked --git https://github.com/aymericbeaumet/squeeze
 ```
 
 All three install the `squeeze` command. Prebuilt binaries for Linux, macOS,
@@ -87,7 +87,7 @@ shell.
 |--------|------|----------|
 | CIDR | `--cidr` | `192.168.1.0/24`, `2001:db8::/32` |
 | Codetags | `--codetag`, `--todo`, `--fixme` | `TODO: fix this`, `FIXME(#42): bug` |
-| Colors | `--color` | `#ff0000`, `rgb(255, 0, 0)`, `hsl(0, 100%, 50%)` |
+| Colors | `--css-color` | `#ff0000`, `rgb(255, 0, 0)`, `hsl(0, 100%, 50%)` |
 | Datetimes | `--datetime` | `2024-01-15`, `2024-01-15T10:30:00Z` |
 | Domains | `--domain` | `example.com`, `mail.example.co.uk` |
 | Emails | `--email` | `user@example.com`, `first.last+tag@company.co.uk` |
@@ -125,9 +125,8 @@ data, and limitations.
 
 The finders are available as the `squeeze-lib` crate, imported as `squeeze`:
 
-```toml
-[dependencies]
-squeeze = { package = "squeeze-lib", version = "1.0" }
+```shell
+cargo add squeeze-lib
 ```
 
 ```rust
@@ -142,8 +141,10 @@ for m in scanner.scan_line(line) {
 }
 ```
 
-See the [API documentation](https://docs.rs/squeeze-lib) for individual
-finders and scanner options.
+Configuring a finder returns a typed `squeeze::Error`, such as an unknown
+hash algorithm with a suggested fix; scanning never fails. See the
+[API documentation](https://docs.rs/squeeze-lib) for individual finders and
+scanner options.
 
 ## Contributing
 

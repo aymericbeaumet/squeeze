@@ -24,7 +24,8 @@ jobs:
         run: mise run release-check
       - run: mise run check
       - run: mise run release
-      - run: mise run package
+      - name: Package the library for crates.io
+        run: mise run package
       - name: Install from the repository root
         run: |
           mise run install -- --root "$RUNNER_TEMP/squeeze-install"

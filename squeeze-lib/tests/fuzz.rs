@@ -761,7 +761,7 @@ fn dispatch_consistent_cidr_known() {
 fn dispatch_finders() -> Vec<Box<dyn Finder>> {
     let mut hash = squeeze::hash::Hash::default();
     for algorithm in ["md5", "sha1", "sha256", "sha512"] {
-        assert!(hash.add_algorithm(algorithm));
+        hash.add_algorithm(algorithm).unwrap();
     }
     vec![
         Box::new(squeeze::cidr::Cidr::default()),
@@ -805,7 +805,7 @@ fn allowlisted_uri(strict: bool) -> squeeze::uri::URI {
     for scheme in [
         "data", "ftp", "ftps", "http", "https", "mailto", "sftp", "ws", "wss", "x", "s3",
     ] {
-        uri.add_scheme(scheme);
+        uri.add_scheme(scheme).unwrap();
     }
     uri
 }
@@ -916,7 +916,7 @@ fn prefix_finders() -> Vec<Box<dyn Finder>> {
             let mut codetag = squeeze::codetag::Codetag::default();
             codetag.hide_mnemonic = hide;
             for m in mnemonics {
-                codetag.add_mnemonic(m);
+                codetag.add_mnemonic(m).unwrap();
             }
             codetag.build_mnemonics_regex().unwrap();
             finders.push(Box::new(codetag));
@@ -1340,12 +1340,12 @@ fn anchored_pairs() -> &'static [(Scanner, Scanner)] {
                 as fn() -> Box<dyn Finder>,
             || {
                 let mut hash = squeeze::hash::Hash::default();
-                assert!(hash.add_algorithm("sha256"));
+                hash.add_algorithm("sha256").unwrap();
                 Box::new(hash)
             },
             || {
                 let mut hash = squeeze::hash::Hash::default();
-                assert!(hash.add_algorithm("md5"));
+                hash.add_algorithm("md5").unwrap();
                 Box::new(hash)
             },
         ] {
@@ -1440,13 +1440,13 @@ fn buffer_scanners() -> &'static [(Scanner, Scanner)] {
             Box::new(|| {
                 let mut hash = squeeze::hash::Hash::default();
                 for algorithm in ["md5", "sha1", "sha256", "sha512"] {
-                    assert!(hash.add_algorithm(algorithm));
+                    hash.add_algorithm(algorithm).unwrap();
                 }
                 vec![Box::new(hash)]
             }),
             Box::new(|| {
                 let mut hash = squeeze::hash::Hash::default();
-                assert!(hash.add_algorithm("sha256"));
+                hash.add_algorithm("sha256").unwrap();
                 vec![
                     Box::new(hash),
                     Box::new(squeeze::uuid::Uuid::default()),
@@ -1492,13 +1492,13 @@ fn buffer_scanners() -> &'static [(Scanner, Scanner)] {
             // Literal prefix passes (`--todo`, `--todo --fixme`).
             Box::new(|| {
                 let mut codetag = squeeze::codetag::Codetag::default();
-                codetag.add_mnemonic("todo");
+                codetag.add_mnemonic("todo").unwrap();
                 vec![Box::new(codetag)]
             }),
             Box::new(|| {
                 let mut codetag = squeeze::codetag::Codetag::default();
-                codetag.add_mnemonic("todo");
-                codetag.add_mnemonic("fixme");
+                codetag.add_mnemonic("todo").unwrap();
+                codetag.add_mnemonic("fixme").unwrap();
                 codetag.hide_mnemonic = true;
                 vec![Box::new(codetag)]
             }),

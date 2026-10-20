@@ -42,9 +42,12 @@ The root `Cargo.toml` defines the `squeeze-cli` package and the workspace;
 integration tests live in `squeeze-cli/`, with explicit Cargo target paths.
 `cargo install --path . --locked` installs the local `squeeze` binary, and
 `cargo test` defaults to both workspace packages.
-Run `mise run package` from a clean checkout to build both publication
-archives and verify the CLI against the packaged library. CI also checks
-this and installs the CLI from the repository root.
+Only `squeeze-lib` is published to crates.io. The CLI sets `publish = false`
+and ships as the release archives (Homebrew, mise's GitHub backend) or builds
+with `cargo install --locked --git https://github.com/aymericbeaumet/squeeze`.
+Run `mise run package` from a clean checkout to build and verify the library's
+crates.io archive. CI also checks this and installs the CLI from the
+repository root.
 
 To release, keep the `squeeze-lib` package in `squeeze-lib/Cargo.toml`, the
 `squeeze-cli` package in `Cargo.toml`, and the CLI's library
@@ -88,12 +91,11 @@ After publication, the Homebrew job writes `Formula/squeeze.rb` in
 `aymericbeaumet/homebrew-tap` from the release's `SHA256SUMS`: the formula
 installs the prebuilt macOS and Linux archives and generates shell
 completions. It requires `HOMEBREW_TAP_TOKEN` with write access to the tap.
-The crates job publishes `squeeze-lib` to crates.io first, waits for the
-registry to serve that version, then publishes `squeeze-cli` with its matching
-library dependency. If either crate version is unpublished, the prepare job
+The crates job publishes `squeeze-lib` to crates.io once every platform's
+build and tests pass. If that version is unpublished, the prepare job
 requires `CARGO_REGISTRY_TOKEN` before the new release can proceed. Because
-crates.io publications are permanent, rerunning a failed crates job skips
-versions that were already published.
+crates.io publications are permanent, rerunning a failed crates job skips a
+version that was already published.
 
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
 `docs/demo/demo.tape` with VHS in a container (Colima on macOS).

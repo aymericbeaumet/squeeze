@@ -37,11 +37,11 @@ fn all_finders() -> Vec<Box<dyn Finder>> {
     for s in [
         "data", "ftp", "ftps", "http", "https", "mailto", "sftp", "ws", "wss",
     ] {
-        uri.add_scheme(s);
+        uri.add_scheme(s).unwrap();
     }
     let mut hash = Hash::default();
     for a in ["md5", "sha1", "sha256", "sha512"] {
-        assert!(hash.add_algorithm(a));
+        hash.add_algorithm(a).unwrap();
     }
     vec![
         Box::new(Cidr::default()),

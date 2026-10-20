@@ -25,7 +25,6 @@ use squeeze::{
     uuid::Uuid,
 };
 use std::collections::{BTreeMap, HashSet};
-use std::convert::{TryFrom, TryInto};
 use std::fs::File;
 use std::io::{self, BufWriter, IsTerminal, Read, Write};
 use std::path::PathBuf;
@@ -38,6 +37,11 @@ use std::{
     io::{BufRead, BufReader},
     process::{Command, Stdio},
 };
+
+mod args;
+mod error;
+
+use error::{EXIT_ERROR, EXIT_NOT_FOUND, Error};
 
 #[cfg(target_env = "musl")]
 #[global_allocator]
@@ -72,6 +76,32 @@ enum Precedence {
     Longest,
 }
 
+#[derive(Copy, Clone, Debug, ValueEnum, Default, PartialEq, Eq)]
+enum ColorWhen {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
+
+/// Which results `--open` opens: URIs with a scheme from `--url`, URIs with
+/// any scheme, or file paths. Variants stay undocumented so clap keeps the
+/// one-line help.
+#[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
+enum OpenKind {
+    Url,
+    Uri,
+    Path,
+}
+
+/// How text lines look: the kind column's width (0 separates it with a tab)
+/// and whether kinds and locations are colored.
+#[derive(Clone, Copy, Debug, Default)]
+struct TextStyle {
+    kind_width: usize,
+    color: bool,
+}
+
 #[derive(Parser)]
 #[command(
     name = "squeeze",
@@ -88,7 +118,9 @@ Examples:
   squeeze --todo --fixme --with-location .
   squeeze --todo --fixme --with-location 'src/**/*.rs'
   kubectl logs my-pod | squeeze --ip --uuid --with-kind
-  squeeze --all --with-kind --output json notes.md"
+  squeeze --all --with-kind --output json notes.md",
+    disable_help_flag = true,
+    disable_version_flag = true
 )]
 struct Opts {
     // flags
@@ -106,8 +138,19 @@ struct Opts {
     uniq: bool,
     #[arg(long = "copy", help = "copy the results to the clipboard")]
     copy: bool,
-    #[arg(long = "open", help = "open the results with the default application")]
-    open: bool,
+    #[arg(
+        long = "open",
+        value_name = "KINDS",
+        value_enum,
+        num_args = 0..=1,
+        require_equals = true,
+        value_delimiter = ',',
+        default_missing_value = "url",
+        help = "open the results with the default application, only URLs unless KINDS are given"
+    )]
+    open: Vec<OpenKind>,
+    #[arg(long = "exit-code", help = "exit with status 1 when nothing was found")]
+    exit_code: bool,
     #[arg(
         long = "output",
         value_enum,
@@ -120,7 +163,7 @@ struct Opts {
         short = 'j',
         default_value = "auto",
         value_parser = parse_jobs,
-        help = "scanning threads; auto uses every core for directories, stdin and files of 8 MiB and more (-1, --last and --open always scan sequentially)"
+        help = "scanning threads, or auto for every core on directories, stdin, and files of 8 MiB or more"
     )]
     jobs: Jobs,
     #[arg(
@@ -138,10 +181,17 @@ struct Opts {
     #[arg(
         long = "precedence",
         value_enum,
-        default_value_t = Precedence::First,
-        help = "overlap policy used with --no-overlap"
+        help = "which of overlapping matches to keep, first by default (implies --no-overlap)"
     )]
-    precedence: Precedence,
+    precedence: Option<Precedence>,
+    #[arg(
+        long = "color",
+        value_name = "WHEN",
+        value_enum,
+        default_value_t = ColorWhen::Auto,
+        help = "color kinds and locations; auto colors a terminal"
+    )]
+    color: ColorWhen,
 
     #[arg(
         long = "hidden",
@@ -164,13 +214,17 @@ struct Opts {
         help = "print the completion script for SHELL and exit"
     )]
     completions: Option<clap_complete::Shell>,
-    /// Column width that aligns kinds in a terminal; 0 separates them with a tab.
+    #[arg(short = 'h', long = "help", action = clap::ArgAction::Help, help = "print help")]
+    help: Option<bool>,
+    #[arg(short = 'V', long = "version", action = clap::ArgAction::Version, help = "print the version")]
+    version: Option<bool>,
+    /// Resolved from `--color`, `--output` and the terminal after parsing.
     #[arg(skip)]
-    kind_width: usize,
+    text_style: TextStyle,
 
     #[arg(
         value_name = "PATH",
-        help = "files, directories or glob patterns to scan; a directory (such as .) is walked recursively like ripgrep does (hidden entries, .gitignore rules and binary files skipped); omit or pass - to read stdin"
+        help = "files, directories (walked like ripgrep, skipping hidden, ignored, and binary files), or glob patterns; none or - reads stdin"
     )]
     inputs: Vec<String>,
 
@@ -193,9 +247,14 @@ struct FinderOpts {
     cidr: bool,
 
     // codetag
-    #[arg(long = "codetag", require_equals = true, help = "search for codetags")]
+    #[arg(
+        long = "codetag",
+        value_name = "MNEMONICS",
+        require_equals = true,
+        help = "search for codetags, or only the given PEP 350 mnemonics (todo, fixme, ...)"
+    )]
     mnemonic: Option<Option<String>>,
-    #[arg(long = "hide-mnemonic", help = "hide the mnemonics in the results")]
+    #[arg(long = "hide-mnemonic", help = "print codetags without their mnemonic")]
     hide_mnemonic: bool,
     #[arg(long = "fixme", help = "alias for: --codetag=fixme")]
     fixme: bool,
@@ -203,8 +262,8 @@ struct FinderOpts {
     todo: bool,
 
     // color
-    #[arg(long = "color", help = "search for colors")]
-    color: bool,
+    #[arg(long = "css-color", help = "search for CSS colors")]
+    css_color: bool,
 
     // datetime
     #[arg(long = "datetime", help = "search for datetimes")]
@@ -231,7 +290,12 @@ struct FinderOpts {
     handle: bool,
 
     // hash
-    #[arg(long = "hash", require_equals = true, help = "search for hashes")]
+    #[arg(
+        long = "hash",
+        value_name = "ALGORITHMS",
+        require_equals = true,
+        help = "search for hashes, or only md5, sha1, sha256, or sha512 ones"
+    )]
     hash_algo: Option<Option<String>>,
     #[arg(long = "md5", help = "alias for: --hash=md5")]
     md5: bool,
@@ -283,7 +347,12 @@ struct FinderOpts {
     semver: bool,
 
     // uri
-    #[arg(long = "uri", require_equals = true, help = "search for URIs")]
+    #[arg(
+        long = "uri",
+        value_name = "SCHEMES",
+        require_equals = true,
+        help = "search for URIs, or only those with the given schemes"
+    )]
     scheme: Option<Option<String>>,
     #[arg(
         long = "strict",
@@ -305,94 +374,6 @@ struct FinderOpts {
     uuid: bool,
 }
 
-impl TryFrom<&FinderOpts> for Cidr {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.cidr) {
-            return Err(());
-        }
-        Ok(Cidr::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Color {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.color) {
-            return Err(());
-        }
-        Ok(Color::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Datetime {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.datetime) {
-            return Err(());
-        }
-        Ok(Datetime::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Domain {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.domain) {
-            return Err(());
-        }
-        Ok(Domain::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Email {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.email) {
-            return Err(());
-        }
-        Ok(Email::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Emoji {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.emoji) {
-            return Err(());
-        }
-        Ok(Emoji::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Env {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.env) {
-            return Err(());
-        }
-        Ok(Env::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Handle {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.handle) {
-            return Err(());
-        }
-        Ok(Handle::default())
-    }
-}
-
-/// Why a finder could not be built from the command-line options.
-enum FinderError {
-    /// The finder's flags were not given: simply skip it.
-    Disabled,
-    /// A flag value is invalid: abort with a usage error.
-    Invalid(String),
-}
-
 /// Splits a `--flag=a,b` value into its non-empty entries. Empty entries are
 /// dropped so `--flag=a,` or `--flag=` never install an empty filter.
 fn explicit_entries(value: &Option<Option<String>>) -> Vec<&str> {
@@ -406,292 +387,231 @@ fn explicit_entries(value: &Option<Option<String>>) -> Vec<&str> {
     }
 }
 
-impl TryFrom<&FinderOpts> for Hash {
-    type Error = FinderError;
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all
-            || opts.hash_algo.is_some()
-            || opts.md5
-            || opts.sha1
-            || opts.sha256
-            || opts.sha512)
-        {
-            return Err(FinderError::Disabled);
-        }
-        let mut finder = Hash::default();
-        if opts.all {
-            return Ok(finder);
-        }
-        let algorithms = explicit_entries(&opts.hash_algo);
-        for algo in &algorithms {
-            if !finder.add_algorithm(algo) {
-                return Err(FinderError::Invalid(format!(
-                    "invalid value '{algo}' for '--hash': expected one of md5, sha1, sha256, sha512"
-                )));
-            }
-        }
-        // A bare `--hash` (or an empty `--hash=`) requests every algorithm;
-        // alias flags like `--md5` must widen, never narrow, so they only
-        // restrict when the bare form is absent.
-        if opts.hash_algo.is_some() && algorithms.is_empty() {
-            return Ok(finder);
-        }
-        for (enabled, name) in [
-            (opts.md5, "md5"),
-            (opts.sha1, "sha1"),
-            (opts.sha256, "sha256"),
-            (opts.sha512, "sha512"),
-        ] {
-            if enabled {
-                // These names are known-valid, the rejection path cannot hit.
-                let _ = finder.add_algorithm(name);
-            }
-        }
-        Ok(finder)
-    }
-}
-
-impl TryFrom<&FinderOpts> for Ip {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.ip || opts.ipv4 || opts.ipv6) {
-            return Err(());
-        }
-        Ok(Ip {
-            ipv4: opts.all || opts.ip || opts.ipv4,
-            ipv6: opts.all || opts.ip || opts.ipv6,
-        })
-    }
-}
-
-impl TryFrom<&FinderOpts> for Json {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.json) {
-            return Err(());
-        }
-        Ok(Json::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Jwt {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.jwt) {
-            return Err(());
-        }
-        Ok(Jwt::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Mac {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.mac) {
-            return Err(());
-        }
-        Ok(Mac::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Modeline {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.modeline) {
-            return Err(());
-        }
-        Ok(Modeline::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Codetag {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.mnemonic.is_some() || opts.fixme || opts.todo) {
-            return Err(());
-        }
-        let mut finder = Codetag::default();
-        finder.hide_mnemonic = opts.hide_mnemonic;
-        // Empty entries are dropped so `--codetag=todo,` does not install an
-        // empty mnemonic matching every `word:` line, and `--codetag=` falls
-        // back to the default mnemonics like the bare flag.
-        for m in explicit_entries(&opts.mnemonic) {
-            finder.add_mnemonic(m);
-        }
-        if opts.fixme {
-            finder.add_mnemonic("fixme");
-        }
-        if opts.todo {
-            finder.add_mnemonic("todo");
-        }
-        finder
-            .build_mnemonics_regex()
-            .expect("failed to build codetag regex");
-        Ok(finder)
-    }
-}
-
-impl TryFrom<&FinderOpts> for Mirror {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !opts.mirror {
-            return Err(());
-        }
-        Ok(Mirror::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Path {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.path) {
-            return Err(());
-        }
-        Ok(Path::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Phone {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.phone) {
-            return Err(());
-        }
-        Ok(Phone::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for Semver {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.semver) {
-            return Err(());
-        }
-        Ok(Semver::default())
-    }
-}
-
-impl TryFrom<&FinderOpts> for URI {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.scheme.is_some() || opts.url || opts.http || opts.https) {
-            return Err(());
-        }
-        let mut finder = URI::default();
-        finder.strict = opts.strict;
-        if opts.all {
-            return Ok(finder);
-        }
-        let schemes = explicit_entries(&opts.scheme);
-        // A bare `--uri` (or an empty `--uri=`) requests every scheme; alias
-        // flags like `--http` must widen, never narrow, so they only restrict
-        // when the bare form is absent.
-        if opts.scheme.is_some() && schemes.is_empty() {
-            return Ok(finder);
-        }
-        for s in schemes {
-            finder.add_scheme(s);
-        }
-        if opts.url {
-            for s in [
-                "data", "ftp", "ftps", "http", "https", "mailto", "sftp", "ws", "wss",
-            ] {
-                finder.add_scheme(s);
-            }
-        }
-        if opts.http {
-            finder.add_scheme("http");
-        }
-        if opts.https {
-            finder.add_scheme("https");
-        }
-        Ok(finder)
-    }
-}
-
-impl TryFrom<&FinderOpts> for Uuid {
-    type Error = ();
-    fn try_from(opts: &FinderOpts) -> Result<Self, Self::Error> {
-        if !(opts.all || opts.uuid) {
-            return Err(());
-        }
-        Ok(Uuid::default())
-    }
-}
-
-fn build_finders(opts: &FinderOpts) -> Result<Vec<Box<dyn Finder>>, String> {
+/// The finders the options select, in a fixed order; none when no finder
+/// flag is given.
+fn build_finders(opts: &FinderOpts) -> Result<Vec<Box<dyn Finder>>, squeeze::Error> {
+    let all = opts.all;
     let mut finders: Vec<Box<dyn Finder>> = Vec::new();
-    if let Ok(f) = TryInto::<Cidr>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.cidr {
+        finders.push(Box::new(Cidr::default()));
     }
-    if let Ok(f) = TryInto::<Codetag>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.mnemonic.is_some() || opts.fixme || opts.todo {
+        finders.push(Box::new(codetag_finder(opts)?));
     }
-    if let Ok(f) = TryInto::<Color>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.css_color {
+        finders.push(Box::new(Color::default()));
     }
-    if let Ok(f) = TryInto::<Datetime>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.datetime {
+        finders.push(Box::new(Datetime::default()));
     }
-    if let Ok(f) = TryInto::<Domain>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.domain {
+        finders.push(Box::new(Domain::default()));
     }
-    if let Ok(f) = TryInto::<Email>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.email {
+        finders.push(Box::new(Email::default()));
     }
-    if let Ok(f) = TryInto::<Emoji>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.emoji {
+        finders.push(Box::new(Emoji::default()));
     }
-    if let Ok(f) = TryInto::<Env>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.env {
+        finders.push(Box::new(Env::default()));
     }
-    if let Ok(f) = TryInto::<Handle>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.handle {
+        finders.push(Box::new(Handle::default()));
     }
-    match TryInto::<Hash>::try_into(opts) {
-        Ok(f) => finders.push(Box::new(f)),
-        Err(FinderError::Disabled) => {}
-        Err(FinderError::Invalid(message)) => return Err(message),
+    if all || opts.hash_algo.is_some() || opts.md5 || opts.sha1 || opts.sha256 || opts.sha512 {
+        finders.push(Box::new(hash_finder(opts)?));
     }
-    if let Ok(f) = TryInto::<Ip>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.ip || opts.ipv4 || opts.ipv6 {
+        finders.push(Box::new(Ip {
+            ipv4: all || opts.ip || opts.ipv4,
+            ipv6: all || opts.ip || opts.ipv6,
+        }));
     }
-    if let Ok(f) = TryInto::<Json>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.json {
+        finders.push(Box::new(Json::default()));
     }
-    if let Ok(f) = TryInto::<Jwt>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.jwt {
+        finders.push(Box::new(Jwt::default()));
     }
-    if let Ok(f) = TryInto::<Mac>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.mac {
+        finders.push(Box::new(Mac::default()));
     }
-    if let Ok(f) = TryInto::<Mirror>::try_into(opts) {
-        finders.push(Box::new(f));
+    if opts.mirror {
+        finders.push(Box::new(Mirror::default()));
     }
-    if let Ok(f) = TryInto::<Modeline>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.modeline {
+        finders.push(Box::new(Modeline::default()));
     }
-    if let Ok(f) = TryInto::<Path>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.path {
+        finders.push(Box::new(Path::default()));
     }
-    if let Ok(f) = TryInto::<Phone>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.phone {
+        finders.push(Box::new(Phone::default()));
     }
-    if let Ok(f) = TryInto::<Semver>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.semver {
+        finders.push(Box::new(Semver::default()));
     }
-    if let Ok(f) = TryInto::<URI>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.scheme.is_some() || opts.url || opts.http || opts.https {
+        finders.push(Box::new(uri_finder(opts)?));
     }
-    if let Ok(f) = TryInto::<Uuid>::try_into(opts) {
-        finders.push(Box::new(f));
+    if all || opts.uuid {
+        finders.push(Box::new(Uuid::default()));
     }
     Ok(finders)
+}
+
+fn codetag_finder(opts: &FinderOpts) -> Result<Codetag, squeeze::Error> {
+    let mut finder = Codetag::default();
+    finder.hide_mnemonic = opts.hide_mnemonic;
+    for m in explicit_entries(&opts.mnemonic) {
+        finder.add_mnemonic(m)?;
+    }
+    if opts.fixme {
+        finder.add_mnemonic("fixme")?;
+    }
+    if opts.todo {
+        finder.add_mnemonic("todo")?;
+    }
+    Ok(finder)
+}
+
+fn hash_finder(opts: &FinderOpts) -> Result<Hash, squeeze::Error> {
+    let mut finder = Hash::default();
+    if opts.all {
+        return Ok(finder);
+    }
+    let algorithms = explicit_entries(&opts.hash_algo);
+    for algorithm in &algorithms {
+        finder.add_algorithm(algorithm)?;
+    }
+    // A bare `--hash` (or an empty `--hash=`) requests every algorithm;
+    // alias flags like `--md5` must widen, never narrow, so they only
+    // restrict when the bare form is absent.
+    if opts.hash_algo.is_some() && algorithms.is_empty() {
+        return Ok(finder);
+    }
+    for (enabled, name) in [
+        (opts.md5, "md5"),
+        (opts.sha1, "sha1"),
+        (opts.sha256, "sha256"),
+        (opts.sha512, "sha512"),
+    ] {
+        if enabled {
+            finder.add_algorithm(name)?;
+        }
+    }
+    Ok(finder)
+}
+
+fn uri_finder(opts: &FinderOpts) -> Result<URI, squeeze::Error> {
+    let mut finder = URI::default();
+    finder.strict = opts.strict;
+    if opts.all {
+        return Ok(finder);
+    }
+    let schemes = explicit_entries(&opts.scheme);
+    // A bare `--uri` (or an empty `--uri=`) requests every scheme; alias
+    // flags like `--http` must widen, never narrow, so they only restrict
+    // when the bare form is absent.
+    if opts.scheme.is_some() && schemes.is_empty() {
+        return Ok(finder);
+    }
+    for scheme in schemes {
+        finder.add_scheme(scheme)?;
+    }
+    if opts.url {
+        for scheme in URI::URL_SCHEMES {
+            finder.add_scheme(scheme)?;
+        }
+    }
+    if opts.http {
+        finder.add_scheme("http")?;
+    }
+    if opts.https {
+        finder.add_scheme("https")?;
+    }
+    Ok(finder)
 }
 
 /// Whether the requested options require collecting all matches before output.
 fn must_buffer(opts: &Opts) -> bool {
     opts.last || opts.sort || opts.uniq || opts.copy || opts.output != Format::Text
+}
+
+impl Opts {
+    fn opens(&self) -> bool {
+        !self.open.is_empty()
+    }
+
+    fn no_overlap(&self) -> bool {
+        self.no_overlap || self.precedence.is_some()
+    }
+
+    fn precedence(&self) -> Precedence {
+        self.precedence.unwrap_or_default()
+    }
+}
+
+/// Set once any result is found, by whichever thread finds it.
+static FOUND: AtomicBool = AtomicBool::new(false);
+/// Results `--open` opened, and results it left alone because of their kind.
+static OPENED: AtomicBool = AtomicBool::new(false);
+static NOT_OPENED: AtomicBool = AtomicBool::new(false);
+
+/// Records a result for `--exit-code`. Loading first keeps the parallel
+/// workers from contending on the flag's cache line once it is set.
+fn record_found() {
+    if !FOUND.load(Ordering::Relaxed) {
+        FOUND.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Whether `--open` opens a result of finder `kind`.
+fn opens_kind(kinds: &[OpenKind], kind: &str, value: &str) -> bool {
+    kinds.iter().any(|open| match open {
+        OpenKind::Url => {
+            kind == "uri"
+                && value.split_once(':').is_some_and(|(scheme, _)| {
+                    URI::URL_SCHEMES
+                        .iter()
+                        .any(|url| url.eq_ignore_ascii_case(scheme))
+                })
+        }
+        OpenKind::Uri => kind == "uri",
+        OpenKind::Path => kind == "path",
+    })
+}
+
+/// Opens a result with the default application when `--open` covers its
+/// kind.
+fn open_result(opts: &Opts, kind: &str, value: &str) -> Result<(), Error> {
+    if !opens_kind(&opts.open, kind, value) {
+        NOT_OPENED.store(true, Ordering::Relaxed);
+        return Ok(());
+    }
+    OPENED.store(true, Ordering::Relaxed);
+    open::that(value).map_err(|error| Error::Open {
+        value: value.to_string(),
+        error,
+    })
+}
+
+/// The error behind a failed scan: an [`Error`] raised inside the scan
+/// functions, which carry it in an `io::Error`, or the I/O error itself,
+/// blamed on the input `source` or, without one, on writing the output.
+fn scan_error(source: Option<&str>, error: io::Error) -> Error {
+    if error.get_ref().is_some_and(|inner| inner.is::<Error>()) {
+        let inner = error.into_inner().expect("checked above");
+        return *inner.downcast::<Error>().expect("checked above");
+    }
+    match source {
+        Some(source) => Error::Scan {
+            source: source.to_string(),
+            error,
+        },
+        None => Error::Output(error),
+    }
 }
 
 /// Whether to scan with the parallel chunk pipeline. First-only mode must
@@ -709,10 +629,10 @@ fn parse_jobs(value: &str) -> Result<Jobs, String> {
     if value.eq_ignore_ascii_case("auto") {
         return Ok(Jobs::Auto);
     }
-    value
-        .parse()
-        .map(Jobs::Count)
-        .map_err(|_| "expected a thread count or 'auto'".to_string())
+    match value.parse() {
+        Ok(0) | Err(_) => Err("expected a thread count of at least 1, or auto".to_string()),
+        Ok(count) => Ok(Jobs::Count(count)),
+    }
 }
 
 /// Inputs at least this large are scanned on every core under `--jobs auto`.
@@ -744,7 +664,7 @@ fn effective_jobs(opts: &Opts, input_len: Option<u64>) -> usize {
 /// order matters (`--first`, `--last`) or results are acted on as they come
 /// (`--open`).
 fn tree_threads(opts: &Opts) -> usize {
-    if opts.first || opts.last || opts.open {
+    if opts.first || opts.last || opts.opens() {
         return 1;
     }
     match opts.jobs {
@@ -820,7 +740,7 @@ impl OutputState {
 struct Detail {
     kind: bool,
     location: bool,
-    kind_width: usize,
+    style: TextStyle,
 }
 
 impl Detail {
@@ -828,7 +748,7 @@ impl Detail {
         Detail {
             kind: opts.with_kind,
             location: opts.with_location,
-            kind_width: opts.kind_width,
+            style: opts.text_style,
         }
     }
 
@@ -869,7 +789,7 @@ fn write_formatted<W: Write>(
             for r in results {
                 let location = detail.location.then(|| Location::of(r));
                 let kind = detail.kind.then_some(r.kind);
-                write_text_line(out, location.as_ref(), kind, detail.kind_width, &r.value)?;
+                write_text_line(out, location.as_ref(), kind, detail.style, &r.value)?;
             }
         }
         Format::Json => {
@@ -914,30 +834,77 @@ fn write_formatted<W: Write>(
     Ok(())
 }
 
+/// SGR codes of the colored parts of a text line, ripgrep's for locations.
+const PATH_COLOR: &str = "35";
+const POSITION_COLOR: &str = "32";
+const KIND_COLOR: &str = "36";
+
 fn write_text_line<W: Write + ?Sized>(
     out: &mut W,
     location: Option<&Location>,
     kind: Option<&str>,
-    kind_width: usize,
+    style: TextStyle,
     value: &str,
 ) -> io::Result<()> {
     if let Some(location) = location {
         if let Some(source) = location.source {
-            out.write_all(source.as_bytes())?;
+            write_painted(out, style.color, PATH_COLOR, source)?;
             out.write_all(b":")?;
         }
-        write!(out, "{}:{}:", location.line, location.column)?;
+        if style.color {
+            write!(
+                out,
+                "\x1b[{POSITION_COLOR}m{}\x1b[0m:\x1b[{POSITION_COLOR}m{}\x1b[0m:",
+                location.line, location.column
+            )?;
+        } else {
+            write!(out, "{}:{}:", location.line, location.column)?;
+        }
     }
-    match kind {
-        Some(kind) if kind_width > 0 => write!(out, "{kind:<kind_width$}")?,
-        Some(kind) => {
-            out.write_all(kind.as_bytes())?;
+    if let Some(kind) = kind {
+        write_painted(out, style.color, KIND_COLOR, kind)?;
+        if style.kind_width > 0 {
+            let pad = style.kind_width.saturating_sub(kind.len());
+            write!(out, "{:pad$}", "")?;
+        } else {
             out.write_all(b"\t")?;
         }
-        None => {}
     }
     out.write_all(value.as_bytes())?;
     out.write_all(b"\n")
+}
+
+fn write_painted<W: Write + ?Sized>(
+    out: &mut W,
+    color: bool,
+    code: &str,
+    text: &str,
+) -> io::Result<()> {
+    if color {
+        write!(out, "\x1b[{code}m{text}\x1b[0m")
+    } else {
+        out.write_all(text.as_bytes())
+    }
+}
+
+/// Whether to color text output. `auto` colors a terminal unless NO_COLOR is
+/// set, CLICOLOR is 0, or TERM is dumb; CLICOLOR_FORCE colors a pipe too.
+fn use_color(when: ColorWhen, terminal: bool) -> bool {
+    let wanted = match when {
+        ColorWhen::Always => true,
+        ColorWhen::Never => false,
+        ColorWhen::Auto => {
+            !anstyle_query::no_color()
+                && (anstyle_query::clicolor_force()
+                    || (terminal
+                        && anstyle_query::clicolor() != Some(false)
+                        && anstyle_query::term_supports_color()))
+        }
+    };
+    // Windows consoles interpret ANSI codes once asked to; `None` elsewhere.
+    wanted
+        && (when == ColorWhen::Always
+            || anstyle_query::windows::enable_ansi_colors() != Some(false))
 }
 
 fn write_json_string<W: Write>(out: &mut W, s: &str) -> io::Result<()> {
@@ -1237,8 +1204,8 @@ fn scan_line_matches_into(scanner: &Scanner, opts: &Opts, line: &str, matches: &
         scanner.scan_line_into(line, matches);
     }
 
-    if opts.no_overlap {
-        apply_overlap_policy(matches, opts.precedence);
+    if opts.no_overlap() {
+        apply_overlap_policy(matches, opts.precedence());
     }
 }
 
@@ -1254,6 +1221,7 @@ fn make_result_item(
     if value.is_empty() {
         return None;
     }
+    record_found();
     Some(ResultItem {
         kind: scanner.finders()[m.finder_index].id(),
         value: value.to_string(),
@@ -1277,18 +1245,19 @@ fn emit_streaming_value(
     kind: &str,
     value: &str,
 ) -> io::Result<()> {
+    record_found();
     write_text_line(
         out,
         location,
         opts.with_kind.then_some(kind),
-        opts.kind_width,
+        opts.text_style,
         value,
     )?;
     if flush {
         out.flush()?;
     }
-    if opts.open {
-        open_url(value)?;
+    if opts.opens() {
+        open_result(opts, kind, value).map_err(io::Error::other)?;
     }
     Ok(())
 }
@@ -1583,7 +1552,7 @@ fn scan_block(
     let text = unsafe { std::str::from_utf8_unchecked(block) };
     let mut failure: Option<io::Error> = None;
     let mut stop = false;
-    if streaming && !opts.with_location && !opts.no_overlap {
+    if streaming && !opts.with_location && !opts.no_overlap() {
         // Plain values: neither the line nor its number is needed.
         let flush = state.flush_streaming;
         let stopped = scanner.scan_buffer_matches(text, |finder, range| {
@@ -1612,10 +1581,10 @@ fn scan_block(
     let mut kept = Vec::new();
     let stopped = scanner.scan_buffer(text, |start, end, matches| {
         let line_number = counter.number(block, start);
-        let matches = if opts.no_overlap {
+        let matches = if opts.no_overlap() {
             kept.clear();
             kept.extend_from_slice(matches);
-            apply_overlap_policy(&mut kept, opts.precedence);
+            apply_overlap_policy(&mut kept, opts.precedence());
             &kept[..]
         } else {
             matches
@@ -1844,7 +1813,7 @@ struct ChunkResult {
 /// Whether the parallel workers can format text directly; `--open` needs
 /// the values on the main thread, so it goes through items.
 fn stream_text_in_workers(opts: &Opts) -> bool {
-    !must_buffer(opts) && !opts.open
+    !must_buffer(opts) && !opts.opens()
 }
 
 fn scan_chunk(
@@ -1872,12 +1841,13 @@ fn scan_chunk(
                     line: line_number,
                     column: byte_column(line, m.range.start),
                 });
+                record_found();
                 // Writing into a Vec cannot fail.
                 let _ = write_text_line(
                     &mut text,
                     location.as_ref(),
                     opts.with_kind.then_some(kind),
-                    opts.kind_width,
+                    opts.text_style,
                     value,
                 );
             } else if let Some(item) = make_result_item(scanner, opts, source, line_number, line, m)
@@ -1886,7 +1856,7 @@ fn scan_chunk(
             }
         }
     };
-    if valid && streaming && !opts.with_location && !opts.no_overlap {
+    if valid && streaming && !opts.with_location && !opts.no_overlap() {
         // Plain values: neither the line nor its number is needed.
         // SAFETY: `validate_block` accepted the whole chunk.
         let whole = unsafe { std::str::from_utf8_unchecked(data) };
@@ -1894,12 +1864,13 @@ fn scan_chunk(
             let value = &whole[range];
             if !value.is_empty() {
                 let kind = scanner.finders()[finder].id();
+                record_found();
                 // Writing into a Vec cannot fail.
                 let _ = write_text_line(
                     &mut text,
                     None,
                     opts.with_kind.then_some(kind),
-                    opts.kind_width,
+                    opts.text_style,
                     value,
                 );
             }
@@ -1912,10 +1883,10 @@ fn scan_chunk(
         let mut kept = Vec::new();
         scanner.scan_buffer(text, |start, end, matches| {
             let line_number = counter.number(data, start);
-            let matches = if opts.no_overlap {
+            let matches = if opts.no_overlap() {
                 kept.clear();
                 kept.extend_from_slice(matches);
-                apply_overlap_policy(&mut kept, opts.precedence);
+                apply_overlap_policy(&mut kept, opts.precedence());
                 &kept[..]
             } else {
                 matches
@@ -2242,7 +2213,7 @@ fn has_glob_magic(input: &str) -> bool {
     input.contains('*') || input.contains('?') || input.contains('[')
 }
 
-fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
+fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, Error> {
     // Like grep: no path means standard input; `.` searches here.
     if inputs.is_empty() {
         return Ok(vec![InputTarget::Stdin]);
@@ -2257,8 +2228,15 @@ fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
 
         if has_glob_magic(input) {
             let mut matched = false;
-            for entry in glob::glob(input).map_err(|e| e.to_string())? {
-                let path = entry.map_err(|e| e.to_string())?;
+            let entries = glob::glob(input).map_err(|e| Error::Input {
+                path: input.clone(),
+                reason: e.to_string(),
+            })?;
+            for entry in entries {
+                let path = entry.map_err(|e| Error::Input {
+                    path: e.path().display().to_string(),
+                    reason: e.error().to_string(),
+                })?;
                 if path.is_dir() {
                     matched = true;
                     targets.push(InputTarget::Dir(path));
@@ -2268,7 +2246,10 @@ fn expand_inputs(inputs: &[String]) -> Result<Vec<InputTarget>, String> {
                 }
             }
             if !matched {
-                return Err(format!("no files matched pattern '{}'", input));
+                return Err(Error::Input {
+                    path: input.clone(),
+                    reason: "no files match this pattern".to_string(),
+                });
             }
         } else {
             let path = PathBuf::from(input);
@@ -2665,7 +2646,7 @@ fn finalize_results(
     out: &mut (dyn Write + Send),
     opts: &Opts,
     mut results: Vec<ResultItem>,
-) -> io::Result<()> {
+) -> Result<(), Error> {
     if opts.sort {
         results.sort_by(|a, b| {
             a.value
@@ -2682,10 +2663,11 @@ fn finalize_results(
     }
 
     let mut formatted = Vec::new();
-    write_formatted(&mut formatted, &results, opts.output, Detail::new(opts))?;
+    write_formatted(&mut formatted, &results, opts.output, Detail::new(opts))
+        .map_err(Error::Output)?;
     // Print before copying: on Linux the copy waits for a display server round-trip, and a
     // clipboard that is unavailable should not cost the user their results.
-    out.write_all(&formatted)?;
+    out.write_all(&formatted).map_err(Error::Output)?;
 
     if opts.copy {
         let mut clipboard = Vec::new();
@@ -2694,17 +2676,18 @@ fn finalize_results(
             &results,
             clipboard_format(opts.output),
             Detail {
-                kind_width: 0,
+                style: TextStyle::default(),
                 ..Detail::new(opts)
             },
-        )?;
+        )
+        .map_err(Error::Output)?;
         let text = String::from_utf8_lossy(&clipboard);
-        copy_to_clipboard(&text).map_err(io::Error::other)?;
+        copy_to_clipboard(&text).map_err(Error::Clipboard)?;
     }
 
-    if opts.open {
+    if opts.opens() {
         for r in &results {
-            open_url(&r.value)?;
+            open_result(opts, r.kind, &r.value)?;
         }
     }
 
@@ -2729,18 +2712,12 @@ fn main() -> ExitCode {
 
     env_logger::init();
 
-    let mut opts = Opts::parse();
+    let args = args::normalize(std::env::args_os()).unwrap_or_else(|message| usage_error(message));
+    let mut opts = Opts::parse_from(args);
 
     if let Some(shell) = opts.completions {
         clap_complete::generate(shell, &mut Opts::command(), "squeeze", &mut io::stdout());
         return ExitCode::SUCCESS;
-    }
-
-    // Validated before the empty-finders check so `--jobs 0` reports its own
-    // error even when no finder flags are given.
-    if opts.jobs == Jobs::Count(0) {
-        eprintln!("--jobs must be >= 1");
-        return ExitCode::FAILURE;
     }
 
     let finders = match build_finders(&opts.finders) {
@@ -2751,35 +2728,63 @@ fn main() -> ExitCode {
         }
         result => result,
     };
-    let finders = match finders {
-        Ok(finders) => finders,
-        Err(message) => {
-            // Same path clap takes for its own invalid values: usage error on
-            // stderr, exit code 2.
-            let mut cmd = Opts::command();
-            cmd.error(clap::error::ErrorKind::InvalidValue, message)
-                .exit()
-        }
+    let scanner = finders
+        .and_then(Scanner::try_new)
+        .unwrap_or_else(|e| usage_error(e));
+
+    let text = opts.output == Format::Text;
+    let terminal = io::stdout().is_terminal();
+    opts.text_style = TextStyle {
+        kind_width: if text && terminal {
+            scanner
+                .finders()
+                .iter()
+                .map(|f| f.id().len())
+                .max()
+                .unwrap_or(0)
+                + 2
+        } else {
+            0
+        },
+        color: text && use_color(opts.color, terminal),
     };
 
-    if opts.output == Format::Text && io::stdout().is_terminal() {
-        opts.kind_width = finders.iter().map(|f| f.id().len()).max().unwrap_or(0) + 2;
+    match run(&opts, &scanner) {
+        Ok(complete) => {
+            if opts.open == [OpenKind::Url]
+                && NOT_OPENED.load(Ordering::Relaxed)
+                && !OPENED.load(Ordering::Relaxed)
+            {
+                eprintln!(
+                    "squeeze: --open only opens URLs; pass --open=uri or --open=path to open other results"
+                );
+            }
+            if !complete {
+                ExitCode::from(EXIT_ERROR)
+            } else if opts.exit_code && !FOUND.load(Ordering::Relaxed) {
+                ExitCode::from(EXIT_NOT_FOUND)
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(Error::Output(e)) if is_broken_pipe(&e) => ExitCode::SUCCESS,
+        Err(e) => e.report(),
     }
+}
 
-    let scanner = match Scanner::try_new(finders) {
-        Ok(scanner) => scanner,
-        Err(e) => {
-            eprintln!("{}", e);
-            return ExitCode::FAILURE;
-        }
-    };
-    let targets = match expand_inputs(&opts.inputs) {
-        Ok(targets) => targets,
-        Err(e) => {
-            eprintln!("{}", e);
-            return ExitCode::FAILURE;
-        }
-    };
+/// Exits like clap does on its own invalid values: a usage error on stderr,
+/// with exit status 2.
+fn usage_error(message: impl std::fmt::Display) -> ! {
+    Opts::command()
+        .error(clap::error::ErrorKind::InvalidValue, message)
+        .exit()
+}
+
+/// Scans every input and writes the results. Returns `Ok(false)` when
+/// entries of a directory walk could not be read; each was reported as it
+/// happened.
+fn run(opts: &Opts, scanner: &Scanner) -> Result<bool, Error> {
+    let targets = expand_inputs(&opts.inputs)?;
 
     // A bare `squeeze` typed in a terminal would otherwise wait on stdin in
     // silence; pasting text there stays supported.
@@ -2797,7 +2802,7 @@ fn main() -> ExitCode {
     // Unlocked: the tree walker writes from several threads, each file's
     // results in one piece; the buffer keeps the per-write locking rare.
     let mut out = BufWriter::new(io::stdout());
-    let mut state = OutputState::new(&opts);
+    let mut state = OutputState::new(opts);
 
     // Directories, and several files, go through the tree walker (every
     // core, one file per thread); a single file keeps the chunked scan that
@@ -2824,53 +2829,50 @@ fn main() -> ExitCode {
     // still says the scan was incomplete.
     let mut walk_failed = false;
     for target in targets {
-        let result = match target {
-            InputTarget::Tree(roots) => scan_tree(
-                &scanner,
-                &opts,
-                &roots,
-                &mut out,
-                &mut state,
-                &mut walk_failed,
+        let (source, result) = match target {
+            InputTarget::Tree(roots) => (
+                None,
+                scan_tree(
+                    scanner,
+                    opts,
+                    &roots,
+                    &mut out,
+                    &mut state,
+                    &mut walk_failed,
+                ),
             ),
-            InputTarget::Dir(path) => scan_tree(
-                &scanner,
-                &opts,
-                &[path],
-                &mut out,
-                &mut state,
-                &mut walk_failed,
+            InputTarget::Dir(path) => (
+                None,
+                scan_tree(
+                    scanner,
+                    opts,
+                    &[path],
+                    &mut out,
+                    &mut state,
+                    &mut walk_failed,
+                ),
             ),
             InputTarget::Stdin => {
                 let stdin = io::stdin();
                 let mut reader = stdin.lock();
-                let jobs = effective_jobs(&opts, None);
-                scan_reader(
-                    &scanner,
-                    &opts,
-                    None,
-                    &mut reader,
-                    &mut out,
-                    &mut state,
-                    jobs,
-                )
+                let jobs = effective_jobs(opts, None);
+                let result =
+                    scan_reader(scanner, opts, None, &mut reader, &mut out, &mut state, jobs);
+                (Some("<stdin>".to_string()), result)
             }
             InputTarget::File(path) => {
                 let source = path.display().to_string();
-                let mut file = match File::open(&path) {
-                    Ok(file) => file,
-                    Err(e) => {
-                        eprintln!("failed to open '{}': {}", source, e);
-                        return ExitCode::FAILURE;
-                    }
-                };
+                let mut file = File::open(&path).map_err(|e| Error::Input {
+                    path: source.clone(),
+                    reason: e.to_string(),
+                })?;
                 let regular_len = file
                     .metadata()
                     .ok()
                     .filter(|m| m.is_file())
                     .map(|m| m.len());
-                let jobs = effective_jobs(&opts, regular_len);
-                match regular_len {
+                let jobs = effective_jobs(opts, regular_len);
+                let result = match regular_len {
                     Some(len) if len >= MMAP_MIN_BYTES => {
                         // SAFETY: the mapping is read-only and lives for the
                         // scan only. As with any mapped file, truncation by
@@ -2883,8 +2885,8 @@ fn main() -> ExitCode {
                                 #[cfg(unix)]
                                 let _ = map.advise(memmap2::Advice::Sequential);
                                 scan_buffer(
-                                    &scanner,
-                                    &opts,
+                                    scanner,
+                                    opts,
                                     Some(&source),
                                     &map,
                                     true,
@@ -2894,8 +2896,8 @@ fn main() -> ExitCode {
                                 )
                             }
                             Err(_) => scan_reader(
-                                &scanner,
-                                &opts,
+                                scanner,
+                                opts,
                                 Some(&source),
                                 &mut file,
                                 &mut out,
@@ -2908,8 +2910,8 @@ fn main() -> ExitCode {
                         let mut data = Vec::new();
                         match file.read_to_end(&mut data) {
                             Ok(_) => scan_buffer(
-                                &scanner,
-                                &opts,
+                                scanner,
+                                opts,
                                 Some(&source),
                                 &data,
                                 false,
@@ -2921,30 +2923,24 @@ fn main() -> ExitCode {
                         }
                     }
                     None => scan_reader(
-                        &scanner,
-                        &opts,
+                        scanner,
+                        opts,
                         Some(&source),
                         &mut file,
                         &mut out,
                         &mut state,
                         jobs,
                     ),
-                }
+                };
+                (Some(source), result)
             }
         };
 
         match result {
-            Ok(true) => {
-                break;
-            }
+            Ok(true) => break,
             Ok(false) => {}
-            Err(e) if is_broken_pipe(&e) => {
-                return ExitCode::SUCCESS;
-            }
-            Err(e) => {
-                eprintln!("error during scanning: {}", e);
-                return ExitCode::FAILURE;
-            }
+            Err(e) if is_broken_pipe(&e) => return Ok(!walk_failed),
+            Err(e) => return Err(scan_error(source.as_deref(), e)),
         }
     }
 
@@ -2954,29 +2950,17 @@ fn main() -> ExitCode {
         state.buffer.take().unwrap_or_default()
     };
 
-    if (opts.last || must_buffer(&opts))
-        && let Err(e) = finalize_results(&mut out, &opts, buffered_results)
-    {
-        if is_broken_pipe(&e) {
-            return ExitCode::SUCCESS;
+    if opts.last || must_buffer(opts) {
+        match finalize_results(&mut out, opts, buffered_results) {
+            Err(Error::Output(e)) if is_broken_pipe(&e) => return Ok(!walk_failed),
+            result => result?,
         }
-        eprintln!("output failed: {}", e);
-        return ExitCode::FAILURE;
     }
 
     match out.flush() {
-        Ok(()) if walk_failed => ExitCode::FAILURE,
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) if is_broken_pipe(&e) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("output failed: {}", e);
-            ExitCode::FAILURE
-        }
+        Err(e) if !is_broken_pipe(&e) => Err(Error::Output(e)),
+        _ => Ok(!walk_failed),
     }
-}
-
-fn open_url(url: &str) -> io::Result<()> {
-    open::that(url).map_err(io::Error::other)
 }
 
 #[cfg(test)]
@@ -2994,14 +2978,83 @@ mod tests {
     #[test]
     fn kinds_align_in_a_terminal_and_are_tab_separated_otherwise() {
         let mut out = Vec::new();
-        write_text_line(&mut out, None, Some("ip"), 10, "10.0.4.2").unwrap();
-        write_text_line(&mut out, None, Some("datetime"), 10, "2026-01-15").unwrap();
-        write_text_line(&mut out, None, Some("ip"), 0, "10.0.4.2").unwrap();
-        write_text_line(&mut out, None, None, 10, "bare").unwrap();
+        let aligned = TextStyle {
+            kind_width: 10,
+            color: false,
+        };
+        write_text_line(&mut out, None, Some("ip"), aligned, "10.0.4.2").unwrap();
+        write_text_line(&mut out, None, Some("datetime"), aligned, "2026-01-15").unwrap();
+        write_text_line(&mut out, None, Some("ip"), TextStyle::default(), "10.0.4.2").unwrap();
+        write_text_line(&mut out, None, None, aligned, "bare").unwrap();
         assert_eq!(
             String::from_utf8(out).unwrap(),
             "ip        10.0.4.2\ndatetime  2026-01-15\nip\t10.0.4.2\nbare\n"
         );
+    }
+
+    #[test]
+    fn colors_paint_locations_and_kinds_but_not_values_or_padding() {
+        let mut out = Vec::new();
+        let location = Location {
+            source: Some("app.log"),
+            line: 3,
+            column: 7,
+        };
+        let style = TextStyle {
+            kind_width: 6,
+            color: true,
+        };
+        write_text_line(&mut out, Some(&location), Some("ip"), style, "10.0.4.2").unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "\x1b[35mapp.log\x1b[0m:\x1b[32m3\x1b[0m:\x1b[32m7\x1b[0m:\x1b[36mip\x1b[0m    10.0.4.2\n"
+        );
+    }
+
+    #[test]
+    fn color_follows_when_unless_auto() {
+        assert!(use_color(ColorWhen::Always, false));
+        assert!(!use_color(ColorWhen::Never, true));
+    }
+
+    #[test]
+    fn open_only_opens_the_requested_kinds() {
+        let url = [OpenKind::Url];
+        assert!(opens_kind(&url, "uri", "https://example.com"));
+        assert!(opens_kind(&url, "uri", "MAILTO:hi@example.com"));
+        assert!(!opens_kind(&url, "uri", "file:///etc/passwd"));
+        assert!(!opens_kind(&url, "path", "/Applications/Calculator.app"));
+        assert!(!opens_kind(&url, "email", "hi@example.com"));
+        let uri_and_path = [OpenKind::Uri, OpenKind::Path];
+        assert!(opens_kind(&uri_and_path, "uri", "file:///etc/hosts"));
+        assert!(opens_kind(&uri_and_path, "path", "/etc/hosts"));
+    }
+
+    #[test]
+    fn open_defaults_to_urls_and_takes_kinds() {
+        let opts = Opts::try_parse_from(["squeeze", "--open"]).unwrap();
+        assert_eq!(opts.open, [OpenKind::Url]);
+        let opts = Opts::try_parse_from(["squeeze", "--open=uri,path", "x"]).unwrap();
+        assert_eq!(opts.open, [OpenKind::Uri, OpenKind::Path]);
+        assert_eq!(opts.inputs, ["x"]);
+        let opts = Opts::try_parse_from(["squeeze", "x"]).unwrap();
+        assert!(!opts.opens());
+    }
+
+    #[test]
+    fn precedence_implies_no_overlap() {
+        let opts = Opts::try_parse_from(["squeeze", "--precedence", "longest"]).unwrap();
+        assert!(opts.no_overlap());
+        assert_eq!(opts.precedence(), Precedence::Longest);
+        let opts = Opts::try_parse_from(["squeeze"]).unwrap();
+        assert!(!opts.no_overlap());
+    }
+
+    #[test]
+    fn jobs_must_be_positive() {
+        assert!(Opts::try_parse_from(["squeeze", "-j", "0"]).is_err());
+        assert!(Opts::try_parse_from(["squeeze", "-j", "2"]).is_ok());
+        assert!(Opts::try_parse_from(["squeeze", "-j", "auto"]).is_ok());
     }
 
     #[test]
@@ -3082,7 +3135,7 @@ mod tests {
                 .unwrap_or(1)
         );
         assert_eq!(parse_jobs("AUTO"), Ok(Jobs::Auto));
-        assert_eq!(parse_jobs("0"), Ok(Jobs::Count(0)));
+        assert!(parse_jobs("0").is_err());
         assert!(parse_jobs("many").is_err());
     }
 
@@ -3102,18 +3155,16 @@ mod tests {
     #[test]
     fn hash_options_should_reject_unknown_algorithms() {
         let opts = Opts::try_parse_from(["squeeze", "--hash=md5,bogus"]).unwrap();
-        match TryInto::<Hash>::try_into(&opts.finders) {
-            Err(FinderError::Invalid(message)) => assert!(message.contains("bogus")),
-            _ => panic!("expected an invalid-value error"),
-        }
+        assert!(matches!(
+            hash_finder(&opts.finders),
+            Err(squeeze::Error::UnknownHashAlgorithm { name, .. }) if name == "bogus"
+        ));
     }
 
     #[test]
     fn bare_hash_with_alias_should_stay_unrestricted() {
         let opts = Opts::try_parse_from(["squeeze", "--hash", "--md5"]).unwrap();
-        let Ok(finder) = TryInto::<Hash>::try_into(&opts.finders) else {
-            panic!("expected the hash finder to be built");
-        };
+        let finder = hash_finder(&opts.finders).unwrap();
         // sha1 still matches: the bare --hash means every algorithm.
         assert!(
             finder
