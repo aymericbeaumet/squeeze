@@ -82,6 +82,10 @@ jobs:
         run: |
           rustc -vV | grep -Fx "host: $TARGET"
       - run: mise run test
+      # Release builds package every platform with this file task; Windows
+      # runs it through its shebang.
+      - name: Run the release helper file task
+        run: mise run release-helper -- --help
 
   # Release binaries for Linux are static musl builds; catch breakage before a release.
   static-linux:

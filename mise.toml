@@ -1,3 +1,6 @@
+# The mise version CI pins: older ones rewrite mise.lock in an older format.
+min_version = "2026.10.15"
+
 [settings]
 lockfile = true
 
@@ -29,6 +32,7 @@ run = [
 ]
 
 [tasks.test-verbose]
+description = "Run workspace tests with their output"
 run = "cargo test --workspace --locked -- --nocapture"
 
 [tasks.bench]
@@ -76,6 +80,7 @@ run = [
 ]
 
 [tasks.clean]
+description = "Remove build outputs"
 run = "cargo clean"
 
 [tasks.install]
@@ -101,26 +106,29 @@ run = [
 
 [tasks.release-helper-tests]
 description = "Test the release helper"
-run = "python3 -m unittest discover -s .github/scripts -p 'test_*.py'"
-
-[tasks.release-helper]
-description = "Run the release helper (pass its command and options after --)"
-run = "python3 .github/scripts/release.py"
+run = "python3 -m unittest discover -s mise-tasks -p 'test_*.py'"
 
 [tasks.watch]
+description = "Rerun the tests on every change"
+tools.watchexec = "2.8.0"
 run = "mise watch test"
 
 [tasks.watch-check]
+description = "Rerun every check on every change"
+tools.watchexec = "2.8.0"
 run = "mise watch check"
 
 [tasks.update]
+description = "Update Cargo.lock within the manifest requirements"
 run = "cargo update"
 
 [tasks.outdated]
+description = "List outdated crates"
 tools."github:kbknapp/cargo-outdated" = "0.19.0"
 run = "cargo outdated"
 
 [tasks.audit]
+description = "Audit crates for security advisories"
 tools."aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
 run = "cargo audit"
 

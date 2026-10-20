@@ -2,10 +2,20 @@
 
 ## Tooling
 
-`mise.toml` pins Rust 1.99.1 with rustfmt and Clippy, plus Python 3.15.0.
-Run `mise trust`, then `mise install`. The committed `mise.lock` records resolved
-downloads for all six CI platforms; the mise action installs from it in locked
-mode. Update it with `mise lock` when changing tools. The minimum supported Rust
+mise is the whole development environment: `mise.toml` pins Rust 1.99.1 with
+rustfmt and Clippy, Python 3.15.0, and every tool a task needs, and
+`mise tasks` lists every command. It also sets `min_version` to the mise
+release CI pins, since older ones rewrite `mise.lock` in an older format;
+update mise the way you installed it (`mise self-update` or
+`brew upgrade mise`) when it refuses to load the config.
+Run `mise trust`, then `mise install`. Tasks declare their extra tools (the
+MSRV toolchain, hyperfine, ripgrep, watchexec, cargo-outdated, cargo-audit),
+which mise installs on first use; with `auto_install = false`, install them
+ahead of time with `mise install --include-task-tools`. The committed
+`mise.lock` records resolved downloads for all six CI platforms; the mise
+action installs from it in locked mode. Update it with
+`mise lock --platform linux-arm64,linux-x64,macos-arm64,macos-x64,windows-arm64,windows-x64`
+when changing tools. The minimum supported Rust
 version is 1.95; `mise run msrv` installs and tests that toolchain
 independently of the development pin.
 The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
@@ -22,14 +32,16 @@ that the domain and URI finders use to reject lookalikes such as `opts.all` or
 `key:value`. Refresh it with `mise run update-iana` (Python 3, network
 access) and review the diff; the registries change a few times a year.
 
-`mise run watch` and `mise run watch-check` use mise's watcher. The optional
+`mise run watch` and `mise run watch-check` use mise's watcher with the
+watchexec it pins. The optional
 `outdated` and `audit` tasks use Cargo extensions pinned by mise.
-`mise tasks` lists every task: one-liners live in `mise.toml`, longer ones
-such as `bench-cli` and `update-iana` are executable file tasks in
-`mise-tasks/`.
+One-liners live in `mise.toml`; longer ones such as `bench-cli`,
+`update-iana`, and `release-helper` are executable file tasks in
+`mise-tasks/`, which mise runs through their shebang on Windows too.
 
 Actions pins mise 2026.10.15, whose release assets cover all six platforms.
-Verify those assets before updating the pin. Workflow action revisions and
+Verify those assets before updating the pin, and move `min_version` in
+`mise.toml` with it. Workflow action revisions and
 container images are pinned to digests. Mise manages Rust through rustup. Its
 Actions tool cache is disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
@@ -108,10 +120,13 @@ repository secrets, which the prepare job checks before building anything:
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
 `docs/demo/demo.tape` with VHS in a container (Colima on macOS).
 
-Release helpers use Python 3.11+ and the standard library. Run
+The release helper, `mise-tasks/release-helper`, uses Python 3.11+ and the
+standard library; `mise-tasks/test_release_helper.py` tests it. Run
 `mise run release-check` to validate workflows with actionlint 1.7.12 and run
-the helper tests with pinned Python 3.15.0. Release jobs use the same mise
-environment and `mise run release-helper` to invoke the helper. If publication
+those tests with pinned Python 3.15.0. Release jobs use the same mise
+environment and `mise run release-helper` to invoke the helper, and so does
+the nightly workflow, whose `nightly` command points the tap's
+`squeeze-nightly` formula, built from source, at every push to `main`. If publication
 fails after creating a tag,
 rerun the failed workflow at its original commit or dispatch it on that tag.
 An existing tag pointing at another commit is rejected. If only the Homebrew

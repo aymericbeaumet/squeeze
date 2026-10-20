@@ -1,3 +1,5 @@
+import datetime
+import importlib.machinery
 import importlib.util
 import io
 from contextlib import chdir
@@ -8,9 +10,10 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 
-spec = importlib.util.spec_from_file_location("release", Path(__file__).with_name("release.py"))
-release = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(release)
+# The helper is an extensionless mise file task.
+loader = importlib.machinery.SourceFileLoader("release", str(Path(__file__).with_name("release-helper")))
+release = importlib.util.module_from_spec(importlib.util.spec_from_loader("release", loader))
+loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -25,10 +28,12 @@ class ReleaseTests(unittest.TestCase):
         for status in (401, 403, 429, 500):
             with self.subTest(status=status):
                 error = HTTPError("https://api.github.com/test", status, "failed", {}, io.BytesIO())
+                self.addCleanup(error.close)
                 with patch.object(release, "urlopen", side_effect=error):
                     with self.assertRaises(HTTPError):
                         release.api("GET", "/test", allow_missing=True)
         error = HTTPError("https://api.github.com/test", 404, "missing", {}, io.BytesIO())
+        self.addCleanup(error.close)
         with patch.object(release, "urlopen", side_effect=error):
             self.assertIsNone(release.api("GET", "/test", allow_missing=True))
 
@@ -265,6 +270,29 @@ class ReleaseTests(unittest.TestCase):
                 body = puts[0].args[2]
                 self.assertEqual(body["message"], "chore: update squeeze to 0.2.0")
                 self.assertEqual(body.get("sha"), current and current["sha"])
+
+    def test_nightly_formula_builds_the_pushed_commit_from_source(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        formula = release.nightly_formula(sha, datetime.date(2026, 10, 20), "f" * 64)
+        self.assertIn("class SqueezeNightly < Formula", formula)
+        self.assertIn(f'url "https://github.com/owner/repo/archive/{sha}.tar.gz"', formula)
+        self.assertIn('version "nightly-20261020-0123456"', formula)
+        self.assertIn(f'sha256 "{"f" * 64}"', formula)
+        self.assertIn('system "cargo", "install", *std_cargo_args(path: ".")', formula)
+        self.assertIn('pipe_output("#{bin}/squeeze --url"', formula)
+
+    def test_nightly_update_hashes_the_archive_and_writes_its_formula(self):
+        archive = b"source tarball"
+        with patch.object(release, "urlopen", return_value=io.BytesIO(archive)) as urlopen, \
+                patch.object(release, "api", return_value={"sha": "old", "content": "b2xk"}) as api:
+            release.update_nightly("0123456789abcdef", "owner/homebrew-tap")
+        self.assertEqual(urlopen.call_args.args[0], "https://github.com/owner/repo/archive/0123456789abcdef.tar.gz")
+        method, path, body = api.call_args_list[-1].args
+        self.assertEqual((method, path), ("PUT", "/repos/owner/homebrew-tap/contents/Formula/squeeze-nightly.rb"))
+        self.assertEqual(body["sha"], "old")
+        self.assertTrue(body["message"].startswith("squeeze-nightly nightly-"))
+        formula = release.base64.b64decode(body["content"]).decode()
+        self.assertIn(f'sha256 "{release.hashlib.sha256(archive).hexdigest()}"', formula)
 
 
 if __name__ == "__main__":

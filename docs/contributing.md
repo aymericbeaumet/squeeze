@@ -17,8 +17,9 @@ For crashes, installation problems, and anything else, open a
 
 ## Development setup
 
-Install [mise](https://mise.jdx.dev/getting-started.html), which provides the
-pinned Rust toolchain and every other tool, then run the same checks as CI:
+Install [mise](https://mise.jdx.dev/getting-started.html), the only tool you
+need: it provides the pinned Rust toolchain and every other tool, and runs
+every task. Then run the same checks as CI:
 
 ```shell
 git clone https://github.com/aymericbeaumet/squeeze
@@ -28,8 +29,10 @@ mise install
 mise run check
 ```
 
-`mise run run -- <options>` runs the CLI from source, and `mise tasks` lists
-every task.
+`mise run run -- <options>` runs the CLI from source, `mise run watch` reruns
+the tests on every change, and `mise tasks` lists every task. If mise refuses
+to load the project, update it the way you installed it (`mise self-update`,
+or `brew upgrade mise`): the project needs the version CI uses.
 
 ## Repository layout
 
@@ -39,7 +42,7 @@ every task.
 | `squeeze-lib/` | the `squeeze-lib` crate: one module per finder (`uri.rs`, `email.rs`, …) and the scanner that runs them |
 | `squeeze-lib/tests/` | cross-finder suites: `hardening_*.rs` pin false positives and intentional trade-offs, `fuzz.rs` checks scanner contracts |
 | `docs/` | usage, integrations, performance, and release documentation |
-| `mise-tasks/` | longer scripts run by `mise run` |
+| `mise-tasks/` | longer tasks run by `mise run`: benchmarks, the IANA registry refresh, and the release helper |
 
 ## Changing a finder
 
