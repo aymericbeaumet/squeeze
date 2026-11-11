@@ -108,13 +108,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: static
-      - name: Add the static musl target
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq musl-tools
-          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
       - run: mise run rust-target -- "$TARGET"
-      - run: mise run release -- --target "$TARGET"
+      - run: mise run release-musl -- --target "$TARGET"
       - name: Run the static binary on Alpine
         run: |
           file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'

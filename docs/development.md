@@ -10,7 +10,7 @@ policy. Update mise through its original installation method when it
 refuses to load the config.
 Run `mise trust`, then `mise install`. Tasks declare their extra tools (the
 MSRV toolchain, hyperfine, ripgrep, watchexec, cargo-outdated, cargo-audit,
-ShellCheck, and the demo container CLI), which mise installs on first use; with `auto_install = false`, install them
+ShellCheck, Zig, cargo-zigbuild, and the demo container CLI), which mise installs on first use; with `auto_install = false`, install them
 ahead of time with `mise install --include-task-tools`. The committed
 `mise.lock` records resolved downloads and checksums for all six CI
 platforms. `[tool_config] locked = true` makes project tools fail on missing
@@ -53,7 +53,13 @@ disabled, while `Swatinem/rust-cache` caches Cargo dependencies and build output
 
 A native linker and SDK remain operating-system prerequisites: Xcode Command
 Line Tools on macOS, a C toolchain on Linux, or MSVC Build Tools on Windows.
-Linux static-release jobs install the musl system libraries with apt.
+Linux static builds use mise-pinned Zig and cargo-zigbuild, which provide
+the musl C compiler and linker without a system package install. Run
+`mise run rust-target -- <target>`, then
+`mise run release-musl -- --target <target>`, with
+`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`. CI and releases
+verify static linkage and execute each binary in Alpine on its native
+architecture.
 `bench-cli` pins its required tools; optional GNU/BSD grep and ugrep are
 comparisons against the versions on the host and are skipped when absent.
 

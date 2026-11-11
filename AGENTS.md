@@ -43,7 +43,8 @@
 - CI and releases cover Linux, macOS, and Windows on both amd64 and arm64.
   Preserve all six native targets when changing workflows. Release binaries
   must run on a clean machine: Linux ones link musl statically, Windows ones
-  the C runtime.
+  the C runtime. Linux static builds use `mise run release-musl -- --target
+  <triple>` with pinned Zig and cargo-zigbuild; keep the Alpine smoke tests.
 - After changing release automation, run `mise run release-check` for the
   pinned actionlint and Python helper tests.
 - Performance work is measured, never guessed: `mise run bench -- --stats` reports

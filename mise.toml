@@ -24,6 +24,12 @@ run = "cargo build --workspace --locked"
 description = "Build the optimized CLI"
 run = "cargo build --release --locked -p squeeze-cli"
 
+[tasks.release-musl]
+description = "Build the static Linux CLI (pass --target <triple>)"
+tools.zig = "0.17.1"
+tools."aqua:rust-cross/cargo-zigbuild" = "0.24.1"
+run = "cargo zigbuild --release --locked -p squeeze-cli"
+
 [tasks.package]
 description = "Package and verify the library crate for crates.io"
 run = "cargo package -p squeeze-lib --locked"

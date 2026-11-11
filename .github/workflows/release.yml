@@ -81,12 +81,6 @@ jobs:
       - name: Verify native Rust host
         run: |
           rustc -vV | grep -Fx "host: $HOST"
-      - name: Add the static musl target
-        if: matrix.host
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq musl-tools
-          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
       - name: Install the static musl target
         if: matrix.host
         run: mise run rust-target -- "$TARGET"
@@ -96,7 +90,11 @@ jobs:
       - name: Test
         if: matrix.runner != 'ubuntu-24.04'
         run: mise run test
+      - name: Build static Linux binary
+        if: matrix.host
+        run: mise run release-musl -- --target "$TARGET"
       - name: Build release binary
+        if: ${{ !matrix.host }}
         run: mise run release -- --target "$TARGET"
       - name: Verify binary version
         env:
