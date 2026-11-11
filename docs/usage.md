@@ -78,6 +78,9 @@ JSON and YAML return lists of values by default; CSV returns one value per
 row. With `--with-kind` or `--with-location`, structured output includes
 `kind`, `value`, `line`, `column`, `start`, `end`, and `source`. Lines and
 columns start at 1; byte offsets start at 0 and the end is exclusive.
+Columns count Unicode characters; `start` and `end` are byte offsets within
+the input line, not the whole file. `source` is the input path, or `null`
+for stdin.
 
 `--color=auto` honors [`NO_COLOR`](https://no-color.org/), `CLICOLOR=0`,
 and `CLICOLOR_FORCE`. Values are never colored, and structured output never
@@ -104,6 +107,13 @@ $ echo 'ping ops@example.com' | squeeze --email --with-kind --output json
 Matches can overlap: a URL can also contain an IP address or a version, and
 each finder reports it. Use `--no-overlap` to keep one of them.
 
+For example, selecting URLs and domains can report both the full URL and
+its hostname. Keep the full URL with `--precedence longest`:
+
+```shell
+echo 'See https://example.com/docs' | squeeze --url --domain --precedence longest
+```
+
 ### Acting on results
 
 | Flag | Description |
@@ -112,8 +122,8 @@ each finder reports it. Use `--no-overlap` to keep one of them.
 | `--open` | open each URL with the default application (the schemes of `--url`) |
 | `--open=<kinds>` | open the given kinds instead: `url`, `uri` (any scheme), and `path` |
 
-`--open` never opens paths or other schemes such as `file:` unless asked to,
-so piping untrusted text into it only ever opens web, mail, and FTP links.
+`--open` uses the `--url` schemes listed above. To include other schemes
+such as `file:`, use `--open=uri`; to open filesystem paths, use `--open=path`.
 
 ## Parallelism
 

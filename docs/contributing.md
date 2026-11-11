@@ -8,6 +8,8 @@ requests are all welcome.
 The most useful report is a small input that squeeze gets wrong. Open a
 [wrong match issue](https://github.com/aymericbeaumet/squeeze/issues/new?template=wrong-match.yml)
 with the input, the command, what squeeze printed, and what you expected.
+Include `squeeze --version` and replace private data with a small synthetic
+example that still reproduces the problem.
 Finders favor precision over recall, so a format that is valid but rarely
 seen in practice may be skipped on purpose; the issue is still the right
 place to discuss it.

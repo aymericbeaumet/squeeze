@@ -903,8 +903,8 @@ fn use_color(when: ColorWhen, terminal: bool) -> bool {
     };
     // Windows consoles interpret ANSI codes once asked to; `None` elsewhere.
     wanted
-        && (when == ColorWhen::Always
-            || anstyle_query::windows::enable_ansi_colors() != Some(false))
+        && (anstyle_query::windows::enable_ansi_colors() != Some(false)
+            || when == ColorWhen::Always)
 }
 
 fn write_json_string<W: Write>(out: &mut W, s: &str) -> io::Result<()> {

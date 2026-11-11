@@ -50,19 +50,28 @@ cargo install --locked --git https://github.com/aymericbeaumet/squeeze
 
 All three install the `squeeze` command. Prebuilt binaries for Linux, macOS,
 and Windows on amd64 and arm64 are also on
-[GitHub Releases](https://github.com/aymericbeaumet/squeeze/releases/latest).
+[GitHub Releases](https://github.com/aymericbeaumet/squeeze/releases/latest),
+with `SHA256SUMS` for verifying downloads.
 
 ## Usage
 
 Pick one or more finders, or none to run all of them. With no path, squeeze
 reads stdin.
 
+Try this in your terminal; it needs no files or network access:
+
+```shell
+echo 'Contact ops@example.com about [the docs](https://example.com/docs).' | squeeze --email --url
+```
+
+```text
+ops@example.com
+https://example.com/docs
+```
+
 ```shell
 # Everything squeeze recognizes in a file
 squeeze app.log
-
-# Unique links on a web page
-curl -s https://news.ycombinator.com | squeeze --url --uniq
 
 # Everyone who committed to a repository
 git log --format='%an <%ae>' | squeeze --email --sort --uniq
@@ -107,7 +116,11 @@ shell.
 | UUIDs | `--uuid` | `550e8400-e29b-41d4-a716-446655440000` |
 
 Finders favor precision over recall: they recognize common formats and may
-skip unusual valid values. Found something squeeze gets wrong?
+skip unusual valid values. They extract candidates; they do not check whether
+a URL is reachable, an email address exists, or a JWT is authentic. Matches
+can overlap (a URL can contain an IP); use `--precedence longest` to keep
+the longest overlapping match. Use grep or ripgrep for custom patterns.
+Found something squeeze gets wrong?
 [Report it](https://github.com/aymericbeaumet/squeeze/issues/new?template=wrong-match.yml)
 with a sample input.
 
@@ -117,7 +130,7 @@ No regex engine is involved: SIMD searches and byte classification narrow the
 positions where a match can start, and large files, streams, and directory
 trees are scanned across every core. On a generated 56 MiB mixed corpus,
 single-threaded squeeze used 18 ms of CPU to extract URLs versus ripgrep's
-35 ms, while parsing URIs per RFC 3986 rather than matching a loose regex.
+35 ms. The tools use different URL grammars and return different match counts.
 See the [benchmarks](docs/performance.md#cli-benchmarks) for the commands,
 data, and limitations.
 

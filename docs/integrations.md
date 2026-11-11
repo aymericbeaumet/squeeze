@@ -3,6 +3,33 @@
 squeeze reads stdin and prints one value per line, so it fits anywhere text
 flows through a pipe.
 
+## Data pipelines
+
+List unique email addresses in a repository's commit history:
+
+```shell
+git log --format='%an <%ae>' | squeeze --email --sort --uniq
+```
+
+Export distinct URLs from local Markdown files as a JSON array:
+
+```shell
+squeeze --url --sort --uniq --output json '**/*.md' > links.json
+```
+
+Use `--with-location` to export objects with the source path, line, column,
+and matched value instead. Quote the glob so squeeze expands it consistently
+across shells. Directory and glob scans respect ignore files by default.
+
+For a web page, squeeze finds absolute URLs present in the response:
+
+```shell
+curl --fail --silent --show-error https://example.com | squeeze --http --https --uniq
+```
+
+Relative links such as `/about` need an HTML parser and a base URL; squeeze
+does not resolve them or execute JavaScript.
+
 ## vim/nvim
 
 Press `Enter` in visual mode to open the first URL in the selection:
@@ -47,5 +74,5 @@ urls() { fc -rl 1 | squeeze --url --uniq; }
 Copy the first URL a command prints, such as a deploy preview link:
 
 ```shell
-make deploy 2>&1 | squeeze -1 --url --copy
+mise run deploy 2>&1 | squeeze -1 --url --copy
 ```
