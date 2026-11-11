@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Test release automation
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -62,18 +62,17 @@ jobs:
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
+    env:
+      MISE_RUST_DEFAULT_HOST: ${{ matrix.target }}
+      MISE_RUSTUP_HOME: ${{ github.workspace }}/../squeeze-rustup
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Select native Rust host
-        env:
-          TARGET: ${{ matrix.target }}
-        run: rustup set default-host "$TARGET"
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Verify native Rust target
@@ -104,7 +103,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -113,8 +112,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
-          rustup target add "$TARGET"
           echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - run: mise run rust-target -- "$TARGET"
       - run: mise run release -- --target "$TARGET"
       - name: Run the static binary on Alpine
         run: |

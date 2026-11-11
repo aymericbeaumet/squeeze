@@ -26,7 +26,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - name: Test release automation
         run: mise run release-helper-tests
@@ -65,17 +65,17 @@ jobs:
       run:
         shell: bash
     env:
+      MISE_RUST_DEFAULT_HOST: ${{ matrix.host || matrix.target }}
+      MISE_RUSTUP_HOME: ${{ github.workspace }}/../squeeze-rustup
       HOST: ${{ matrix.host || matrix.target }}
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.sha }}
-      - name: Select native Rust host
-        run: rustup set default-host "$HOST"
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Verify native Rust host
@@ -86,8 +86,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
-          rustup target add "$TARGET"
           echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
+      - name: Install the static musl target
+        if: matrix.host
+        run: mise run rust-target -- "$TARGET"
       - name: Check formatting and lints
         if: matrix.runner == 'ubuntu-24.04'
         run: mise run check
@@ -136,7 +138,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -162,7 +164,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - name: Install the prebuilt binaries from the tap
         env:
@@ -185,7 +187,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.sha }}
       - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.15
+          version: 2026.11.6
           cache: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Publish squeeze-lib

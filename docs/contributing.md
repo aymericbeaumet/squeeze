@@ -19,9 +19,10 @@ For crashes, installation problems, and anything else, open a
 
 ## Development setup
 
-Install [mise](https://mise.jdx.dev/getting-started.html), the only tool you
-need: it provides the pinned Rust toolchain and every other tool, and runs
-every task. Then run the same checks as CI:
+Install [mise](https://mise.jdx.dev/getting-started.html): it provides the
+pinned development tools and runs every task. Your OS also needs a native
+linker and SDK; see [system prerequisites](development.md#tooling). Then run
+the same checks as CI:
 
 ```shell
 git clone https://github.com/aymericbeaumet/squeeze

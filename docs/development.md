@@ -5,17 +5,19 @@
 mise is the whole development environment: `mise.toml` pins Rust 1.99.1 with
 rustfmt and Clippy, Python 3.15.0, and every tool a task needs, and
 `mise tasks` lists every command. It also sets `min_version` to the mise
-release CI pins, since older ones rewrite `mise.lock` in an older format;
-update mise the way you installed it (`mise self-update` or
-`brew upgrade mise`) when it refuses to load the config.
+release CI pins, since older ones cannot enforce the committed lockfile
+policy. Update mise through its original installation method when it
+refuses to load the config.
 Run `mise trust`, then `mise install`. Tasks declare their extra tools (the
-MSRV toolchain, hyperfine, ripgrep, watchexec, cargo-outdated, cargo-audit),
+MSRV toolchain, hyperfine, ripgrep, watchexec, cargo-outdated, cargo-audit,
+ShellCheck, and the demo container CLI),
 which mise installs on first use; with `auto_install = false`, install them
 ahead of time with `mise install --include-task-tools`. The committed
-`mise.lock` records resolved downloads for all six CI platforms; the mise
-action installs from it in locked mode. Update it with
-`mise lock --platform linux-arm64,linux-x64,macos-arm64,macos-x64,windows-arm64,windows-x64`
-when changing tools. The minimum supported Rust
+`mise.lock` records resolved downloads and checksums for all six CI
+platforms. `[tool_config] locked = true` makes project tools fail on missing
+lock entries, including task tools, without changing the policy for your
+global tools. The mise action also installs in locked mode. Run `mise lock`
+when changing tools; `lockfile_platforms` keeps all six platforms covered. The minimum supported Rust
 version is 1.95; `mise run msrv` installs and tests that toolchain
 independently of the development pin.
 The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
@@ -39,13 +41,22 @@ One-liners live in `mise.toml`; longer ones such as `bench-cli`,
 `update-iana`, and `release-helper` are executable file tasks in
 `mise-tasks/`, which mise runs through their shebang on Windows too.
 
-Actions pins mise 2026.10.15, whose release assets cover all six platforms.
+Actions pins mise 2026.11.6, whose release assets cover all six platforms.
 Verify those assets before updating the pin, and move `min_version` in
 `mise.toml` with it. Workflow action revisions and
-container images are pinned to digests. Mise manages Rust through rustup. Its
-Actions tool cache is disabled, while
+container images are pinned to digests. Mise manages Rust through rustup, including extra targets via
+`mise run rust-target -- <target>`. Native CI jobs give mise an isolated
+rustup home and an explicit host triple so preinstalled toolchains cannot
+select the wrong architecture on Windows ARM64. Its Actions tool cache is
+disabled, while
 `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
+
+A native linker and SDK remain operating-system prerequisites: Xcode Command
+Line Tools on macOS, a C toolchain on Linux, or MSVC Build Tools on Windows.
+Linux static-release jobs install the musl system libraries with apt.
+`bench-cli` pins its required tools; optional GNU/BSD grep and ugrep are
+comparisons against the versions on the host and are skipped when absent.
 
 ## Releases
 
@@ -118,11 +129,13 @@ repository secrets, which the prepare job checks before building anything:
 | `CARGO_REGISTRY_TOKEN` | the crates job | the `squeeze-lib` version is not on crates.io yet; needs the publish-update scope |
 
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
-`docs/demo/demo.tape` with VHS in a container (Colima on macOS).
+`docs/demo/demo.tape` with VHS in a container on Linux or macOS. Mise pins
+the container CLI and both images by digest. Start Colima on macOS or use
+the native container engine on Linux before running the task.
 
 The release helper, `mise-tasks/release-helper`, uses Python 3.11+ and the
 standard library; `mise-tasks/test_release_helper.py` tests it. Run
-`mise run release-check` to validate workflows with actionlint 1.7.12 and run
+`mise run release-check` to validate workflows with actionlint 1.7.12 and ShellCheck 0.11.0, and run
 those tests with pinned Python 3.15.0. Release jobs use the same mise
 environment and `mise run release-helper` to invoke the helper, and so does
 the nightly workflow, whose `nightly` command points the tap's

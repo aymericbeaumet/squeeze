@@ -6,7 +6,8 @@
   documentation checks used by CI. `min_version` in `mise.toml` tracks the mise
   version the workflows pin; bump them together.
 - Update and commit `mise.lock` with `mise.toml` tool changes; lock all six CI
-  platforms with `mise lock --platform linux-x64,linux-arm64,macos-x64,macos-arm64,windows-x64,windows-arm64`.
+  platforms with `mise lock` (`lockfile_platforms` lists them). Project tools
+  enforce the lockfile with `[tool_config] locked = true`; do not weaken it.
 - Run `mise run release` and `mise run package` when changing build or packaging
   behavior, and `mise run msrv` when changing dependencies or the minimum supported
   Rust version.
@@ -58,7 +59,7 @@
   `mise exec -- cargo test -p squeeze-lib --target x86_64-apple-darwin` runs the
   SSSE3 path under Rosetta and `mise exec -- cargo clippy -p squeeze-lib --target
   x86_64-apple-darwin --all-targets -- -D warnings` lints the code that only
-  compiles there (`mise exec -- rustup target add x86_64-apple-darwin` once);
+  compiles there (`mise run rust-target -- x86_64-apple-darwin` once);
   CI covers both.
 - Finder changes must keep `mise exec -- cargo test -p squeeze-lib` green: the
   fuzz suites check gate/rule contracts and strategy parity; `regex_parity`
