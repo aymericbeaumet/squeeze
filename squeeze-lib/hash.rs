@@ -1,4 +1,4 @@
-use super::{Finder, RunClass, RunRule};
+use super::{Error, Finder, RunClass, RunRule};
 use std::ops::Range;
 
 const MD5_LEN: usize = 32;
@@ -18,20 +18,29 @@ pub struct Hash {
 }
 
 impl Hash {
-    /// Restricts matching to the given algorithm. Returns `false` (leaving the
-    /// finder unchanged) when the algorithm is unknown, so callers can surface
-    /// an error instead of silently matching everything.
-    #[must_use]
-    pub fn add_algorithm(&mut self, name: &str) -> bool {
+    /// The algorithm names [`Hash::add_algorithm`] accepts; `sha-1`,
+    /// `sha-256` and `sha-512` are accepted too.
+    pub const ALGORITHMS: [&'static str; 4] = ["md5", "sha1", "sha256", "sha512"];
+
+    /// Restricts matching to the given algorithm, ignoring case. An unknown
+    /// algorithm leaves the finder unchanged and returns
+    /// [`Error::UnknownHashAlgorithm`], with the closest name when it looks
+    /// like a typo.
+    pub fn add_algorithm(&mut self, name: &str) -> Result<(), Error> {
         let bit = match name.to_lowercase().as_str() {
             "md5" => MD5_BIT,
             "sha1" | "sha-1" => SHA1_BIT,
             "sha256" | "sha-256" => SHA256_BIT,
             "sha512" | "sha-512" => SHA512_BIT,
-            _ => return false,
+            _ => {
+                return Err(Error::UnknownHashAlgorithm {
+                    name: name.to_string(),
+                    suggestion: crate::error::suggest(name, &Self::ALGORITHMS),
+                });
+            }
         };
         self.lengths |= bit;
-        true
+        Ok(())
     }
 
     fn is_target_length(&self, len: usize) -> bool {
@@ -213,7 +222,7 @@ mod tests {
     #[test]
     fn find_should_filter_by_algorithm() {
         let mut finder = Hash::default();
-        assert!(finder.add_algorithm("sha256"));
+        finder.add_algorithm("sha256").unwrap();
 
         let md5 = "5d41402abc4b2a76b9719d911017c592";
         assert!(finder.find(md5).is_none());
@@ -225,7 +234,7 @@ mod tests {
     #[test]
     fn find_should_filter_md5_only() {
         let mut finder = Hash::default();
-        assert!(finder.add_algorithm("md5"));
+        finder.add_algorithm("md5").unwrap();
 
         let input = "5d41402abc4b2a76b9719d911017c592";
         assert!(finder.find(input).is_some());
@@ -297,21 +306,34 @@ mod tests {
     #[test]
     fn add_algorithm_should_accept_various_names() {
         let mut finder = Hash::default();
-        assert!(finder.add_algorithm("sha-256"));
+        finder.add_algorithm("sha-256").unwrap();
         assert!(finder.lengths & SHA256_BIT != 0);
 
-        assert!(finder.add_algorithm("SHA1"));
+        finder.add_algorithm("SHA1").unwrap();
         assert!(finder.lengths & SHA1_BIT != 0);
 
-        assert!(finder.add_algorithm("SHA-512"));
+        finder.add_algorithm("SHA-512").unwrap();
         assert!(finder.lengths & SHA512_BIT != 0);
     }
 
     #[test]
     fn add_algorithm_should_reject_unknown() {
         let mut finder = Hash::default();
-        assert!(!finder.add_algorithm("blake2"));
+        assert_eq!(
+            Err(Error::UnknownHashAlgorithm {
+                name: "blake2".to_string(),
+                suggestion: None,
+            }),
+            finder.add_algorithm("blake2")
+        );
         assert_eq!(0, finder.lengths);
+        assert!(matches!(
+            finder.add_algorithm("sha265"),
+            Err(Error::UnknownHashAlgorithm {
+                suggestion: Some("sha256"),
+                ..
+            })
+        ));
     }
 
     #[test]

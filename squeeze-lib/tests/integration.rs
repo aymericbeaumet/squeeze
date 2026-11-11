@@ -100,7 +100,7 @@ fn codetag_finder_should_extract_codetags_from_code() {
 #[test]
 fn uri_finder_with_scheme_filter_should_only_match_specified_schemes() {
     let mut finder = URI::default();
-    finder.add_scheme("https");
+    finder.add_scheme("https").unwrap();
 
     let text = "Visit https://secure.com or http://insecure.com";
 
@@ -123,7 +123,7 @@ fn uri_finder_with_scheme_filter_should_only_match_specified_schemes() {
 #[test]
 fn codetag_finder_with_custom_mnemonic_should_only_match_that_mnemonic() {
     let mut finder = Codetag::default();
-    finder.add_mnemonic("CUSTOM");
+    finder.add_custom_mnemonic("CUSTOM").unwrap();
     finder.build_mnemonics_regex().unwrap();
 
     assert!(finder.find("CUSTOM: this should match").is_some());

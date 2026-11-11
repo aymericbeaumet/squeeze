@@ -64,6 +64,18 @@ impl Ip {
         if idx > 0 && (input[idx - 1].is_ascii_digit() || input[idx - 1] == b'.') {
             return None;
         }
+        // `Chrome/131.0.0.0` and `Edg/131.0.0.0` are browser versions in user
+        // agents: a quad right after a capitalized `Product/` token is not an
+        // address, while lowercase path segments (`/nodes/10.0.0.5`) are.
+        if idx > 1 && input[idx - 1] == b'/' {
+            let token_start = input[..idx - 1]
+                .iter()
+                .rposition(|b| !b.is_ascii_alphanumeric())
+                .map_or(0, |i| i + 1);
+            if token_start < idx - 1 && input[token_start].is_ascii_uppercase() {
+                return None;
+            }
+        }
         // A quad directly after ':' sits inside an IPv6-shaped run
         // (`1::2::1.2.3.4`, `:::1.2.3.4`). If that run starts at a token
         // boundary it was an IPv6 candidate, and the dotted interior of a

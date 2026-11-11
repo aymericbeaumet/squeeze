@@ -2,11 +2,22 @@
 
 ## Tooling
 
-`mise.toml` pins Rust 1.99.1 with rustfmt and Clippy, plus Python 3.15.0.
-Run `mise trust`, then `mise install`. The committed `mise.lock` records resolved
-downloads for all six CI platforms; the mise action installs from it in locked
-mode. Update it with `mise lock` when changing tools. The minimum supported Rust
-version is 1.95; `mise run msrv` installs and tests that toolchain
+mise is the whole development environment: `mise.toml` pins Rust 1.99.1 with
+rustfmt and Clippy, Python 3.15.0, and every tool a task needs, and
+`mise tasks` lists every command. It also sets `min_version` to the mise
+release CI pins, since older ones cannot enforce the committed lockfile
+policy. Update mise through its original installation method when it
+refuses to load the config.
+Run `mise trust`, then `mise install`. Tasks declare their extra tools (the
+MSRV toolchain, hyperfine, ripgrep, watchexec, cargo-outdated, cargo-audit,
+ShellCheck, Zig, cargo-zigbuild, and the demo container CLI), which mise installs on first use; with `auto_install = false`, install them
+ahead of time with `mise install --include-task-tools`. The committed
+`mise.lock` records resolved downloads and checksums for all six CI
+platforms. `[tool_config] locked = true` makes project tools fail on missing
+lock entries, including task tools, without changing the policy for your
+global tools. The mise action also installs in locked mode. Run `mise lock`
+when changing tools; `lockfile_platforms` keeps all six platforms covered.
+The minimum supported Rust version is 1.95; `mise run msrv` installs and tests that toolchain
 independently of the development pin.
 The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
 toolchain cannot silently replace the minimum-version check.
@@ -22,18 +33,35 @@ that the domain and URI finders use to reject lookalikes such as `opts.all` or
 `key:value`. Refresh it with `mise run update-iana` (Python 3, network
 access) and review the diff; the registries change a few times a year.
 
-`mise run watch` and `mise run watch-check` use mise's watcher. The optional
+`mise run watch` and `mise run watch-check` use mise's watcher with the
+watchexec it pins. The optional
 `outdated` and `audit` tasks use Cargo extensions pinned by mise.
-`mise tasks` lists every task: one-liners live in `mise.toml`, longer ones
-such as `bench-cli` and `update-iana` are executable file tasks in
-`mise-tasks/`.
+One-liners live in `mise.toml`; longer ones such as `bench-cli`,
+`update-iana`, and `release-helper` are executable file tasks in
+`mise-tasks/`, which mise runs through their shebang on Windows too.
 
-Actions pins mise 2026.10.13, whose release assets cover all six platforms.
-Verify those assets before updating the pin. Workflow action revisions and
-container images are pinned to digests. Mise manages Rust through rustup. Its
-Actions tool cache is disabled, while
-`Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
+Actions pins mise 2026.11.6, whose release assets cover all six platforms.
+Verify those assets before updating the pin, and move `min_version` in
+`mise.toml` with it. Workflow action revisions and
+container images are pinned to digests. Mise manages Rust through rustup,
+including extra targets via
+`mise run rust-target -- <target>`. Native CI jobs give mise an isolated
+rustup home and an explicit host triple so preinstalled toolchains cannot
+select the wrong architecture on Windows ARM64. Its Actions tool cache is
+disabled, while `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
+
+A native linker and SDK remain operating-system prerequisites: Xcode Command
+Line Tools on macOS, a C toolchain on Linux, or MSVC Build Tools on Windows.
+Linux static builds use mise-pinned Zig and cargo-zigbuild, which provide
+the musl C compiler and linker without a system package install. Run
+`mise run rust-target -- <target>`, then
+`mise run release-musl -- --target <target>`, with
+`x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`. CI and releases
+verify static linkage and execute each binary in Alpine on its native
+architecture.
+`bench-cli` pins its required tools; optional GNU/BSD grep and ugrep are
+comparisons against the versions on the host and are skipped when absent.
 
 ## Releases
 
@@ -42,9 +70,12 @@ The root `Cargo.toml` defines the `squeeze-cli` package and the workspace;
 integration tests live in `squeeze-cli/`, with explicit Cargo target paths.
 `cargo install --path . --locked` installs the local `squeeze` binary, and
 `cargo test` defaults to both workspace packages.
-Run `mise run package` from a clean checkout to build both publication
-archives and verify the CLI against the packaged library. CI also checks
-this and installs the CLI from the repository root.
+Only `squeeze-lib` is published to crates.io. The CLI sets `publish = false`
+and ships as the release archives (Homebrew, mise's GitHub backend) or builds
+with `cargo install --locked --git https://github.com/aymericbeaumet/squeeze`.
+Run `mise run package` from a clean checkout to build and verify the library's
+crates.io archive. CI also checks this and installs the CLI from the
+repository root.
 
 To release, keep the `squeeze-lib` package in `squeeze-lib/Cargo.toml`, the
 `squeeze-cli` package in `Cargo.toml`, and the CLI's library
@@ -87,21 +118,33 @@ release. The workflow uses the repository's `GITHUB_TOKEN` with `contents: write
 After publication, the Homebrew job writes `Formula/squeeze.rb` in
 `aymericbeaumet/homebrew-tap` from the release's `SHA256SUMS`: the formula
 installs the prebuilt macOS and Linux archives and generates shell
-completions. It requires `HOMEBREW_TAP_TOKEN` with write access to the tap.
-The crates job publishes `squeeze-lib` to crates.io first, waits for the
-registry to serve that version, then publishes `squeeze-cli` with its matching
-library dependency. If either crate version is unpublished, the prepare job
-requires `CARGO_REGISTRY_TOKEN` before the new release can proceed. Because
-crates.io publications are permanent, rerunning a failed crates job skips
-versions that were already published.
+completions. The crates job publishes `squeeze-lib` to crates.io once every
+platform's build and tests pass. Because crates.io publications are
+permanent, rerunning a failed crates job skips a version that was already
+published.
+
+The three install paths of the readme map to these outputs: Homebrew to the
+tap's formula, mise's `github:` backend to the release archives, and
+`cargo install --git` to the repository itself. The release needs two
+repository secrets, which the prepare job checks before building anything:
+
+| Secret | Used by | Required when |
+| --- | --- | --- |
+| `HOMEBREW_TAP_TOKEN` | the Homebrew job and the nightly formula | a new release is built; needs contents write access to `aymericbeaumet/homebrew-tap` |
+| `CARGO_REGISTRY_TOKEN` | the crates job | the `squeeze-lib` version is not on crates.io yet; needs the publish-update scope |
 
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
-`docs/demo/demo.tape` with VHS in a container (Colima on macOS).
+`docs/demo/demo.tape` with VHS in a container on Linux or macOS. Mise pins
+the container CLI and both images by digest. Start Colima on macOS or use
+the native container engine on Linux before running the task.
 
-Release helpers use Python 3.11+ and the standard library. Run
-`mise run release-check` to validate workflows with actionlint 1.7.12 and run
-the helper tests with pinned Python 3.15.0. Release jobs use the same mise
-environment and `mise run release-helper` to invoke the helper. If publication
+The release helper, `mise-tasks/release-helper`, uses Python 3.11+ and the
+standard library; `mise-tasks/test_release_helper.py` tests it. Run
+`mise run release-check` to validate workflows with actionlint 1.7.12 and ShellCheck 0.11.0, and run
+those tests with pinned Python 3.15.0. Release jobs use the same mise
+environment and `mise run release-helper` to invoke the helper, and so does
+the nightly workflow, whose `nightly` command points the tap's
+`squeeze-nightly` formula, built from source, at every push to `main`. If publication
 fails after creating a tag,
 rerun the failed workflow at its original commit or dispatch it on that tag.
 An existing tag pointing at another commit is rejected. If only the Homebrew

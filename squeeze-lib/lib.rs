@@ -34,6 +34,10 @@
 //! runs. See `docs/performance.md` in the repository for the architecture,
 //! the contracts finders follow, and how to measure.
 //!
+//! Configuring finders and scanners can fail with a typed [`Error`], such as
+//! an unknown hash algorithm or codetag mnemonic with the closest valid name;
+//! scanning itself never fails.
+//!
 //! ## Example
 //!
 //! ```
@@ -56,6 +60,7 @@ pub mod domain;
 pub mod email;
 pub mod emoji;
 pub mod env;
+mod error;
 pub mod handle;
 pub mod hash;
 pub(crate) mod iana;
@@ -75,6 +80,8 @@ pub mod semver;
 pub mod uri;
 pub mod uuid;
 pub(crate) mod word;
+
+pub use error::Error;
 
 use std::ops::Range;
 

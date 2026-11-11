@@ -1,5 +1,12 @@
+# The mise version CI pins: older ones rewrite mise.lock in an older format.
+min_version = "2026.11.6"
+
 [settings]
 lockfile = true
+lockfile_platforms = ["linux-arm64", "linux-x64", "macos-arm64", "macos-x64", "windows-arm64", "windows-x64"]
+
+[tool_config]
+locked = true
 
 [tools]
 rust = { version = "1.99.1", profile = "minimal", components = [
@@ -17,9 +24,15 @@ run = "cargo build --workspace --locked"
 description = "Build the optimized CLI"
 run = "cargo build --release --locked -p squeeze-cli"
 
+[tasks.release-musl]
+description = "Build the static Linux CLI (pass --target <triple>)"
+tools.zig = "0.17.1"
+tools."aqua:rust-cross/cargo-zigbuild" = "0.24.1"
+run = "cargo zigbuild --release --locked -p squeeze-cli"
+
 [tasks.package]
-description = "Package and verify both crates for publication"
-run = "cargo package --workspace --locked"
+description = "Package and verify the library crate for crates.io"
+run = "cargo package -p squeeze-lib --locked"
 
 [tasks.test]
 description = "Run workspace tests and doctests"
@@ -29,6 +42,7 @@ run = [
 ]
 
 [tasks.test-verbose]
+description = "Run workspace tests with their output"
 run = "cargo test --workspace --locked -- --nocapture"
 
 [tasks.bench]
@@ -76,6 +90,7 @@ run = [
 ]
 
 [tasks.clean]
+description = "Remove build outputs"
 run = "cargo clean"
 
 [tasks.install]
@@ -84,7 +99,7 @@ run = "cargo install --locked --path ."
 
 [tasks.msrv]
 description = "Build and test with the minimum supported Rust version"
-tools.rust = "1.95.0"
+tools.rust = { version = "1.95.0", profile = "minimal" }
 env.RUSTUP_TOOLCHAIN = "1.95.0"
 run = [
   "cargo build --workspace --locked",
@@ -94,6 +109,7 @@ run = [
 
 [tasks.release-check]
 description = "Validate workflows and release helpers"
+tools.shellcheck = "0.11.0"
 run = [
   "actionlint",
   { task = "release-helper-tests" },
@@ -101,35 +117,43 @@ run = [
 
 [tasks.release-helper-tests]
 description = "Test the release helper"
-run = "python3 -m unittest discover -s .github/scripts -p 'test_*.py'"
-
-[tasks.release-helper]
-description = "Run the release helper (pass its command and options after --)"
-run = "python3 .github/scripts/release.py"
+run = "python3 -m unittest discover -s mise-tasks -p 'test_*.py'"
 
 [tasks.watch]
+description = "Rerun the tests on every change"
+tools.watchexec = "2.8.0"
 run = "mise watch test"
 
 [tasks.watch-check]
+description = "Rerun every check on every change"
+tools.watchexec = "2.8.0"
 run = "mise watch check"
 
 [tasks.update]
+description = "Update Cargo.lock within the manifest requirements"
 run = "cargo update"
 
 [tasks.outdated]
+description = "List outdated crates"
 tools."github:kbknapp/cargo-outdated" = "0.19.0"
 run = "cargo outdated"
 
 [tasks.audit]
+description = "Audit crates for security advisories"
 tools."aqua:rustsec/rustsec/cargo-audit" = "0.22.2"
 run = "cargo audit"
 
 [tasks.demo]
 description = "Record the readme demo into docs/demo/demo.gif (Colima on macOS)"
+tools.docker-cli = { version = "29.9.3", os = ["linux", "macos"] }
 run = [
-  "docker run --rm -v \"$PWD:/src\" -v squeeze-demo-cargo:/usr/local/cargo/registry -w /src rust:1.99.1-alpine@sha256:32442d80d49d2b4beffcf91dbe7cedc657cad821e91680a0db3f8e9ee23aad18 cargo build --release --locked -p squeeze-cli --target-dir target/demo",
+  "docker run --rm -v \"$PWD:/src\" -v squeeze-demo-cargo:/usr/local/cargo/registry -w /src rust:1.99.1-alpine@sha256:557a94c82b485a14b569120e00867267108c734efe33f10cc31ca0cd5dd1eca9 cargo build --release --locked -p squeeze-cli --target-dir target/demo",
   "docker run --rm -v \"$PWD:/vhs\" ghcr.io/charmbracelet/vhs:v0.12.1@sha256:ea49a6a1c529be83153e88321892b5585964418f0b9055e8c1e0d732194234a3 docs/demo/demo.tape",
 ]
+
+[tasks.rust-target]
+description = "Install an extra compilation target with the pinned Rust toolchain"
+run = "rustup target add"
 
 [tasks.run]
 description = "Run the CLI (pass options after --)"

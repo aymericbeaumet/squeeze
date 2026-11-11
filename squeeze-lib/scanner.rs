@@ -1,7 +1,6 @@
 use crate::classify::{self, BLOCK, Backend, CAT_NONE, CATEGORY, Lanes, Rules};
 use crate::search::{self, NibbleSet};
-use crate::{Anchor, ByteSet, Finder, Memo, RunCache, RunHint, RunRule, Runs};
-use std::fmt;
+use crate::{Anchor, ByteSet, Error, Finder, Memo, RunCache, RunHint, RunRule, Runs};
 use std::mem::MaybeUninit;
 use std::ops::Range;
 
@@ -204,21 +203,6 @@ fn can_skip_with_mask(cl: u16, required: &[(u16, bool)]) -> bool {
 }
 
 const MAX_FINDERS: usize = 32;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ScannerError {
-    TooManyFinders { len: usize, max: usize },
-}
-
-impl fmt::Display for ScannerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScannerError::TooManyFinders { len, max } => {
-                write!(f, "too many finders: got {}, max is {}", len, max)
-            }
-        }
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Match {
@@ -984,13 +968,20 @@ pub struct Scanner {
 }
 
 impl Scanner {
+    /// Builds a scanner running `finders` together.
+    ///
+    /// # Panics
+    ///
+    /// With more finders than [`Scanner::try_new`] accepts.
     pub fn new(finders: Vec<Box<dyn Finder>>) -> Self {
         Self::try_new(finders).expect("too many finders")
     }
 
-    pub fn try_new(finders: Vec<Box<dyn Finder>>) -> Result<Self, ScannerError> {
+    /// Builds a scanner running `finders` together, or returns
+    /// [`Error::TooManyFinders`] beyond 32 finders.
+    pub fn try_new(finders: Vec<Box<dyn Finder>>) -> Result<Self, Error> {
         if finders.len() > MAX_FINDERS {
-            return Err(ScannerError::TooManyFinders {
+            return Err(Error::TooManyFinders {
                 len: finders.len(),
                 max: MAX_FINDERS,
             });
@@ -2943,7 +2934,7 @@ mod tests {
             .collect();
         assert!(matches!(
             Scanner::try_new(finders),
-            Err(ScannerError::TooManyFinders {
+            Err(Error::TooManyFinders {
                 len,
                 max,
             })

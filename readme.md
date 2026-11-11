@@ -25,7 +25,8 @@ https://status.example.com
   punctuation and balanced parentheses in links.
 - Reads pipes, files, globs, and directory trees, respecting ignore files.
 - Prints one value per line, editor locations, or JSON, YAML, and CSV.
-- Available as a CLI and a [Rust library](#use-as-a-rust-library).
+- Fast: no regex engine, SIMD scanning, and every core on large inputs.
+- Available as a CLI and a [Rust library](#rust-library).
 
 ## Install
 
@@ -41,34 +42,36 @@ brew install aymericbeaumet/tap/squeeze
 mise use -g github:aymericbeaumet/squeeze
 ```
 
-**Cargo** (Rust 1.95+):
+**Cargo** (Rust 1.95+), from source:
 
 ```shell
-cargo install --locked squeeze-cli
+cargo install --locked --git https://github.com/aymericbeaumet/squeeze
 ```
 
-All three install the `squeeze` command. Prebuilt binaries support Linux,
-macOS, and Windows on amd64 and arm64. You can also download them from
+All three install the `squeeze` command. Prebuilt binaries for Linux, macOS,
+and Windows on amd64 and arm64 are also on
 [GitHub Releases](https://github.com/aymericbeaumet/squeeze/releases/latest),
-verify the archive against `SHA256SUMS`, and put the binary on your `PATH`.
-
-**Shell completions**: `squeeze --completions <shell>` prints the script for
-bash, zsh, fish, elvish, or PowerShell; Homebrew installs them for you.
+with `SHA256SUMS` for verifying downloads.
 
 ## Usage
 
-Pick one or more finders, or none to run all of them. Results contain one
-matched value per line; use `--with-kind` to label them. With no path, or
-with `-`, squeeze reads stdin. Paths can be files, directories, or quoted
-glob patterns. Directory scans skip hidden entries, ignored paths, and
-binary files.
+Pick one or more finders, or none to run all of them. With no path, squeeze
+reads stdin.
+
+Try this in your terminal; it needs no files or network access:
 
 ```shell
-# Everything squeeze recognizes in a file, one value per line
-squeeze app.log
+echo 'Contact ops@example.com about [the docs](https://example.com/docs).' | squeeze --email --url
+```
 
-# Unique URLs on a web page
-curl -s https://example.com | squeeze --url --uniq
+```text
+ops@example.com
+https://example.com/docs
+```
+
+```shell
+# Everything squeeze recognizes in a file
+squeeze app.log
 
 # Everyone who committed to a repository
 git log --format='%an <%ae>' | squeeze --email --sort --uniq
@@ -79,28 +82,21 @@ kubectl logs deploy/api | squeeze --ip --uuid --datetime --with-kind
 # TODOs and FIXMEs across a repository, with locations your editor understands
 squeeze --todo --fixme --with-location .
 
-# Rust sources only
-squeeze --todo --fixme --with-location 'src/**/*.rs'
-
-# Extract URLs as JSON, with match locations
-squeeze --url --with-location --output json notes.md
+# URLs as JSON, with their kind and position
+squeeze --url --with-kind --output json notes.md
 ```
 
-With several finders, results come out in the order they appear:
+The [usage guide](docs/usage.md) covers every option, and
+[integrations](docs/integrations.md) has recipes for vim, tmux, fzf, and your
+shell.
 
-```console
-$ echo '2026-01-15T10:30:00Z GET /health from 10.0.4.2 took 3ms' | squeeze --datetime --ip --with-kind
-datetime  2026-01-15T10:30:00Z
-ip        10.0.4.2
-```
-
-### Finders
+## What it finds
 
 | Finder | Flag | Examples |
 |--------|------|----------|
 | CIDR | `--cidr` | `192.168.1.0/24`, `2001:db8::/32` |
 | Codetags | `--codetag`, `--todo`, `--fixme` | `TODO: fix this`, `FIXME(#42): bug` |
-| Colors | `--color` | `#ff0000`, `rgb(255, 0, 0)`, `hsl(0, 100%, 50%)` |
+| Colors | `--css-color` | `#ff0000`, `rgb(255, 0, 0)`, `hsl(0, 100%, 50%)` |
 | Datetimes | `--datetime` | `2024-01-15`, `2024-01-15T10:30:00Z` |
 | Domains | `--domain` | `example.com`, `mail.example.co.uk` |
 | Emails | `--email` | `user@example.com`, `first.last+tag@company.co.uk` |
@@ -119,109 +115,31 @@ ip        10.0.4.2
 | URIs | `--uri`, `--url`, `--http`, `--https` | `https://example.com`, `mailto:hi@example.com` |
 | UUIDs | `--uuid` | `550e8400-e29b-41d4-a716-446655440000` |
 
-Some finders take a filter: `--codetag=todo,fixme`, `--hash=sha256`,
-`--uri=https,ssh`. `--url` is shorthand for the schemes people usually mean
-by a URL (`http`, `https`, `ftp`, `mailto`, …); `--uri` accepts any scheme.
-
 Finders favor precision over recall: they recognize common formats and may
-skip unusual valid values. They extract candidates, without checking whether
-a URL is reachable or an email address exists. Use `--strict` for URI
-syntax following RFC 3986.
-
-### Output options
-
-| Flag | Description |
-|------|-------------|
-| `-1`, `--first` | stop after the first result |
-| `--last` | only print the last result |
-| `--sort` | sort the results |
-| `--uniq` | deduplicate the results, keeping the first occurrence |
-| `--with-kind` | print the finder name (`uri`, `email`, …) with each result, aligned in a terminal and tab-separated otherwise |
-| `--with-location` | print `path:line:column:` before each result |
-| `--output <fmt>` | `text` (default), `json`, `yaml`, `csv`, or `none` |
-| `--no-overlap` | drop matches that overlap an earlier one (`--precedence longest` keeps the longest instead) |
-| `--copy` | copy the results to the clipboard |
-| `--open` | open each result with the default application |
-| `-j`, `--jobs <N>` | scanning threads; `auto` (default) uses every core for directories, stdin, and files of 8 MiB and more, output of a single input kept in order |
-
-Walking a directory:
-
-| Flag | Description |
-|------|-------------|
-| `--hidden` | also search hidden files and directories (`.git` is always skipped) |
-| `--no-ignore` | do not respect `.gitignore`, `.ignore`, and git exclude rules |
-| `--follow` | follow symbolic links |
-
-JSON and YAML return lists of values by default; CSV returns one value per
-row. With `--with-kind` or `--with-location`, structured output includes
-`kind`, `value`, `line`, `column`, `start`, `end`, and `source`. Lines and
-columns start at 1; byte offsets start at 0 and the end is exclusive.
-
-Matches can overlap: a URL can also contain a domain or an IP address.
-Use `--no-overlap` to suppress overlapping results. Run `squeeze --help`
-for the full list of options.
-
-## Integrations
-
-### vim/nvim
-
-Press `Enter` in visual mode to open the first URL in the selection:
-
-```vim
-" ~/.vimrc
-vnoremap <silent> <CR> :<C-U>'<,'>w !squeeze -1 --url --open<CR><CR>
-```
-
-Load every TODO and FIXME of a project into the quickfix list:
-
-```vim
-:cexpr system("squeeze --todo --fixme --with-location 'src/**/*'")
-```
-
-### tmux
-
-Press `Enter` in copy mode to open the first URL in the selection:
-
-```tmux
-# ~/.tmux.conf
-bind -T copy-mode-vi enter send -X copy-pipe-and-cancel "squeeze -1 --url --open"
-```
-
-### fzf
-
-Pick a URL from the scrollback of the current tmux pane and open it:
-
-```shell
-tmux capture-pane -pJ -S - | squeeze --url --uniq | fzf --tac | squeeze --url --open
-```
-
-### Shell
-
-List the URLs from your shell history, most recent first:
-
-```shell
-# ~/.bashrc, ~/.zshrc
-urls() { fc -rl 1 | squeeze --url --uniq; }
-```
+skip unusual valid values. They extract candidates; they do not check whether
+a URL is reachable, an email address exists, or a JWT is authentic. Matches
+can overlap (a URL can contain an IP); use `--precedence longest` to keep
+the longest overlapping match. Use grep or ripgrep for custom patterns.
+Found something squeeze gets wrong?
+[Report it](https://github.com/aymericbeaumet/squeeze/issues/new?template=wrong-match.yml)
+with a sample input.
 
 ## Performance
 
 No regex engine is involved: SIMD searches and byte classification narrow the
-positions where a match can start. Big files, streams, and directory trees can
-be scanned across available cores; `-j 1` selects a single thread.
+positions where a match can start, and large files, streams, and directory
+trees are scanned across every core. On a generated 56 MiB mixed corpus,
+single-threaded squeeze used 18 ms of CPU to extract URLs versus ripgrep's
+35 ms. The tools use different URL grammars and return different match counts.
+See the [benchmarks](docs/performance.md#cli-benchmarks) for the commands,
+data, and limitations.
 
-On a generated 56 MiB mixed corpus, single-threaded squeeze used 18 ms of CPU
-to extract URLs versus ripgrep's 35 ms. The tools use different URL grammars
-and return different match counts. See the [benchmarks](docs/performance.md#cli-benchmarks)
-for the commands, data, results, and limitations.
+## Rust library
 
-## Use as a Rust library
+The finders are available as the `squeeze-lib` crate, imported as `squeeze`:
 
-Add `squeeze-lib`, imported as `squeeze`:
-
-```toml
-[dependencies]
-squeeze = { package = "squeeze-lib", version = "1.0" }
+```shell
+cargo add squeeze-lib
 ```
 
 ```rust
@@ -236,23 +154,16 @@ for m in scanner.scan_line(line) {
 }
 ```
 
-See the [API documentation](https://docs.rs/squeeze-lib) for individual
-finders and scanner options.
+Configuring a finder returns a typed `squeeze::Error`, such as an unknown
+hash algorithm with a suggested fix; scanning never fails. See the
+[API documentation](https://docs.rs/squeeze-lib) for individual finders and
+scanner options.
 
-## Development
+## Contributing
 
-Install [mise](https://mise.jdx.dev/getting-started.html), then run the same
-checks as CI:
-
-```shell
-mise trust
-mise install
-mise run check
-```
-
-See [development and releases](docs/development.md) for the other tasks and
-the release process. Bug reports with a sample input that squeeze gets wrong
-are especially welcome.
+Bug reports, wrong matches, and pull requests are welcome. The
+[contributing guide](docs/contributing.md) explains how to set up the
+project, where things live, and how to change a finder.
 
 ## License
 

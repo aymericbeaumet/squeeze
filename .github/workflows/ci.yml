@@ -15,16 +15,17 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.13
+          version: 2026.11.6
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Test release automation
         run: mise run release-check
       - run: mise run check
       - run: mise run release
-      - run: mise run package
+      - name: Package the library for crates.io
+        run: mise run package
       - name: Install from the repository root
         run: |
           mise run install -- --root "$RUNNER_TEMP/squeeze-install"
@@ -34,11 +35,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.13
+          version: 2026.11.6
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: msrv
       - run: mise run msrv
@@ -61,26 +62,29 @@ jobs:
           - runner: windows-11-arm
             target: aarch64-pc-windows-msvc
     runs-on: ${{ matrix.runner }}
+    env:
+      MISE_RUST_DEFAULT_HOST: ${{ matrix.target }}
+      MISE_RUSTUP_HOME: ${{ github.workspace }}/../squeeze-rustup
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Select native Rust host
-        env:
-          TARGET: ${{ matrix.target }}
-        run: rustup set default-host "$TARGET"
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.13
+          version: 2026.11.6
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Verify native Rust target
         env:
           TARGET: ${{ matrix.target }}
         run: |
           rustc -vV | grep -Fx "host: $TARGET"
       - run: mise run test
+      # Release builds package every platform with this file task; Windows
+      # runs it through its shebang.
+      - name: Run the release helper file task
+        run: mise run release-helper -- --help
 
   # Release binaries for Linux are static musl builds; catch breakage before a release.
   static-linux:
@@ -97,20 +101,15 @@ jobs:
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
-          version: 2026.10.13
+          version: 2026.11.6
           cache: false
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: static
-      - name: Add the static musl target
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq musl-tools
-          rustup target add "$TARGET"
-          echo "CC_${TARGET//-/_}=musl-gcc" >> "$GITHUB_ENV"
-      - run: mise run release -- --target "$TARGET"
+      - run: mise run rust-target -- "$TARGET"
+      - run: mise run release-musl -- --target "$TARGET"
       - name: Run the static binary on Alpine
         run: |
           file "target/$TARGET/release/squeeze" | tee /dev/stderr | grep -Eq 'static(ally|-pie) linked'

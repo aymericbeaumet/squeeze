@@ -1,3 +1,5 @@
+import datetime
+import importlib.machinery
 import importlib.util
 import io
 from contextlib import chdir
@@ -8,9 +10,10 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 
-spec = importlib.util.spec_from_file_location("release", Path(__file__).with_name("release.py"))
-release = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(release)
+# The helper is an extensionless mise file task.
+loader = importlib.machinery.SourceFileLoader("release", str(Path(__file__).with_name("release-helper")))
+release = importlib.util.module_from_spec(importlib.util.spec_from_loader("release", loader))
+loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -25,10 +28,12 @@ class ReleaseTests(unittest.TestCase):
         for status in (401, 403, 429, 500):
             with self.subTest(status=status):
                 error = HTTPError("https://api.github.com/test", status, "failed", {}, io.BytesIO())
+                self.addCleanup(error.close)
                 with patch.object(release, "urlopen", side_effect=error):
                     with self.assertRaises(HTTPError):
                         release.api("GET", "/test", allow_missing=True)
         error = HTTPError("https://api.github.com/test", 404, "missing", {}, io.BytesIO())
+        self.addCleanup(error.close)
         with patch.object(release, "urlopen", side_effect=error):
             self.assertIsNone(release.api("GET", "/test", allow_missing=True))
 
@@ -85,7 +90,7 @@ class ReleaseTests(unittest.TestCase):
         for token in ("true", ""):
             with self.subTest(token=token), patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": token}), \
                     patch.object(release, "crate_version", return_value="0.5.0"), \
-                    patch.object(release, "crate_published", side_effect=lambda name, _: name == "squeeze-lib"), \
+                    patch.object(release, "crate_published", return_value=False), \
                     patch.object(release, "api", return_value={"draft": False}), \
                     patch.object(release, "tag_commit", return_value="tagged"), \
                     patch.object(release, "output") as output:
@@ -95,6 +100,17 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "CARGO_REGISTRY_TOKEN is required"):
                         release.prepare()
+
+    def test_only_the_library_is_published_to_crates_io(self):
+        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": ""}), \
+                patch.object(release, "crate_version", return_value="0.5.0"), \
+                patch.object(release, "crate_published",
+                             side_effect=lambda name, _: name == "squeeze-lib") as published, \
+                patch.object(release, "api", return_value={"draft": False}), \
+                patch.object(release, "output") as output:
+            release.prepare()
+        published.assert_called_once_with("squeeze-lib", "0.5.0")
+        output.assert_any_call("publish_crates", "false")
 
     def test_crates_after_a_published_release_use_its_tagged_commit(self):
         def api(method, path, **kwargs):
@@ -118,7 +134,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_unreachable_crates_io_does_not_block_the_release(self):
         error = URLError("timed out")
-        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true"}), \
+        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true", "HAS_HOMEBREW_TOKEN": "true"}), \
                 patch.object(release, "crate_version", return_value="0.2.0"), \
                 patch.object(release, "urlopen", side_effect=error), \
                 patch.object(release, "api", return_value=None), \
@@ -129,20 +145,34 @@ class ReleaseTests(unittest.TestCase):
         output.assert_any_call("should_release", "true")
         output.assert_any_call("publish_crates", "true")
 
-    def test_crates_publish_in_dependency_order_and_skip_published(self):
-        published = {"squeeze-lib"}
-        with patch.object(release, "crate_published", side_effect=lambda name, _: name in published), \
-                patch.object(release.subprocess, "run") as run:
-            release.publish_crates("0.5.0")
-        run.assert_called_once_with(["cargo", "publish", "--locked", "--package", "squeeze-cli"], check=True)
-        self.assertEqual(release.PACKAGES, ("squeeze-lib", "squeeze-cli"))
+    def test_new_releases_need_the_tap_token(self):
+        for token in ("true", ""):
+            with self.subTest(token=token), \
+                    patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true", "HAS_HOMEBREW_TOKEN": token}), \
+                    patch.object(release, "crate_version", return_value="0.6.0"), \
+                    patch.object(release, "crate_published", return_value=True), \
+                    patch.object(release, "api", return_value=None), \
+                    patch.object(release, "ensure_tag"), \
+                    patch.object(release.subprocess, "check_output", return_value="commit\n"), \
+                    patch.object(release, "output") as output:
+                if token:
+                    release.prepare()
+                    output.assert_any_call("should_release", "true")
+                else:
+                    with self.assertRaisesRegex(ValueError, "HOMEBREW_TAP_TOKEN is required"):
+                        release.prepare()
 
-    def test_crates_publish_core_before_cli(self):
+    def test_crates_publish_only_the_library(self):
         with patch.object(release, "crate_published", return_value=False), \
                 patch.object(release.subprocess, "run") as run:
-            release.publish_crates("0.5.0")
-        self.assertEqual([call.args[0][-1] for call in run.call_args_list],
-                         ["squeeze-lib", "squeeze-cli"])
+            release.publish_crate("0.5.0")
+        run.assert_called_once_with(["cargo", "publish", "--locked", "--package", "squeeze-lib"], check=True)
+
+    def test_crates_skip_a_published_library(self):
+        with patch.object(release, "crate_published", return_value=True), \
+                patch.object(release.subprocess, "run") as run:
+            release.publish_crate("0.5.0")
+        run.assert_not_called()
 
     def test_registry_version_must_belong_to_this_repository(self):
         published = (b'{"version":{"crate":"squeeze-lib","num":"0.5.0",'
@@ -240,6 +270,29 @@ class ReleaseTests(unittest.TestCase):
                 body = puts[0].args[2]
                 self.assertEqual(body["message"], "chore: update squeeze to 0.2.0")
                 self.assertEqual(body.get("sha"), current and current["sha"])
+
+    def test_nightly_formula_builds_the_pushed_commit_from_source(self):
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        formula = release.nightly_formula(sha, datetime.date(2026, 10, 20), "f" * 64)
+        self.assertIn("class SqueezeNightly < Formula", formula)
+        self.assertIn(f'url "https://github.com/owner/repo/archive/{sha}.tar.gz"', formula)
+        self.assertIn('version "nightly-20261020-0123456"', formula)
+        self.assertIn(f'sha256 "{"f" * 64}"', formula)
+        self.assertIn('system "cargo", "install", *std_cargo_args(path: ".")', formula)
+        self.assertIn('pipe_output("#{bin}/squeeze --url"', formula)
+
+    def test_nightly_update_hashes_the_archive_and_writes_its_formula(self):
+        archive = b"source tarball"
+        with patch.object(release, "urlopen", return_value=io.BytesIO(archive)) as urlopen, \
+                patch.object(release, "api", return_value={"sha": "old", "content": "b2xk"}) as api:
+            release.update_nightly("0123456789abcdef", "owner/homebrew-tap")
+        self.assertEqual(urlopen.call_args.args[0], "https://github.com/owner/repo/archive/0123456789abcdef.tar.gz")
+        method, path, body = api.call_args_list[-1].args
+        self.assertEqual((method, path), ("PUT", "/repos/owner/homebrew-tap/contents/Formula/squeeze-nightly.rb"))
+        self.assertEqual(body["sha"], "old")
+        self.assertTrue(body["message"].startswith("squeeze-nightly nightly-"))
+        formula = release.base64.b64decode(body["content"]).decode()
+        self.assertIn(f'sha256 "{release.hashlib.sha256(archive).hexdigest()}"', formula)
 
 
 if __name__ == "__main__":

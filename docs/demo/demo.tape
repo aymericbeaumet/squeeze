@@ -21,7 +21,7 @@ Enter
 Sleep 3s
 
 Ctrl+L
-Type "squeeze server.log"
+Type "squeeze --with-kind server.log"
 Sleep 400ms
 Enter
 Sleep 4.5s
