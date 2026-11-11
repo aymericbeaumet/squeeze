@@ -10,15 +10,14 @@ policy. Update mise through its original installation method when it
 refuses to load the config.
 Run `mise trust`, then `mise install`. Tasks declare their extra tools (the
 MSRV toolchain, hyperfine, ripgrep, watchexec, cargo-outdated, cargo-audit,
-ShellCheck, and the demo container CLI),
-which mise installs on first use; with `auto_install = false`, install them
+ShellCheck, and the demo container CLI), which mise installs on first use; with `auto_install = false`, install them
 ahead of time with `mise install --include-task-tools`. The committed
 `mise.lock` records resolved downloads and checksums for all six CI
 platforms. `[tool_config] locked = true` makes project tools fail on missing
 lock entries, including task tools, without changing the policy for your
 global tools. The mise action also installs in locked mode. Run `mise lock`
-when changing tools; `lockfile_platforms` keeps all six platforms covered. The minimum supported Rust
-version is 1.95; `mise run msrv` installs and tests that toolchain
+when changing tools; `lockfile_platforms` keeps all six platforms covered.
+The minimum supported Rust version is 1.95; `mise run msrv` installs and tests that toolchain
 independently of the development pin.
 The MSRV task overrides `RUSTUP_TOOLCHAIN` so an inherited development
 toolchain cannot silently replace the minimum-version check.
@@ -44,12 +43,12 @@ One-liners live in `mise.toml`; longer ones such as `bench-cli`,
 Actions pins mise 2026.11.6, whose release assets cover all six platforms.
 Verify those assets before updating the pin, and move `min_version` in
 `mise.toml` with it. Workflow action revisions and
-container images are pinned to digests. Mise manages Rust through rustup, including extra targets via
+container images are pinned to digests. Mise manages Rust through rustup,
+including extra targets via
 `mise run rust-target -- <target>`. Native CI jobs give mise an isolated
 rustup home and an explicit host triple so preinstalled toolchains cannot
 select the wrong architecture on Windows ARM64. Its Actions tool cache is
-disabled, while
-`Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
+disabled, while `Swatinem/rust-cache` caches Cargo dependencies and build outputs; see the
 [mise action's Rust cache guidance](https://github.com/jdx/mise-action#rust-cache).
 
 A native linker and SDK remain operating-system prerequisites: Xcode Command

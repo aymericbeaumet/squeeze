@@ -93,7 +93,7 @@ run = "cargo install --locked --path ."
 
 [tasks.msrv]
 description = "Build and test with the minimum supported Rust version"
-tools.rust = "1.95.0"
+tools.rust = { version = "1.95.0", profile = "minimal" }
 env.RUSTUP_TOOLCHAIN = "1.95.0"
 run = [
   "cargo build --workspace --locked",
