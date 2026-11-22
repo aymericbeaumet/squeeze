@@ -684,6 +684,22 @@ fn precedence_implies_no_overlap() {
 }
 
 #[test]
+fn first_respects_longest_precedence_on_an_unterminated_stdin_line() {
+    squeeze()
+        .args([
+            "--first",
+            "--precedence",
+            "longest",
+            "--email",
+            "--datetime",
+        ])
+        .write_stdin("contact 2025-05-12@example.com then ops@example.org")
+        .assert()
+        .success()
+        .stdout("2025-05-12@example.com\n");
+}
+
+#[test]
 fn hide_mnemonic_drops_the_blanks_after_the_colon() {
     squeeze()
         .args(["--todo", "--hide-mnemonic"])

@@ -208,7 +208,9 @@ class ReleaseTests(unittest.TestCase):
     def test_failed_upload_stays_draft_and_retry_publishes_all_assets(self):
         calls = []
         uploaded = []
-        draft = {"id": 42, "draft": True, "upload_url": "https://uploads.github.com/assets{?name}"}
+        draft = {"id": 42, "tag_name": "v0.2.0", "draft": True,
+                 "upload_url": "https://uploads.github.com/assets{?name}"}
+        drafts = []
         fail_upload = True
 
         def api(method, path, data=None, **kwargs):
@@ -216,11 +218,21 @@ class ReleaseTests(unittest.TestCase):
             if path.endswith("git/ref/tags/v0.2.0"):
                 return {"object": {"type": "commit", "sha": "commit"}}
             if path.endswith("releases/tags/v0.2.0"):
+                return None
+            if path.endswith("/releases?per_page=100&page=1"):
+                return [{"id": i, "tag_name": f"v1.0.{i}", "draft": False} for i in range(100)]
+            if path.endswith("/releases?per_page=100&page=2"):
+                return drafts
+            if method == "POST" and path.endswith("/releases"):
+                self.assertFalse(drafts, "retry attempted to create another release")
+                drafts.append(draft)
                 return draft
             if path.endswith("/assets?per_page=100"):
-                return [{"id": 99, "name": "old-partial-asset"}]
+                return [{"id": 99}] if uploaded else []
+            if method == "DELETE" and path.endswith("/releases/assets/99"):
+                uploaded.clear()
             if method == "POST" and path.startswith("https://uploads.github.com"):
-                if fail_upload:
+                if fail_upload and uploaded:
                     raise RuntimeError("upload failed")
                 uploaded.append(path)
 
@@ -234,7 +246,8 @@ class ReleaseTests(unittest.TestCase):
                 self.assertFalse(any(method == "PATCH" for method, _, _ in calls))
                 fail_upload = False
                 release.publish("v0.2.0", "commit")
-            self.assertEqual(len(uploaded), 7)
+            self.assertEqual(len(set(uploaded)), 7)
+            self.assertIn(("DELETE", "/repos/owner/repo/releases/assets/99", None), calls)
             self.assertEqual(calls[-1], ("PATCH", "/repos/owner/repo/releases/42", {
                 "draft": False, "make_latest": "true",
             }))

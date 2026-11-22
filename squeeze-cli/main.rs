@@ -1195,7 +1195,7 @@ fn apply_overlap_policy(matches: &mut Vec<Match>, precedence: Precedence) {
 /// Scans one line, leaving the matches (with the overlap policy applied) in
 /// `matches`. The buffer is reused across lines to avoid per-line allocations.
 fn scan_line_matches_into(scanner: &Scanner, opts: &Opts, line: &str, matches: &mut Vec<Match>) {
-    if opts.first {
+    if opts.first && opts.precedence() == Precedence::First {
         matches.clear();
         if let Some(m) = scanner.scan_line_first(line) {
             matches.push(m);

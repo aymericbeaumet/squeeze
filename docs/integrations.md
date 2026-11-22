@@ -27,7 +27,8 @@ squeeze --url --sort --uniq --output json '**/*.md' > links.json
 
 Use `--with-location` to export objects with the source path, line, column,
 and matched value instead. Quote the glob so squeeze expands it consistently
-across shells. Directory and glob scans respect ignore files by default.
+across shells. Directory walks respect ignore files. A glob can select an
+ignored file directly and include its matches in the export.
 
 For a web page, squeeze finds absolute URLs present in the response:
 

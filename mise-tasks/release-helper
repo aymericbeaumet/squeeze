@@ -213,6 +213,20 @@ def package(tag, target, root=Path(".")):
     return destination
 
 
+def find_release(tag):
+    # The tag endpoint only returns published releases. The authenticated
+    # list includes drafts left behind by an interrupted upload.
+    page = 1
+    while True:
+        releases = api("GET", endpoint(f"releases?per_page=100&page={page}"))
+        for release in releases:
+            if release["tag_name"] == tag:
+                return release
+        if len(releases) < 100:
+            return None
+        page += 1
+
+
 def publish(tag, sha):
     expected = {archive_name(tag, target) for target in TARGETS}
     archives = sorted(path for path in Path("dist").iterdir() if path.name != "SHA256SUMS")
@@ -223,7 +237,7 @@ def publish(tag, sha):
         f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n" for path in archives
     ))
     ensure_tag(tag, sha, create=True)
-    existing = api("GET", endpoint(f"releases/tags/{tag}"), allow_missing=True)
+    existing = find_release(tag)
     if existing is not None and not existing["draft"]:
         raise ValueError(f"{tag} was published while building; refusing to replace its assets")
     if existing is None:
