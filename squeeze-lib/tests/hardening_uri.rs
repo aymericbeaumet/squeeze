@@ -433,7 +433,7 @@ fn punycode_hosts_still_match() {
 #[test]
 fn scheme_allowlist_still_filters() {
     let mut f = URI::default();
-    f.add_scheme("https");
+    f.add_scheme("https").unwrap();
     assert_eq!(None, f.find("http://insecure.com"));
     let input = "http://first.com https://second.com";
     assert_eq!(Some("https://second.com"), first(&f, input));
@@ -564,7 +564,7 @@ fn hierarchical_uris_accept_any_scheme() {
 #[test]
 fn scheme_filter_bypasses_the_registry() {
     let mut f = lax();
-    f.add_scheme("foo");
+    f.add_scheme("foo").unwrap();
     assert_eq!(Some("foo:bar"), first(&f, "see foo:bar"));
     assert_eq!(None, first(&f, "see foo: bar"));
 }

@@ -616,6 +616,30 @@ fn differential_zone_and_bracket_leniencies() {
 }
 
 // ============================================================================
+// Browser versions in user agents
+// ============================================================================
+
+const ACCESS_LOG: &str = r#"203.0.113.9 - - [28/Sep/2026:09:14:02 +0000] "GET / HTTP/1.1" 200 512 "-" "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0""#;
+
+#[test]
+fn ip_rejects_product_versions_in_user_agents() {
+    let f = Ip::default();
+    assert_eq!(find_all(&f, ACCESS_LOG), vec!["203.0.113.9"]);
+    assert!(f.find("OPR/114.0.0.0").is_none());
+    assert!(f.find("CriOS/131.0.0.0").is_none());
+}
+
+#[test]
+fn ip_after_lowercase_path_segment_still_matches() {
+    // Decision: only a capitalized `Product/` token marks a version; REST
+    // paths and URLs keep their addresses.
+    let f = Ip::default();
+    assert_eq!(find_str(&f, "GET /nodes/10.0.0.5/status"), Some("10.0.0.5"));
+    assert_eq!(find_str(&f, "http://10.0.0.1/x"), Some("10.0.0.1"));
+    assert_eq!(find_str(&f, "via 10.0.0.1/24"), Some("10.0.0.1"));
+}
+
+// ============================================================================
 // Scanner parity: dispatch mode vs the documented find() loop
 // ============================================================================
 
@@ -669,6 +693,9 @@ const PARITY_CORPUS: &[&str] = &[
     "网段 10.0.0.0/8。完",
     "ポート 001A.2B3C.4D5E。上",
     "🔌001A.2B3C.4D5E. ok",
+    ACCESS_LOG,
+    "GET /nodes/10.0.0.5/status",
+    "OPR/114.0.0.0 x/1.2.3.4 Edg/1.2.3.4/8",
 ];
 
 fn assert_scanner_parity(make: fn() -> Box<dyn Finder>) {

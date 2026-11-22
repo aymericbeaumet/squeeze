@@ -61,24 +61,36 @@ impl Path {
         end
     }
 
-    /// Extends a path from its prefix up to whitespace or a backtick (a
-    /// Markdown code span delimiter), then strips trailing punctuation that's
-    /// likely sentence-level, not path-level. `:digits` line references
-    /// survive because the colon is not trailing — it's followed by digits.
+    /// Extends a path from its prefix up to whitespace, a backtick (a
+    /// Markdown code span delimiter) or markup (`"`, `<`, `>`: the end of an
+    /// HTML attribute or tag, or a shell redirect), then strips trailing
+    /// punctuation that's likely sentence-level, not path-level. `:digits`
+    /// line references survive because the colon is not trailing — it's
+    /// followed by digits.
     ///
     /// Returns `None` unless the body names something: `//`, `///` and `/*`
-    /// are comment markers.
+    /// are comment markers, and `</p>` closes an HTML tag.
     fn match_end(input: &[u8], start: usize, prefix_len: usize) -> Option<usize> {
         let body_start = start + prefix_len;
         let mut end = body_start;
-        while end < input.len() && !input[end].is_ascii_whitespace() && input[end] != b'`' {
+        while end < input.len()
+            && !input[end].is_ascii_whitespace()
+            && !matches!(input[end], b'`' | b'"' | b'<' | b'>')
+        {
             end += 1;
         }
         let end = Self::strip_trailing(input, start, body_start, end);
-        let names_something = input[body_start..end]
+        let body = &input[body_start..end];
+        let names_something = body
             .iter()
             .any(|&b| b.is_ascii_alphanumeric() || b >= 0x80 || matches!(b, b'.' | b'_' | b'-'));
-        names_something.then_some(end)
+        // A single segment after `</` is a tag name; `</etc/x>` stays a path.
+        let closes_tag = prefix_len == 1
+            && start > 0
+            && input[start - 1] == b'<'
+            && body.first().is_some_and(u8::is_ascii_alphabetic)
+            && body.iter().all(|&b| b.is_ascii_alphanumeric() || b == b'-');
+        (names_something && !closes_tag).then_some(end)
     }
 
     fn find_prefix(&self, input: &[u8], from: usize) -> Option<(usize, usize)> {

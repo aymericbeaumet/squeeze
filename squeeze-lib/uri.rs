@@ -9,7 +9,7 @@
 //! use squeeze::{uri::URI, Finder};
 //!
 //! let mut finder = URI::default();
-//! finder.add_scheme("https"); // Only match https URLs
+//! finder.add_scheme("https").unwrap(); // Only match https URLs
 //!
 //! let text = "Visit https://example.com or http://other.com";
 //! if let Some(range) = finder.find(text) {
@@ -286,10 +286,24 @@ impl Finder for URI {
 }
 
 impl URI {
+    /// The schemes people usually mean by a URL, which the CLI's `--url`
+    /// selects.
+    pub const URL_SCHEMES: [&'static str; 9] = [
+        "data", "ftp", "ftps", "http", "https", "mailto", "sftp", "ws", "wss",
+    ];
+
+    /// Whether `scheme`, ASCII case ignored, is registered with
+    /// [IANA](https://www.iana.org/assignments/uri-schemes/).
+    pub fn is_registered_scheme(scheme: &str) -> bool {
+        is_registered_scheme(scheme)
+    }
+
     /// Adds a scheme to the filter list.
     ///
     /// When at least one scheme is added, only URIs with matching schemes will be found.
-    /// Scheme matching is case-insensitive.
+    /// Scheme matching is case-insensitive. A name that is not an RFC 3986
+    /// scheme leaves the finder unchanged and returns
+    /// [`Error::InvalidScheme`](crate::Error::InvalidScheme).
     ///
     /// # Example
     ///
@@ -297,12 +311,22 @@ impl URI {
     /// use squeeze::{uri::URI, Finder};
     ///
     /// let mut finder = URI::default();
-    /// finder.add_scheme("https");
-    /// finder.add_scheme("mailto");
+    /// finder.add_scheme("https")?;
+    /// finder.add_scheme("mailto")?;
+    /// assert!(finder.add_scheme("not a scheme").is_err());
     ///
     /// // Will match https:// and mailto: URIs, but not http:// or ftp://
+    /// # Ok::<(), squeeze::Error>(())
     /// ```
-    pub fn add_scheme(&mut self, s: &str) {
+    pub fn add_scheme(&mut self, s: &str) -> Result<(), crate::Error> {
+        let mut bytes = s.bytes();
+        let valid = bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
+            && bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+        if !valid {
+            return Err(crate::Error::InvalidScheme {
+                name: s.to_string(),
+            });
+        }
         let lower = s.to_lowercase();
         if let Some(&last) = lower.as_bytes().last() {
             self.scheme_ends[usize::from(last >> 6)] |= 1 << (last & 63);
@@ -310,6 +334,7 @@ impl URI {
         if let Err(pos) = self.schemes.binary_search(&lower) {
             self.schemes.insert(pos, lower);
         }
+        Ok(())
     }
 
     fn try_at_colon(&self, input: &[u8], colon_idx: usize) -> Option<Range<usize>> {
@@ -1596,7 +1621,7 @@ mod tests {
     #[test]
     fn it_should_filter_by_scheme() {
         let mut finder = URI::default();
-        finder.add_scheme("https");
+        finder.add_scheme("https").unwrap();
 
         // Should match https
         let input1 = "https://secure.com";
@@ -1617,7 +1642,7 @@ mod tests {
     #[test]
     fn it_should_handle_scheme_case_insensitivity() {
         let mut finder = URI::default();
-        finder.add_scheme("HTTP");
+        finder.add_scheme("HTTP").unwrap();
 
         // Should match lowercase http
         let input = "http://example.com";
@@ -1640,19 +1665,35 @@ mod tests {
     #[test]
     fn add_scheme_deduplicates() {
         let mut finder = URI::default();
-        finder.add_scheme("http");
-        finder.add_scheme("http");
-        finder.add_scheme("HTTP");
+        finder.add_scheme("http").unwrap();
+        finder.add_scheme("http").unwrap();
+        finder.add_scheme("HTTP").unwrap();
         assert_eq!(finder.schemes.len(), 1);
     }
 
     #[test]
     fn add_scheme_multiple_sorted() {
         let mut finder = URI::default();
-        finder.add_scheme("https");
-        finder.add_scheme("ftp");
-        finder.add_scheme("http");
+        finder.add_scheme("https").unwrap();
+        finder.add_scheme("ftp").unwrap();
+        finder.add_scheme("http").unwrap();
         assert_eq!(finder.schemes, vec!["ftp", "http", "https"]);
+    }
+
+    #[test]
+    fn add_scheme_rejects_invalid_names() {
+        let mut finder = URI::default();
+        for name in ["", "1http", "http:", "my app", "ht/tp"] {
+            assert_eq!(
+                Err(crate::Error::InvalidScheme {
+                    name: name.to_string()
+                }),
+                finder.add_scheme(name)
+            );
+        }
+        assert!(finder.schemes.is_empty());
+        finder.add_scheme("git+ssh").unwrap();
+        finder.add_scheme("iris.beep").unwrap();
     }
 
     // --- Regression: look_pchar branch order ---

@@ -72,7 +72,7 @@ fn make_finder(id: &str) -> Box<dyn Finder> {
         "hash" => {
             let mut hash = Hash::default();
             for algorithm in ["md5", "sha1", "sha256", "sha512"] {
-                assert!(hash.add_algorithm(algorithm));
+                hash.add_algorithm(algorithm).unwrap();
             }
             Box::new(hash)
         }

@@ -104,9 +104,9 @@ impl NibbleSet {
             set.hi[h] |= 1 << bucket;
         }
         for (bucket, &pattern) in buckets.iter().enumerate() {
-            for lo in 0..16 {
+            for (lo, mask) in set.lo.iter_mut().enumerate() {
                 if pattern & (1 << lo) != 0 {
-                    set.lo[lo] |= 1 << bucket;
+                    *mask |= 1 << bucket;
                 }
             }
         }

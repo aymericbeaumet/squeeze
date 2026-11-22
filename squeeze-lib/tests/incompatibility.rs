@@ -66,7 +66,7 @@ fn domain_and_email_both_match_when_distinct() {
 #[test]
 fn domain_and_url_on_url_yields_only_url() {
     let mut uri = URI::default();
-    uri.add_scheme("https");
+    uri.add_scheme("https").unwrap();
     let scanner = Scanner::new(vec![Box::new(Domain::default()), Box::new(uri)]);
     let spans = matched_spans(&scanner, "see https://example.com today");
     assert_eq!(spans, vec![("uri", "https://example.com")]);
@@ -75,7 +75,7 @@ fn domain_and_url_on_url_yields_only_url() {
 #[test]
 fn domain_and_url_both_match_when_distinct() {
     let mut uri = URI::default();
-    uri.add_scheme("https");
+    uri.add_scheme("https").unwrap();
     let scanner = Scanner::new(vec![Box::new(Domain::default()), Box::new(uri)]);
     let spans = matched_spans(&scanner, "https://example.com or foo.org");
     assert_eq!(
@@ -148,8 +148,8 @@ fn path_takes_precedence_over_domain_inside_paths() {
 #[test]
 fn modeline_and_url_do_not_conflict() {
     let mut uri = URI::default();
-    uri.add_scheme("http");
-    uri.add_scheme("https");
+    uri.add_scheme("http").unwrap();
+    uri.add_scheme("https").unwrap();
     let scanner = Scanner::new(vec![Box::new(Modeline::default()), Box::new(uri)]);
     let spans = matched_spans(&scanner, "// vim: ts=4 see http://example.com");
     let ids: Vec<&str> = spans.iter().map(|(id, _)| *id).collect();

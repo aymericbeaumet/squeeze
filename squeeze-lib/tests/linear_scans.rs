@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 fn all_finders() -> Vec<Box<dyn Finder>> {
     let mut hash = squeeze::hash::Hash::default();
     for algorithm in ["md5", "sha1", "sha256", "sha512"] {
-        assert!(hash.add_algorithm(algorithm));
+        hash.add_algorithm(algorithm).unwrap();
     }
     vec![
         Box::new(squeeze::cidr::Cidr::default()),

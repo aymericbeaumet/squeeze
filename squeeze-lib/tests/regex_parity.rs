@@ -129,7 +129,15 @@ fn codetag_regex(mnemonics: &[&str]) -> Regex {
 
 fn codetag_find_regex(re: &Regex, s: &str, hide: bool) -> Option<Range<usize>> {
     let m = re.find(s)?;
-    let from = if hide { m.end() } else { m.start() };
+    let from = if hide {
+        m.end()
+            + s[m.end()..]
+                .bytes()
+                .take_while(|&b| b == b' ' || b == b'\t')
+                .count()
+    } else {
+        m.start()
+    };
     let to = s.len();
     if from >= to { None } else { Some(from..to) }
 }
@@ -338,7 +346,7 @@ fn custom_mnemonics_match_the_former_regex() {
     );
     let mut finder = Codetag::default();
     for m in mnemonics {
-        finder.add_mnemonic(m);
+        finder.add_custom_mnemonic(m).unwrap();
     }
     for s in [
         "fix-me: now",

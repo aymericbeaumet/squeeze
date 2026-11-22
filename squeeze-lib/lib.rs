@@ -34,6 +34,24 @@
 //! runs. See `docs/performance.md` in the repository for the architecture,
 //! the contracts finders follow, and how to measure.
 //!
+//! Configuring finders and scanners can fail with a typed [`Error`], such as
+//! an unknown hash algorithm or codetag mnemonic with the closest valid name;
+//! scanning itself never fails.
+//!
+//! ## Upgrading from 1.x
+//!
+//! [`Scanner::try_new`](scanner::Scanner::try_new) now uses [`Error`] as its error type.
+//! Replace `scanner::ScannerError::TooManyFinders` with
+//! [`Error::TooManyFinders`] and include a fallback arm when matching this
+//! non-exhaustive enum.
+//!
+//! [`Hash::add_algorithm`](hash::Hash::add_algorithm),
+//! [`URI::add_scheme`](uri::URI::add_scheme), and
+//! [`Codetag::add_mnemonic`](codetag::Codetag::add_mnemonic) return
+//! `Result<(), Error>`. Use `?` to propagate invalid configuration.
+//! For project-specific tags outside PEP 350, use
+//! [`Codetag::add_custom_mnemonic`](codetag::Codetag::add_custom_mnemonic).
+//!
 //! ## Example
 //!
 //! ```
@@ -56,6 +74,7 @@ pub mod domain;
 pub mod email;
 pub mod emoji;
 pub mod env;
+mod error;
 pub mod handle;
 pub mod hash;
 pub(crate) mod iana;
@@ -75,6 +94,8 @@ pub mod semver;
 pub mod uri;
 pub mod uuid;
 pub(crate) mod word;
+
+pub use error::Error;
 
 use std::ops::Range;
 

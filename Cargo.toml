@@ -1,6 +1,6 @@
 [package]
 name = "squeeze-cli"
-version = "1.0.0"
+version = "2.0.0"
 authors = ["Aymeric Beaumet <hi@aymericbeaumet.com>"]
 edition = "2024"
 rust-version = "1.95"
@@ -8,9 +8,9 @@ license = "MIT"
 description = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text"
 repository = "https://github.com/aymericbeaumet/squeeze"
 readme = "readme.md"
-include = ["squeeze-cli/", "readme.md", "LICENSE"]
-keywords = ["extract", "url", "email", "grep", "cli"]
-categories = ["command-line-utilities", "text-processing"]
+# Distributed as release binaries and with `cargo install --git`; only
+# squeeze-lib is published to crates.io.
+publish = false
 
 [[bin]]
 name = "squeeze"
@@ -33,17 +33,18 @@ name = "tree"
 path = "squeeze-cli/tests/tree.rs"
 
 [dependencies]
-clap = { version = "4.6.7", features = ["derive"] }
-log = "0.4.34"
-env_logger = "0.11.11"
+clap = { version = "4.6.9", features = ["derive"] }
+anstyle-query = "1.1.5"
+log = "0.4.35"
+env_logger = "0.11.12"
 glob = "0.3.4"
 memchr = "2.8.3"
-memmap2 = "0.9.11"
+memmap2 = "0.9.12"
 simdutf8 = "0.1.5"
-open = "5.4.4"
-squeeze = { package = "squeeze-lib", path = "squeeze-lib", version = "1.0.0" }
-ignore = "0.4.33"
-clap_complete = "4.6.11"
+open = "5.4.5"
+squeeze = { package = "squeeze-lib", path = "squeeze-lib", version = "2.0.0" }
+ignore = "0.4.34"
+clap_complete = "4.6.12"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.191"
@@ -61,7 +62,8 @@ arboard = { version = "3.7.0", default-features = false, features = ["wayland-da
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
 
-# `cargo binstall squeeze-cli` downloads the release archives instead of compiling.
+# `cargo binstall --git https://github.com/aymericbeaumet/squeeze squeeze-cli`
+# downloads the release archives instead of compiling.
 [package.metadata.binstall]
 bin-dir = "{ bin }{ binary-ext }"
 
