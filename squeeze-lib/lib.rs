@@ -38,6 +38,20 @@
 //! an unknown hash algorithm or codetag mnemonic with the closest valid name;
 //! scanning itself never fails.
 //!
+//! ## Upgrading from 1.x
+//!
+//! [`Scanner::try_new`](scanner::Scanner::try_new) now uses [`Error`] as its error type.
+//! Replace `scanner::ScannerError::TooManyFinders` with
+//! [`Error::TooManyFinders`] and include a fallback arm when matching this
+//! non-exhaustive enum.
+//!
+//! [`Hash::add_algorithm`](hash::Hash::add_algorithm),
+//! [`URI::add_scheme`](uri::URI::add_scheme), and
+//! [`Codetag::add_mnemonic`](codetag::Codetag::add_mnemonic) return
+//! `Result<(), Error>`. Use `?` to propagate invalid configuration.
+//! For project-specific tags outside PEP 350, use
+//! [`Codetag::add_custom_mnemonic`](codetag::Codetag::add_custom_mnemonic).
+//!
 //! ## Example
 //!
 //! ```

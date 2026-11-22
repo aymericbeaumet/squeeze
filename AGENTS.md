@@ -21,7 +21,8 @@
   is taken on crates.io. The root manifest defines `squeeze-cli`; keep its
   explicit targets in `squeeze-cli/` registered when adding integration tests.
   Keep both crate versions, the CLI's requirement on
-  the library, and their `Cargo.lock` entries synchronized. A new version on
+  the library, their `Cargo.lock` entries, and the source install tag in
+  `readme.md` synchronized. A new version on
   `main` publishes the release, the `squeeze-lib` crate, and the Homebrew
   formula; the CLI is not published to crates.io. See
   [release details](docs/development.md).

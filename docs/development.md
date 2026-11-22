@@ -2,8 +2,8 @@
 
 ## Tooling
 
-mise is the whole development environment: `mise.toml` pins Rust 1.99.1 with
-rustfmt and Clippy, Python 3.15.0, and every tool a task needs, and
+mise is the whole development environment: `mise.toml` pins Rust 1.100.0 with
+rustfmt and Clippy, Python 3.15.2, and every tool a task needs, and
 `mise tasks` lists every command. It also sets `min_version` to the mise
 release CI pins, since older ones cannot enforce the committed lockfile
 policy. Update mise through its original installation method when it
@@ -40,7 +40,7 @@ One-liners live in `mise.toml`; longer ones such as `bench-cli`,
 `update-iana`, and `release-helper` are executable file tasks in
 `mise-tasks/`, which mise runs through their shebang on Windows too.
 
-Actions pins mise 2026.11.6, whose release assets cover all six platforms.
+Actions pins mise 2026.11.12, whose release assets cover all six platforms.
 Verify those assets before updating the pin, and move `min_version` in
 `mise.toml` with it. Workflow action revisions and
 container images are pinned to digests. Mise manages Rust through rustup,
@@ -141,7 +141,7 @@ the native container engine on Linux before running the task.
 The release helper, `mise-tasks/release-helper`, uses Python 3.11+ and the
 standard library; `mise-tasks/test_release_helper.py` tests it. Run
 `mise run release-check` to validate workflows with actionlint 1.7.12 and ShellCheck 0.11.0, and run
-those tests with pinned Python 3.15.0. Release jobs use the same mise
+those tests with pinned Python 3.15.2. Release jobs use the same mise
 environment and `mise run release-helper` to invoke the helper, and so does
 the nightly workflow, whose `nightly` command points the tap's
 `squeeze-nightly` formula, built from source, at every push to `main`. If publication

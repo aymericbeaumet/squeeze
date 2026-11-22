@@ -5,10 +5,18 @@ flows through a pipe.
 
 ## Data pipelines
 
-List unique email addresses in a repository's commit history:
+Find the ten IP addresses mentioned most often in a log. Each occurrence
+counts, including repeated addresses on the same line.
 
 ```shell
-git log --format='%an <%ae>' | squeeze --email --sort --uniq
+squeeze --ip app.log | sort | uniq -c | sort -nr | head -10
+```
+
+List distinct HTTPS links from the commit messages in a release. Replace the
+two tags with the range you want to inspect.
+
+```shell
+git log v1.0.0..v2.0.0 --format=%B | squeeze --https --uniq
 ```
 
 Export distinct URLs from local Markdown files as a JSON array:

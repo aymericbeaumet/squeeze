@@ -816,10 +816,7 @@ fn emit_grouped(
             range: m.range.start - line_start..m.range.end - line_start,
         });
     }
-    if !group.is_empty() && emit(line_start, line_end, &group) {
-        return true;
-    }
-    false
+    !group.is_empty() && emit(line_start, line_end, &group)
 }
 
 /// How a pass finds its candidate positions.

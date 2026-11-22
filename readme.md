@@ -1,32 +1,21 @@
 # squeeze [![CI](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml) [![Latest release](https://img.shields.io/github/v/release/aymericbeaumet/squeeze)](https://github.com/aymericbeaumet/squeeze/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-squeeze extracts 20 kinds of data from text, including URLs, emails, IPs,
-hashes, and TODOs. Like `grep -o`, with the patterns built in.
+squeeze pulls URLs, emails, IPs, TODOs, and 16 other kinds of data out of
+text. Pipe in a log, point it at a directory, or use it as a Rust library.
 
-![squeeze pulling timestamps, URLs, IPs, a UUID, an email, a version, a hash, and a handle out of a log file](docs/demo/demo.gif)
+A Markdown link can have parentheses of its own. Here the URL keeps
+`(v2)` and the surrounding Markdown drops away.
 
-```console
-$ cat notes.md
-See [the docs](https://example.com/docs), or https://en.wikipedia.org/wiki/Squeeze_(disambiguation).
-Ping ops@example.com, then check <https://status.example.com>.
-
-$ grep -oE 'https?://[^ ]+' notes.md
-https://example.com/docs),
-https://en.wikipedia.org/wiki/Squeeze_(disambiguation).
-https://status.example.com>.
-
-$ squeeze --url notes.md
-https://example.com/docs
-https://en.wikipedia.org/wiki/Squeeze_(disambiguation)
-https://status.example.com
+```shell
+echo 'Email ops@example.com about [the fix](https://example.org/wiki/Fix_(v2)).' | squeeze --email --url
 ```
 
-- Recognizes values in prose, Markdown, JSON, and HTML, handling surrounding
-  punctuation and balanced parentheses in links.
-- Reads pipes, files, globs, and directory trees, respecting ignore files.
-- Prints one value per line, editor locations, or JSON, YAML, and CSV.
-- Fast: no regex engine, SIMD scanning, and every core on large inputs.
-- Available as a CLI and a [Rust library](#rust-library).
+```text
+ops@example.com
+https://example.org/wiki/Fix_(v2)
+```
+
+![squeeze pulling timestamps, URLs, IPs, a UUID, an email, a version, a hash, and a handle out of a log file](docs/demo/demo.gif)
 
 ## Install
 
@@ -45,7 +34,7 @@ mise use -g github:aymericbeaumet/squeeze
 **Cargo** (Rust 1.95+), from source:
 
 ```shell
-cargo install --locked --git https://github.com/aymericbeaumet/squeeze
+cargo install --locked --git https://github.com/aymericbeaumet/squeeze --tag v2.0.0
 ```
 
 All three install the `squeeze` command. Prebuilt binaries for Linux, macOS,
@@ -58,23 +47,9 @@ with `SHA256SUMS` for verifying downloads.
 Pick one or more finders, or none to run all of them. With no path, squeeze
 reads stdin.
 
-Try this in your terminal; it needs no files or network access:
-
 ```shell
-echo 'Contact ops@example.com about [the docs](https://example.com/docs).' | squeeze --email --url
-```
-
-```text
-ops@example.com
-https://example.com/docs
-```
-
-```shell
-# Everything squeeze recognizes in a file
-squeeze app.log
-
-# Everyone who committed to a repository
-git log --format='%an <%ae>' | squeeze --email --sort --uniq
+# Links mentioned in commit messages, most recent first, with duplicates removed
+git log --format=%B | squeeze --https --uniq
 
 # IPs, request IDs, and timestamps in logs, labeled by kind
 kubectl logs deploy/api | squeeze --ip --uuid --datetime --with-kind
@@ -86,9 +61,10 @@ squeeze --todo --fixme --with-location .
 squeeze --url --with-kind --output json notes.md
 ```
 
-The [usage guide](docs/usage.md) covers every option, and
-[integrations](docs/integrations.md) has recipes for vim, tmux, fzf, and your
-shell.
+Directory scans respect ignore files. The [usage guide](docs/usage.md) covers
+input selection, output formats, and exit codes. For recipes such as ranking
+IPs in logs or opening a link from tmux scrollback, see
+[integrations](docs/integrations.md).
 
 ## What it finds
 
