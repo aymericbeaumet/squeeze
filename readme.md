@@ -1,19 +1,7 @@
 # squeeze [![CI](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml) [![Latest release](https://img.shields.io/github/v/release/aymericbeaumet/squeeze)](https://github.com/aymericbeaumet/squeeze/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-squeeze pulls URLs, emails, IPs, TODOs, and 16 other kinds of data out of
-text. Pipe in a log, point it at a directory, or use it as a Rust library.
-
-A Markdown link can have parentheses of its own. Here the URL keeps
-`(v2)` and the surrounding Markdown drops away.
-
-```shell
-echo 'Email ops@example.com about [the fix](https://example.org/wiki/Fix_(v2)).' | squeeze --email --url
-```
-
-```text
-ops@example.com
-https://example.org/wiki/Fix_(v2)
-```
+[squeeze](https://github.com/aymericbeaumet/squeeze) pulls URLs, emails, UUIDs, IPs, TODOs, and 16 other kinds of data out of
+text. Pipe a log stream, point it at any file or directory, or embed it as a Rust library.
 
 ![squeeze pulling timestamps, URLs, IPs, a UUID, an email, a version, a hash, and a handle out of a log file](docs/demo/demo.gif)
 
@@ -34,7 +22,7 @@ mise use -g github:aymericbeaumet/squeeze
 **Cargo** (Rust 1.95+), from source:
 
 ```shell
-cargo install --locked --git https://github.com/aymericbeaumet/squeeze --tag v2.0.0
+cargo install --git https://github.com/aymericbeaumet/squeeze
 ```
 
 All three install the `squeeze` command. Prebuilt binaries for Linux, macOS,
@@ -44,14 +32,14 @@ with `SHA256SUMS` for verifying downloads.
 
 ## Usage
 
-Pick one or more finders, or none to run all of them. With no path, squeeze
+Pick one or more _finders_, or none to run all of them. With no path, squeeze
 reads stdin.
 
 ```shell
-# Links mentioned in commit messages, most recent first, with duplicates removed
+# URLs mentioned in commit messages, most recent first, with duplicates removed
 git log --format=%B | squeeze --https --uniq
 
-# IPs, request IDs, and timestamps in logs, labeled by kind
+# IPs, IDs, and timestamps in logs, labeled by kind
 kubectl logs deploy/api | squeeze --ip --uuid --datetime --with-kind
 
 # TODOs and FIXMEs across a repository, with locations your editor understands
@@ -91,11 +79,14 @@ IPs in logs or opening a link from tmux scrollback, see
 | URIs | `--uri`, `--url`, `--http`, `--https` | `https://example.com`, `mailto:hi@example.com` |
 | UUIDs | `--uuid` | `550e8400-e29b-41d4-a716-446655440000` |
 
-Finders favor precision over recall: they recognize common formats and may
-skip unusual valid values. They extract candidates; they do not check whether
-a URL is reachable, an email address exists, or a JWT is authentic. Matches
-can overlap (a URL can contain an IP); use `--precedence longest` to keep
+Notes:
+- Finders favor precision over recall: they recognize common formats and may
+skip unusual valid values.
+- They extract candidates; they do not check whether
+a URL is reachable, an email address exists, or a JWT is authentic.
+- Matches can overlap (a URL can contain an IP); use `--precedence longest` to keep
 the longest overlapping match. Use grep or ripgrep for custom patterns.
+
 Found something squeeze gets wrong?
 [Report it](https://github.com/aymericbeaumet/squeeze/issues/new?template=wrong-match.yml)
 with a sample input.
