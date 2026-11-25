@@ -8,8 +8,6 @@ license = "MIT"
 description = "Extract URLs, emails, IPs, hashes, TODOs, and more from any text"
 repository = "https://github.com/aymericbeaumet/squeeze"
 readme = "readme.md"
-# Distributed as release binaries and with `cargo install --git`; only
-# squeeze-lib is published to crates.io.
 publish = false
 
 [[bin]]
@@ -33,7 +31,7 @@ name = "tree"
 path = "squeeze-cli/tests/tree.rs"
 
 [dependencies]
-clap = { version = "4.6.9", features = ["derive"] }
+clap = { version = "4.6.10", features = ["derive"] }
 anstyle-query = "1.1.5"
 log = "0.4.35"
 env_logger = "0.11.12"
@@ -43,7 +41,7 @@ memmap2 = "0.9.12"
 simdutf8 = "0.1.5"
 open = "5.4.5"
 squeeze = { package = "squeeze-lib", path = "squeeze-lib", version = "2.0.0" }
-ignore = "0.4.34"
+ignore = "0.4.35"
 clap_complete = "4.6.12"
 
 [target.'cfg(unix)'.dependencies]

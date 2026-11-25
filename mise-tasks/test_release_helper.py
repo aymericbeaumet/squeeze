@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 
 
 # The helper is an extensionless mise file task.
@@ -23,6 +23,22 @@ class ReleaseTests(unittest.TestCase):
         })
         environment.start()
         self.addCleanup(environment.stop)
+
+    def test_new_release_only_checks_github(self):
+        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "", "HAS_HOMEBREW_TOKEN": "true"}), \
+                patch.object(release, "crate_version", return_value="2.0.1"), \
+                patch.object(release, "api", return_value=None) as api, \
+                patch.object(release, "urlopen", side_effect=AssertionError("unexpected registry request")), \
+                patch.object(release.subprocess, "check_output", return_value="commit\n"), \
+                patch.object(release, "output") as output:
+            release.prepare()
+
+        self.assertEqual([call.args[1] for call in api.call_args_list], [
+            "/repos/owner/repo/releases/tags/v2.0.1",
+            "/repos/owner/repo/git/ref/tags/v2.0.1",
+        ])
+        output.assert_any_call("sha", "commit")
+        output.assert_any_call("should_release", "true")
 
     def test_only_not_found_is_missing(self):
         for status in (401, 403, 429, 500):
@@ -77,80 +93,17 @@ class ReleaseTests(unittest.TestCase):
 
     def test_published_release_skips_without_retagging(self):
         with patch.object(release, "crate_version", return_value="0.2.0"), patch.object(
-            release, "crate_published", return_value=True
-        ), patch.object(
             release, "api", return_value={"draft": False}
         ) as api, patch.object(release, "output") as output:
             release.prepare()
         api.assert_called_once()
         output.assert_any_call("should_release", "false")
-        output.assert_any_call("publish_crates", "false")
-
-    def test_unpublished_crates_need_a_token(self):
-        for token in ("true", ""):
-            with self.subTest(token=token), patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": token}), \
-                    patch.object(release, "crate_version", return_value="0.5.0"), \
-                    patch.object(release, "crate_published", return_value=False), \
-                    patch.object(release, "api", return_value={"draft": False}), \
-                    patch.object(release, "tag_commit", return_value="tagged"), \
-                    patch.object(release, "output") as output:
-                if token:
-                    release.prepare()
-                    output.assert_any_call("publish_crates", "true")
-                else:
-                    with self.assertRaisesRegex(ValueError, "CARGO_REGISTRY_TOKEN is required"):
-                        release.prepare()
-
-    def test_only_the_library_is_published_to_crates_io(self):
-        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": ""}), \
-                patch.object(release, "crate_version", return_value="0.5.0"), \
-                patch.object(release, "crate_published",
-                             side_effect=lambda name, _: name == "squeeze-lib") as published, \
-                patch.object(release, "api", return_value={"draft": False}), \
-                patch.object(release, "output") as output:
-            release.prepare()
-        published.assert_called_once_with("squeeze-lib", "0.5.0")
-        output.assert_any_call("publish_crates", "false")
-
-    def test_crates_after_a_published_release_use_its_tagged_commit(self):
-        def api(method, path, **kwargs):
-            if path.endswith("releases/tags/v0.2.0"):
-                return {"draft": False}
-            if path.endswith("git/ref/tags/v0.2.0"):
-                return {"object": {"type": "tag", "sha": "annotated"}}
-            if path.endswith("git/tags/annotated"):
-                return {"object": {"type": "commit", "sha": "tagged"}}
-            raise AssertionError(path)
-
-        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true"}), \
-                patch.object(release, "crate_version", return_value="0.2.0"), \
-                patch.object(release, "crate_published", return_value=False), \
-                patch.object(release, "api", side_effect=api), \
-                patch.object(release, "output") as output:
-            release.prepare()
-        output.assert_any_call("should_release", "false")
-        output.assert_any_call("publish_crates", "true")
-        output.assert_any_call("sha", "tagged")
-
-    def test_unreachable_crates_io_does_not_block_the_release(self):
-        error = URLError("timed out")
-        with patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true", "HAS_HOMEBREW_TOKEN": "true"}), \
-                patch.object(release, "crate_version", return_value="0.2.0"), \
-                patch.object(release, "urlopen", side_effect=error), \
-                patch.object(release, "api", return_value=None), \
-                patch.object(release, "ensure_tag"), \
-                patch.object(release.subprocess, "check_output", return_value="commit\n"), \
-                patch.object(release, "output") as output:
-            release.prepare()
-        output.assert_any_call("should_release", "true")
-        output.assert_any_call("publish_crates", "true")
 
     def test_new_releases_need_the_tap_token(self):
         for token in ("true", ""):
             with self.subTest(token=token), \
-                    patch.dict(release.os.environ, {"HAS_CRATES_TOKEN": "true", "HAS_HOMEBREW_TOKEN": token}), \
+                    patch.dict(release.os.environ, {"HAS_HOMEBREW_TOKEN": token}), \
                     patch.object(release, "crate_version", return_value="0.6.0"), \
-                    patch.object(release, "crate_published", return_value=True), \
                     patch.object(release, "api", return_value=None), \
                     patch.object(release, "ensure_tag"), \
                     patch.object(release.subprocess, "check_output", return_value="commit\n"), \
@@ -161,25 +114,6 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "HOMEBREW_TAP_TOKEN is required"):
                         release.prepare()
-
-    def test_crates_publish_only_the_library(self):
-        with patch.object(release, "crate_published", return_value=False), \
-                patch.object(release.subprocess, "run") as run:
-            release.publish_crate("0.5.0")
-        run.assert_called_once_with(["cargo", "publish", "--locked", "--package", "squeeze-lib"], check=True)
-
-    def test_crates_skip_a_published_library(self):
-        with patch.object(release, "crate_published", return_value=True), \
-                patch.object(release.subprocess, "run") as run:
-            release.publish_crate("0.5.0")
-        run.assert_not_called()
-
-    def test_registry_version_must_belong_to_this_repository(self):
-        published = (b'{"version":{"crate":"squeeze-lib","num":"0.5.0",'
-                     b'"repository":"https://example.com/other"}}')
-        with patch.object(release, "urlopen", return_value=io.BytesIO(published)):
-            with self.assertRaisesRegex(ValueError, "another repository"):
-                release.crate_published("squeeze-lib", "0.5.0")
 
     def test_existing_tag_must_reference_tested_commit(self):
         with patch.object(release, "api", return_value={"object": {"type": "commit", "sha": "old"}}):

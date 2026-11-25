@@ -6,6 +6,9 @@ updates:
       interval: weekly
     commit-message:
       prefix: "deps"
+    groups:
+      cargo:
+        patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -13,3 +16,6 @@ updates:
       interval: weekly
     commit-message:
       prefix: "ci"
+    groups:
+      github-actions:
+        patterns: ["*"]

@@ -147,39 +147,45 @@ checksum = "sha256:18fd600a2fc0bc2e62f34f66b0fd717dc2a774aa533bf3cef98011b9d37e0
 url = "https://download.docker.com/mac/static/stable/x86_64/docker-29.10.0.tgz"
 
 [[tools."github:kbknapp/cargo-outdated"]]
-version = "0.19.0"
+version = "0.20.0"
 backend = "github:kbknapp/cargo-outdated"
-specifiers = ["0.19.0"]
+specifiers = ["0.20.0"]
 
 [tools."github:kbknapp/cargo-outdated"."platforms.linux-arm64"]
-checksum = "sha256:0570cb34034784aa10315aef8cc84d008104f5b60ccc93efcf83b0b08fb585e3"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-aarch64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434763"
+checksum = "sha256:369ee40d1e27e072eee4c77bc16216d73111f7249dbb440ecb32542d1bee4505"
+checksum_source = "mise-versions"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.20.0/cargo-outdated-0.20.0-aarch64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/782864807"
 
 [tools."github:kbknapp/cargo-outdated"."platforms.linux-x64"]
-checksum = "sha256:648021f279e737e11f4be0f5967ae2a01d4d66f7a2e462a0b24ccd6dd5e6b372"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434764"
+checksum = "sha256:537fecfc25b29389759b939e0ee7ed5a22eeaedc2ff26c3baf051237b87f017b"
+checksum_source = "mise-versions"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.20.0/cargo-outdated-0.20.0-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/782864804"
 
 [tools."github:kbknapp/cargo-outdated"."platforms.macos-arm64"]
-checksum = "sha256:c3a3ca56a748d94fdaa1f208c641685d996ee1c4954cd4fbe358b7c06a2186a5"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434761"
+checksum = "sha256:8a13987870605e6e9d27db67a3c7c3cd8e297a79295a73f04549d9909b7be5d9"
+checksum_source = "mise-versions"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.20.0/cargo-outdated-0.20.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/782864808"
 
 [tools."github:kbknapp/cargo-outdated"."platforms.macos-x64"]
-checksum = "sha256:945b64728ae9021be49a70346424da7634d889f181f2d33af64c7bf95265f6d3"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434762"
+checksum = "sha256:537353aa5690e74a7827a012a13583a3525bb6ef8091ba161d8c1236c26d2972"
+checksum_source = "mise-versions"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.20.0/cargo-outdated-0.20.0-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/782864809"
 
 [tools."github:kbknapp/cargo-outdated"."platforms.windows-arm64"]
-checksum = "sha256:2b58a56cdf564af78c3e1ed46ab1341942f4845ca7a06bf44b292404ce7a2598"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-aarch64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434760"
+checksum = "sha256:23a7a5bed5678feb5c1cc49cec8786a1ca5c96788c429e5990d7850a886b502f"
+checksum_source = "mise-versions"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.20.0/cargo-outdated-0.20.0-aarch64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/782864812"
 
 [tools."github:kbknapp/cargo-outdated"."platforms.windows-x64"]
-checksum = "sha256:f2984f27955dbbe8fd3c1714d461d7cb8a1da3cc97f835e44c38215953833dbd"
-url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.19.0/cargo-outdated-0.19.0-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/396434759"
+checksum = "sha256:3e81831460509ab931a52b8c377f743a07b4be8c83b1b92d2c0e2ed683c2a527"
+checksum_source = "mise-versions"
+url = "https://github.com/kbknapp/cargo-outdated/releases/download/v0.20.0/cargo-outdated-0.20.0-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/kbknapp/cargo-outdated/releases/assets/782864810"
 
 [[tools.hyperfine]]
 version = "2.0.0"
@@ -252,39 +258,45 @@ url = "https://github.com/astral-sh/python-build-standalone/releases/download/20
 provenance = "github-attestations"
 
 [[tools.ripgrep]]
-version = "15.2.0"
+version = "16.0.0"
 backend = "aqua:BurntSushi/ripgrep"
-specifiers = ["15.2.0"]
+specifiers = ["16.0.0"]
 
 [tools.ripgrep."platforms.linux-arm64"]
-checksum = "sha256:a740b91c82eaf9914cfedd353572f2791cbe0162c84101ee0951058f4dcbc90d"
-url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478119579"
+checksum = "sha256:0b0bddcfaf42be1f3c56bf929d70defd1a2d96f2577aecbd7029a3734ddb4740"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/16.0.0/ripgrep-16.0.0-aarch64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/780739969"
 
 [tools.ripgrep."platforms.linux-x64"]
-checksum = "sha256:33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
-url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478120097"
+checksum = "sha256:165451eaf35f977c0bd6cff1fb93e4fcce0ebd87e90a4b5e976507baf50f4a03"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/16.0.0/ripgrep-16.0.0-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/780739448"
 
 [tools.ripgrep."platforms.macos-arm64"]
-checksum = "sha256:3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4"
-url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478118851"
+checksum = "sha256:5a145656d5067144001bfce6648767fd3254599aa736f1ffdb7fb907760b8ca1"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/16.0.0/ripgrep-16.0.0-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/780739338"
 
 [tools.ripgrep."platforms.macos-x64"]
-checksum = "sha256:af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1"
-url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478119585"
+checksum = "sha256:aa9183b0e0bfac03c5818895ad18b75001c402d230063898abfe5a58cd413caa"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/16.0.0/ripgrep-16.0.0-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/780739975"
 
 [tools.ripgrep."platforms.windows-arm64"]
-checksum = "sha256:71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"
-url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478119643"
+checksum = "sha256:f418ae83e63046a94a7b5f3a44bf3a169f66e689164856ecee02547131c73931"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/16.0.0/ripgrep-16.0.0-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/780739355"
 
 [tools.ripgrep."platforms.windows-x64"]
-checksum = "sha256:71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5"
-url = "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip"
-url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/478119643"
+checksum = "sha256:f418ae83e63046a94a7b5f3a44bf3a169f66e689164856ecee02547131c73931"
+checksum_source = "mise-versions"
+url = "https://github.com/BurntSushi/ripgrep/releases/download/16.0.0/ripgrep-16.0.0-x86_64-pc-windows-msvc.zip"
+url_api = "https://api.github.com/repos/BurntSushi/ripgrep/releases/assets/780739355"
 
 [[tools.rust]]
 version = "1.100.0"

@@ -8,9 +8,8 @@
 - Update and commit `mise.lock` with `mise.toml` tool changes; lock all six CI
   platforms with `mise lock` (`lockfile_platforms` lists them). Project tools
   enforce the lockfile with `[tool_config] locked = true`; do not weaken it.
-- Run `mise run release` and `mise run package` when changing build or packaging
-  behavior, and `mise run msrv` when changing dependencies or the minimum supported
-  Rust version.
+- Run `mise run release` when changing build or packaging behavior and
+  `mise run msrv` when changing dependencies or the minimum supported Rust version.
 - mise is the only task runner: add one-liners to `mise.toml` and longer
   scripts as executable file tasks in `mise-tasks/` (`#MISE description=...`,
   a shebang so Windows can run them); no Makefile or standalone `scripts/`.
@@ -21,10 +20,9 @@
   is taken on crates.io. The root manifest defines `squeeze-cli`; keep its
   explicit targets in `squeeze-cli/` registered when adding integration tests.
   Keep both crate versions, the CLI's requirement on
-  the library, their `Cargo.lock` entries, and the source install tag in
-  `readme.md` synchronized. A new version on
-  `main` publishes the release, the `squeeze-lib` crate, and the Homebrew
-  formula; the CLI is not published to crates.io. See
+  the library, their `Cargo.lock` entries, and the release tags in
+  `readme.md` synchronized. A new version on `main` publishes the GitHub
+  release and Homebrew formula. Both Cargo packages set `publish = false`. See
   [release details](docs/development.md).
 - Release archive names (`squeeze-vX.Y.Z-<os>-<arch>`) are a public contract
   shared by the Homebrew formula, cargo-binstall metadata, and

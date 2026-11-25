@@ -1,7 +1,14 @@
 # squeeze [![CI](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml/badge.svg)](https://github.com/aymericbeaumet/squeeze/actions/workflows/ci.yml) [![Latest release](https://img.shields.io/github/v/release/aymericbeaumet/squeeze)](https://github.com/aymericbeaumet/squeeze/releases/latest) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[squeeze](https://github.com/aymericbeaumet/squeeze) pulls URLs, emails, UUIDs, IPs, TODOs, and 16 other kinds of data out of
-text. Pipe a log stream, point it at any file or directory, or embed it as a Rust library.
+Extract URLs, emails, UUIDs, IPs, TODOs, and 15 other kinds of data from
+text. Pipe in a log, scan a directory, or embed the finders in Rust.
+
+```console
+$ printf 'See [the fix](https://example.org/wiki/Fix_(v2)).\n' | squeeze --url
+https://example.org/wiki/Fix_(v2)
+```
+
+The URL keeps its own parentheses and drops the surrounding Markdown.
 
 ![squeeze pulling timestamps, URLs, IPs, a UUID, an email, a version, a hash, and a handle out of a log file](docs/demo/demo.gif)
 
@@ -22,7 +29,7 @@ mise use -g github:aymericbeaumet/squeeze
 **Cargo** (Rust 1.95+), from source:
 
 ```shell
-cargo install --git https://github.com/aymericbeaumet/squeeze
+cargo install --locked --git https://github.com/aymericbeaumet/squeeze --tag v2.0.0
 ```
 
 All three install the `squeeze` command. Prebuilt binaries for Linux, macOS,
@@ -103,10 +110,11 @@ data, and limitations.
 
 ## Rust library
 
-The finders are available as the `squeeze-lib` crate, imported as `squeeze`:
+Install `squeeze-lib` from the same Git tag as the CLI release. Import it as
+`squeeze` in Rust.
 
 ```shell
-cargo add squeeze-lib
+cargo add squeeze-lib --git https://github.com/aymericbeaumet/squeeze --tag v2.0.0
 ```
 
 ```rust
@@ -123,8 +131,8 @@ for m in scanner.scan_line(line) {
 
 Configuring a finder returns a typed `squeeze::Error`, such as an unknown
 hash algorithm with a suggested fix; scanning never fails. See the
-[API documentation](https://docs.rs/squeeze-lib) for individual finders and
-scanner options.
+[library source](squeeze-lib/lib.rs) for individual finders and scanner
+options. Generate browsable API docs with `mise run doc`.
 
 ## Contributing
 

@@ -40,7 +40,7 @@ One-liners live in `mise.toml`; longer ones such as `bench-cli`,
 `update-iana`, and `release-helper` are executable file tasks in
 `mise-tasks/`, which mise runs through their shebang on Windows too.
 
-Actions pins mise 2026.11.12, whose release assets cover all six platforms.
+Actions pins mise 2026.11.14, whose release assets cover all six platforms.
 Verify those assets before updating the pin, and move `min_version` in
 `mise.toml` with it. Workflow action revisions and
 container images are pinned to digests. Mise manages Rust through rustup,
@@ -59,7 +59,8 @@ the musl C compiler and linker without a system package install. Run
 `mise run release-musl -- --target <target>`, with
 `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl`. CI and releases
 verify static linkage and execute each binary in Alpine on its native
-architecture.
+architecture with `TARGET=<target> mise run smoke-musl`. Mise pins the
+container CLI, while the host provides the container engine.
 `bench-cli` pins its required tools; optional GNU/BSD grep and ugrep are
 comparisons against the versions on the host and are skipped when absent.
 
@@ -68,14 +69,11 @@ comparisons against the versions on the host and are skipped when absent.
 The root `Cargo.toml` defines the `squeeze-cli` package and the workspace;
 `squeeze-lib/Cargo.toml` defines the library package. CLI sources and
 integration tests live in `squeeze-cli/`, with explicit Cargo target paths.
-`cargo install --path . --locked` installs the local `squeeze` binary, and
-`cargo test` defaults to both workspace packages.
-Only `squeeze-lib` is published to crates.io. The CLI sets `publish = false`
-and ships as the release archives (Homebrew, mise's GitHub backend) or builds
-with `cargo install --locked --git https://github.com/aymericbeaumet/squeeze`.
-Run `mise run package` from a clean checkout to build and verify the library's
-crates.io archive. CI also checks this and installs the CLI from the
-repository root.
+`mise run install` installs the local `squeeze` binary from the repository
+root, which CI also verifies. `mise run test` covers both workspace packages.
+The CLI ships through GitHub Releases, Homebrew, and mise. Cargo users can
+install the CLI or depend on the library from a Git tag. Both Cargo packages
+set `publish = false`.
 
 To release, keep the `squeeze-lib` package in `squeeze-lib/Cargo.toml`, the
 `squeeze-cli` package in `Cargo.toml`, and the CLI's library
@@ -118,20 +116,16 @@ release. The workflow uses the repository's `GITHUB_TOKEN` with `contents: write
 After publication, the Homebrew job writes `Formula/squeeze.rb` in
 `aymericbeaumet/homebrew-tap` from the release's `SHA256SUMS`: the formula
 installs the prebuilt macOS and Linux archives and generates shell
-completions. The crates job publishes `squeeze-lib` to crates.io once every
-platform's build and tests pass. Because crates.io publications are
-permanent, rerunning a failed crates job skips a version that was already
-published.
+completions.
 
 The three install paths of the readme map to these outputs: Homebrew to the
 tap's formula, mise's `github:` backend to the release archives, and
-`cargo install --git` to the repository itself. The release needs two
-repository secrets, which the prepare job checks before building anything:
+`cargo install --git` to the repository itself. The prepare job checks
+for the Homebrew token before building a new release.
 
 | Secret | Used by | Required when |
 | --- | --- | --- |
 | `HOMEBREW_TAP_TOKEN` | the Homebrew job and the nightly formula | a new release is built; needs contents write access to `aymericbeaumet/homebrew-tap` |
-| `CARGO_REGISTRY_TOKEN` | the crates job | the `squeeze-lib` version is not on crates.io yet; needs the publish-update scope |
 
 `mise run demo` rebuilds the readme's `docs/demo/demo.gif` from
 `docs/demo/demo.tape` with VHS in a container on Linux or macOS. Mise pins
@@ -147,5 +141,5 @@ the nightly workflow, whose `nightly` command points the tap's
 `squeeze-nightly` formula, built from source, at every push to `main`. If publication
 fails after creating a tag,
 rerun the failed workflow at its original commit or dispatch it on that tag.
-An existing tag pointing at another commit is rejected. If only the Homebrew
-or crates job fails, rerun it after fixing its token or permissions.
+An existing tag pointing at another commit is rejected. If the Homebrew job
+fails, rerun it after fixing its token or permissions.
